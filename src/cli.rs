@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
 
-use crate::conf::Config;
-use crate::db::WhitelistStore;
+use crate::config::Config;
+use crate::whitelist::WhitelistStore;
 use crate::nips;
 
 #[derive(Parser)]

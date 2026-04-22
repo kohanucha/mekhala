@@ -7,8 +7,8 @@ use tokio_tungstenite::tungstenite::Message;
 use log::{info, warn, error};
 use nostr::{Event, Filter, JsonUtil};
 
-use crate::conf::Config;
-use crate::db::WhitelistStore;
+use crate::config::Config;
+use crate::whitelist::WhitelistStore;
 
 type WsSink = futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>, Message>;
 
