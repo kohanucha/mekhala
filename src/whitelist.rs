@@ -2,6 +2,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use sled::Db;
+use tokio_tungstenite::tungstenite::Message;
+use futures_util::stream::SplitSink;
+use tokio_tungstenite::WebSocketStream;
+use tokio::net::TcpStream;
+
+pub type WsSink = SplitSink<WebSocketStream<TcpStream>, Message>;
 
 pub struct WhitelistStore {
     db: Arc<Mutex<Db>>,

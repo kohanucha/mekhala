@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use futures_util::{StreamExt, SinkExt};

@@ -3,6 +3,7 @@ mod config;
 mod whitelist;
 mod error;
 mod nips;
+mod relay;
 
 use std::sync::Arc;
 use clap::Parser;

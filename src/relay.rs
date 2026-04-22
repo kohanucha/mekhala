@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::collections::HashMap;
@@ -10,24 +8,23 @@ use log::{info, warn, error};
 use nostr::{Event, Filter, JsonUtil};
 
 use crate::config::Config;
+use crate::whitelist::WsSink;
 use crate::whitelist::WhitelistStore;
 
-type WsSink = futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>, Message>;
-
-struct ClientState {
-    sink: Arc<Mutex<WsSink>>,
-    subscriptions: HashMap<String, Vec<Filter>>,
+pub struct ClientState {
+    pub sink: Arc<Mutex<WsSink>>,
+    pub subscriptions: HashMap<String, Vec<Filter>>,
 }
 
-type ClientMap = Arc<Mutex<HashMap<String, ClientState>>>;
+pub type ClientMap = Arc<Mutex<HashMap<String, ClientState>>>;
 
-pub async fn run_ws_server(config: Config, whitelist: Arc<WhitelistStore>) -> Result<(), String> {
+pub async fn run_relay(config: Config, whitelist: Arc<WhitelistStore>) -> Result<(), String> {
     let addr = format!("0.0.0.0:{}", config.relay_port);
     let listener = TcpListener::bind(&addr)
         .await
         .map_err(|e| format!("Failed to bind: {}", e))?;
 
-    info!("Relay listening on {}", addr);
+    info!("NWC Relay listening on {}", addr);
 
     let client_map: ClientMap = Arc::new(Mutex::new(HashMap::new()));
 
@@ -79,8 +76,6 @@ async fn handle_connection(
             Ok(Message::Text(text)) => {
                 if let Err(e) = handle_message(&text, &client_id, &whitelist, &client_map).await {
                     warn!("Message handling error for {}: {}", peer_addr, e);
-                    // For security reasons, if an unauthorized user connects or sends bad data, we might want to drop them.
-                    // The specification says "Disconnect immediately if a non-whitelisted pubkey is requested."
                     break;
                 }
             }
@@ -157,12 +152,10 @@ async fn handle_event(
     let event = Event::from_json(event_val.to_string())
         .map_err(|e| format!("Invalid event: {}", e))?;
 
-    // Mandatory signature verification
     event.verify().map_err(|e| format!("Invalid signature: {}", e))?;
 
     let pubkey = event.pubkey.to_string();
 
-    // Whitelist check
     if !whitelist.contains(&pubkey).await? {
         send_ok(client_map, client_id, &event.id.to_string(), false, "restricted: not authorized").await?;
         return Err(format!("Pubkey {} not whitelisted", pubkey));
@@ -170,9 +163,11 @@ async fn handle_event(
 
     send_ok(client_map, client_id, &event.id.to_string(), true, "").await?;
 
-    // Only bridge NWC kinds (and optionally others, but spec says bridging Kinds 23194, 23195)
     let kind = event.kind.as_u16();
+
     if kind == 23194 || kind == 23195 || kind == 23197 {
+        broadcast_nwc_message(client_map, client_id, &event).await?;
+    } else if kind == 0 || kind == 1 || kind == 3 || kind == 4 {
         broadcast_to_matching_clients(client_map, client_id, &event).await?;
     }
 
@@ -186,9 +181,7 @@ async fn handle_req(
     whitelist: &Arc<WhitelistStore>,
     client_map: &ClientMap,
 ) -> Result<(), String> {
-    // Security check: ensure authors/p tags only contain whitelisted pubkeys
     for filter in &filters {
-        // Check authors
         if let Some(authors) = &filter.authors {
             for author in authors {
                 if !whitelist.contains(&author.to_string()).await? {
@@ -198,7 +191,6 @@ async fn handle_req(
             }
         }
 
-        // Check #p tags
         if let Some(p_tags) = filter.generic_tags.get(&nostr::SingleLetterTag::from_char('p').unwrap()) {
             for p_tag in p_tags {
                 let pubkey = p_tag.to_string();
@@ -264,6 +256,27 @@ async fn send_closed(
 ) -> Result<(), String> {
     let response = serde_json::json!(["CLOSED", sub_id, message]);
     send_to_client(client_map, client_id, &response.to_string()).await
+}
+
+async fn broadcast_nwc_message(
+    client_map: &ClientMap,
+    sender_id: &str,
+    event: &Event,
+) -> Result<(), String> {
+    let event_json = serde_json::json!(["EVENT", event]).to_string();
+    let clients = client_map.lock().await;
+
+    for (client_id, client_state) in clients.iter() {
+        if *client_id == sender_id {
+            continue;
+        }
+
+        let mut sink = client_state.sink.lock().await;
+        if let Err(e) = sink.send(Message::Text(event_json.clone())).await {
+            warn!("Failed to broadcast NWC to {}: {}", client_id, e);
+        }
+    }
+    Ok(())
 }
 
 async fn broadcast_to_matching_clients(

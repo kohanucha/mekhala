@@ -1,4 +1,4 @@
-use nwc_relay::{Config, open_whitelist_store, run_ws_server, run_http_server};
+use nwc_relay::{Config, open_whitelist_store, run_relay, run_http_server};
 use std::sync::Arc;
 
 #[tokio::main]
@@ -14,7 +14,7 @@ async fn main() -> Result<(), String> {
         .map_err(|e| format!("Failed to open whitelist: {}", e))?;
     let whitelist = Arc::new(whitelist);
     
-    let ws_handle = tokio::spawn(run_ws_server(config.clone(), whitelist.clone()));
+    let ws_handle = tokio::spawn(run_relay(config.clone(), whitelist.clone()));
     let http_handle = tokio::spawn(run_http_server(config.clone()));
     
     println!("Relay running!");
