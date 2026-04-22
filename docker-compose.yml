@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  nwc-relay:
+    build: .
+    ports:
+      - "7777:7777"
+      - "7778:7778"
+    volumes:
+      - ./data:/data
+    environment:
+      - RELAY_PORT=7777
+      - HTTP_PORT=7778
+      - RELAY_NAME=NWC Relay
+      - RELAY_DESCRIPTION=Ultra-lite NWC relay for private home use
+      - DATA_DIR=/data
+    restart: unless-stopped
