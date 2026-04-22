@@ -1,6 +1,8 @@
 mod config;
 mod whitelist;
 mod relay;
+mod http;
+mod relay_info;
 
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
@@ -117,17 +119,35 @@ async fn main() -> Result<(), String> {
             let final_port = port.unwrap_or(config.relay_port);
             let run_config = config::Config {
                 relay_port: final_port,
-                ..config
+                http_port: config.http_port,
+                relay_name: config.relay_name,
+                relay_description: config.relay_description,
+                data_dir: config.data_dir,
             };
 
-            println!("Starting relay on port {}...", final_port);
+            println!("Starting WebSocket relay on port {}...", final_port);
+            println!("Starting HTTP relay on port {}...", config.http_port);
             println!("Data directory: {:?}", run_config.data_dir);
 
             let whitelist_store = whitelist::open_whitelist_store(&run_config.data_dir)
                 .expect("Failed to open whitelist store");
             let whitelist = Arc::new(whitelist_store);
 
-            relay::run_server(run_config, whitelist).await?;
+            let ws_handle = tokio::spawn(relay::run_server(run_config.clone(), whitelist.clone()));
+            let http_handle = tokio::spawn(http::run_http_server(run_config.clone()));
+
+            tokio::select! {
+                result = ws_handle => {
+                    if let Err(e) = result {
+                        eprintln!("WebSocket server error: {}", e);
+                    }
+                }
+                result = http_handle => {
+                    if let Err(e) = result {
+                        eprintln!("HTTP server error: {}", e);
+                    }
+                }
+            }
         }
     }
     Ok(())
