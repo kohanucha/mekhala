@@ -1,5 +1,5 @@
-mod config;
-mod whitelist;
+mod conf;
+mod db;
 mod cli;
 mod nips;
 
@@ -20,8 +20,8 @@ async fn main() -> Result<(), String> {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
-            let config = config::Config::from_env();
-            match whitelist::open_whitelist_store(&config.data_dir) {
+            let config = conf::Config::from_env();
+            match db::open_whitelist_store(&config.data_dir) {
                 Ok(store) => {
                     let store = Arc::new(store);
                     let result = handle_add(store, &pubkey).await?;
@@ -38,8 +38,8 @@ async fn main() -> Result<(), String> {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
-            let config = config::Config::from_env();
-            match whitelist::open_whitelist_store(&config.data_dir) {
+            let config = conf::Config::from_env();
+            match db::open_whitelist_store(&config.data_dir) {
                 Ok(store) => {
                     let store = Arc::new(store);
                     let result = handle_remove(store, &pubkey).await?;
@@ -52,8 +52,8 @@ async fn main() -> Result<(), String> {
             }
         }
         Commands::List => {
-            let config = config::Config::from_env();
-            match whitelist::open_whitelist_store(&config.data_dir) {
+            let config = conf::Config::from_env();
+            match db::open_whitelist_store(&config.data_dir) {
                 Ok(store) => {
                     let store = Arc::new(store);
                     let result = handle_list(store).await?;
@@ -66,14 +66,14 @@ async fn main() -> Result<(), String> {
             }
         }
         Commands::Run { port } => {
-            let config = config::Config::from_env();
+            let config = conf::Config::from_env();
             let final_port = port.unwrap_or(config.relay_port);
-            let run_config = config::Config {
+            let run_config = conf::Config {
                 relay_port: final_port,
                 ..config
             };
 
-            let whitelist_store = whitelist::open_whitelist_store(&run_config.data_dir)
+            let whitelist_store = db::open_whitelist_store(&run_config.data_dir)
                 .expect("Failed to open whitelist store");
             let whitelist = Arc::new(whitelist_store);
 

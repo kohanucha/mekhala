@@ -6,8 +6,8 @@ use tokio_tungstenite::tungstenite::Message;
 use log::warn;
 use std::collections::HashMap;
 
-use crate::config::Config;
-use crate::whitelist::WhitelistStore;
+use crate::conf::Config;
+use crate::db::WhitelistStore;
 
 type WsSink = futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>;
 type ClientMap = Arc<Mutex<HashMap<String, Arc<Mutex<WsSink>>>>>;

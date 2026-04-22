@@ -4,7 +4,7 @@ use tokio::net::TcpListener;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use log::{info, error};
 
-use crate::config::Config;
+use crate::conf::Config;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RelayInfo {
