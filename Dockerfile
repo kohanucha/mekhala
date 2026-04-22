@@ -1,27 +1,33 @@
-FROM rust:alpine AS builder
+# Builder stage
+FROM rust:1.81-alpine AS builder
 
-WORKDIR /build
+# Install build dependencies
+RUN apk add --no-cache musl-dev perl make gcc
 
-RUN apk add --no-cache musl-dev gcc
+WORKDIR /usr/src/nwc-relay
+COPY . .
 
-COPY Cargo.toml ./
-COPY src ./src
+# Build for release
 RUN cargo build --release
 
+# Runtime stage
 FROM alpine:latest
 
-RUN apk add --no-cache openssl
+# Install runtime dependencies (if any)
+RUN apk add --no-cache libgcc
 
-WORKDIR /app
-
-COPY --from=builder /build/target/release/nwc-relay /app/nwc-relay
-COPY .env.example /app/.env.example
-
+# Create data directory
 RUN mkdir -p /data
 
-EXPOSE 7777 7778
+# Copy binary from builder
+COPY --from=builder /usr/src/nwc-relay/target/release/nwc-relay /usr/local/bin/nwc-relay
 
-VOLUME ["/data"]
+# Expose port
+EXPOSE 7777
 
-ENTRYPOINT ["/app/nwc-relay"]
+# Set data directory environment variable
+ENV DATA_DIR=/data
+ENV RELAY_PORT=7777
+
+ENTRYPOINT ["nwc-relay"]
 CMD ["run"]

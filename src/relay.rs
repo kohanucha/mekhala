@@ -1,14 +1,23 @@
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
+use std::collections::HashMap;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 use log::{info, warn, error};
+use nostr::{Event, Filter, JsonUtil};
 
 use crate::config::Config;
 use crate::whitelist::WhitelistStore;
 
-type ClientMap = Arc<Mutex<std::collections::HashMap<String, Arc<Mutex<futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>, Message>>>>>>;
+type WsSink = futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>, Message>;
+
+struct ClientState {
+    sink: Arc<Mutex<WsSink>>,
+    subscriptions: HashMap<String, Vec<Filter>>,
+}
+
+type ClientMap = Arc<Mutex<HashMap<String, ClientState>>>;
 
 pub async fn run_server(config: Config, whitelist: Arc<WhitelistStore>) -> Result<(), String> {
     let addr = format!("0.0.0.0:{}", config.relay_port);
@@ -18,7 +27,7 @@ pub async fn run_server(config: Config, whitelist: Arc<WhitelistStore>) -> Resul
 
     info!("Relay listening on {}", addr);
 
-    let client_map: ClientMap = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let client_map: ClientMap = Arc::new(Mutex::new(HashMap::new()));
 
     loop {
         match listener.accept().await {
@@ -57,7 +66,10 @@ async fn handle_connection(
 
     {
         let mut clients = client_map.lock().await;
-        clients.insert(client_id.clone(), write.clone());
+        clients.insert(client_id.clone(), ClientState {
+            sink: write.clone(),
+            subscriptions: HashMap::new(),
+        });
     }
 
     while let Some(msg_result) = read.next().await {
@@ -65,6 +77,8 @@ async fn handle_connection(
             Ok(Message::Text(text)) => {
                 if let Err(e) = handle_message(&text, &client_id, &whitelist, &client_map).await {
                     warn!("Message handling error for {}: {}", peer_addr, e);
+                    // For security reasons, if an unauthorized user connects or sends bad data, we might want to drop them.
+                    // The specification says "Disconnect immediately if a non-whitelisted pubkey is requested."
                     break;
                 }
             }
@@ -95,96 +109,109 @@ async fn handle_message(
     whitelist: &Arc<WhitelistStore>,
     client_map: &ClientMap,
 ) -> Result<(), String> {
-    let msg: Vec<String> = serde_json::from_str(text)
+    let msg: Vec<serde_json::Value> = serde_json::from_str(text)
         .map_err(|e| format!("Invalid JSON: {}", e))?;
 
     if msg.is_empty() {
         return Err("Empty message".to_string());
     }
 
-    match msg[0].as_str() {
+    let msg_type = msg[0].as_str().ok_or("Message type must be a string")?;
+
+    match msg_type {
         "EVENT" => {
             if msg.len() < 2 {
                 return Err("EVENT requires event data".to_string());
             }
-            handle_event(&msg[1], client_id, whitelist, client_map).await
+            handle_event(msg[1].clone(), client_id, whitelist, client_map).await
         }
         "REQ" => {
             if msg.len() < 3 {
                 return Err("REQ requires subscription_id and filters".to_string());
             }
-            let sub_id = msg[1].clone();
-            handle_req(&msg[2..], &sub_id, client_id, whitelist, client_map).await
+            let sub_id = msg[1].as_str().ok_or("Subscription ID must be a string")?.to_string();
+            let filters: Vec<Filter> = msg[2..].iter()
+                .filter_map(|f| Filter::from_json(f.to_string()).ok())
+                .collect();
+            handle_req(filters, &sub_id, client_id, whitelist, client_map).await
         }
         "CLOSE" => {
             if msg.len() < 2 {
                 return Err("CLOSE requires subscription_id".to_string());
             }
-            handle_close(&msg[1], client_id, client_map).await
+            let sub_id = msg[1].as_str().ok_or("Subscription ID must be a string")?;
+            handle_close(sub_id, client_id, client_map).await
         }
-        _ => Err("Unknown message type".to_string()),
+        _ => Err(format!("Unknown message type: {}", msg_type)),
     }
 }
 
 async fn handle_event(
-    event_json: &str,
+    event_val: serde_json::Value,
     client_id: &str,
     whitelist: &Arc<WhitelistStore>,
     client_map: &ClientMap,
 ) -> Result<(), String> {
-    let event: serde_json::Value = serde_json::from_str(event_json)
-        .map_err(|e| format!("Invalid event JSON: {}", e))?;
+    let event = Event::from_json(event_val.to_string())
+        .map_err(|e| format!("Invalid event: {}", e))?;
 
-    let pubkey = event["pubkey"]
-        .as_str()
-        .ok_or("Missing pubkey")?;
+    // Mandatory signature verification
+    event.verify().map_err(|e| format!("Invalid signature: {}", e))?;
 
-    if !whitelist.contains(pubkey).await? {
-        send_ok(client_map, client_id, &event["id"].as_str().unwrap_or(""), false, "restricted: not authorized").await?;
-        return Err("Not whitelisted".to_string());
+    let pubkey = event.pubkey.to_string();
+
+    // Whitelist check
+    if !whitelist.contains(&pubkey).await? {
+        send_ok(client_map, client_id, &event.id.to_string(), false, "restricted: not authorized").await?;
+        return Err(format!("Pubkey {} not whitelisted", pubkey));
     }
 
-    send_ok(client_map, client_id, &event["id"].as_str().unwrap_or(""), true, "").await?;
+    send_ok(client_map, client_id, &event.id.to_string(), true, "").await?;
 
-    let kind = event["kind"].as_i64().unwrap_or(0);
+    // Only bridge NWC kinds (and optionally others, but spec says bridging Kinds 23194, 23195)
+    let kind = event.kind.as_u16();
     if kind == 23194 || kind == 23195 || kind == 23197 {
-        broadcast_to_matching_clients(client_map, client_id, event_json).await?;
+        broadcast_to_matching_clients(client_map, client_id, &event).await?;
     }
 
     Ok(())
 }
 
 async fn handle_req(
-    filters: &[String],
+    filters: Vec<Filter>,
     sub_id: &str,
     client_id: &str,
     whitelist: &Arc<WhitelistStore>,
     client_map: &ClientMap,
 ) -> Result<(), String> {
-    for filter in filters {
-        let filter_obj: serde_json::Value = serde_json::from_str(filter)
-            .map_err(|e| format!("Invalid filter JSON: {}", e))?;
-
-        if let Some(authors) = filter_obj.get("authors").and_then(|v| v.as_array()) {
+    // Security check: ensure authors/p tags only contain whitelisted pubkeys
+    for filter in &filters {
+        // Check authors
+        if let Some(authors) = &filter.authors {
             for author in authors {
-                if let Some(pubkey) = author.as_str() {
-                    if !whitelist.contains(pubkey).await? {
-                        let _ = send_closed(client_map, client_id, sub_id, "restricted: not authorized").await;
-                        return Err("Not whitelisted".to_string());
-                    }
+                if !whitelist.contains(&author.to_string()).await? {
+                    let _ = send_closed(client_map, client_id, sub_id, "restricted: not authorized").await;
+                    return Err(format!("Filter author {} not whitelisted", author));
                 }
             }
         }
 
-        if let Some(p_tags) = filter_obj.get("#p").and_then(|v| v.as_array()) {
+        // Check #p tags
+        if let Some(p_tags) = filter.generic_tags.get(&nostr::SingleLetterTag::from_char('p').unwrap()) {
             for p_tag in p_tags {
-                if let Some(pubkey) = p_tag.as_str() {
-                    if !whitelist.contains(pubkey).await? {
-                        let _ = send_closed(client_map, client_id, sub_id, "restricted: not authorized").await;
-                        return Err("Not whitelisted".to_string());
-                    }
+                let pubkey = p_tag.to_string();
+                if !whitelist.contains(&pubkey).await? {
+                    let _ = send_closed(client_map, client_id, sub_id, "restricted: not authorized").await;
+                    return Err(format!("Filter #p tag {} not whitelisted", pubkey));
                 }
             }
+        }
+    }
+
+    {
+        let mut clients = client_map.lock().await;
+        if let Some(client) = clients.get_mut(client_id) {
+            client.subscriptions.insert(sub_id.to_string(), filters);
         }
     }
 
@@ -197,6 +224,12 @@ async fn handle_close(
     client_id: &str,
     client_map: &ClientMap,
 ) -> Result<(), String> {
+    {
+        let mut clients = client_map.lock().await;
+        if let Some(client) = clients.get_mut(client_id) {
+            client.subscriptions.remove(sub_id);
+        }
+    }
     let _ = send_closed(client_map, client_id, sub_id, "unsubscribed").await;
     Ok(())
 }
@@ -234,15 +267,28 @@ async fn send_closed(
 async fn broadcast_to_matching_clients(
     client_map: &ClientMap,
     sender_id: &str,
-    event_json: &str,
+    event: &Event,
 ) -> Result<(), String> {
     let clients = client_map.lock().await;
-    for (client_id, _) in clients.iter() {
-        if *client_id != sender_id {
-            let msg = Message::Text(event_json.to_string());
-            if let Some(write) = clients.get(client_id) {
-                let mut write = write.lock().await;
-                if let Err(e) = write.send(msg).await {
+
+    for (client_id, client_state) in clients.iter() {
+        if client_id == sender_id {
+            continue;
+        }
+
+        for (sub_id, filters) in &client_state.subscriptions {
+            let mut matches = false;
+            for filter in filters {
+                if filter.match_event(event, nostr::filter::MatchEventOptions::default()) {
+                    matches = true;
+                    break;
+                }
+            }
+
+            if matches {
+                let msg_to_send = serde_json::json!(["EVENT", sub_id, event]).to_string();
+                let mut sink = client_state.sink.lock().await;
+                if let Err(e) = sink.send(Message::Text(msg_to_send)).await {
                     warn!("Failed to send to {}: {}", client_id, e);
                 }
             }
@@ -257,9 +303,9 @@ async fn send_to_client(
     message: &str,
 ) -> Result<(), String> {
     let clients = client_map.lock().await;
-    if let Some(write) = clients.get(client_id) {
-        let mut write = write.lock().await;
-        write.send(Message::Text(message.to_string())).await
+    if let Some(client_state) = clients.get(client_id) {
+        let mut sink = client_state.sink.lock().await;
+        sink.send(Message::Text(message.to_string())).await
             .map_err(|e| format!("Send error: {}", e))?;
     }
     Ok(())
