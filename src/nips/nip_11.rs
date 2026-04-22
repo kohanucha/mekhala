@@ -1,12 +1,12 @@
 use std::net::SocketAddr;
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use tokio::net::TcpListener;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use log::{info, error};
 
 use crate::conf::Config;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelayInfo {
     pub name: String,
     pub description: String,
