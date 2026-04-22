@@ -1,7 +1,9 @@
 mod config;
 mod whitelist;
+mod relay;
 
 use clap::{Parser, Subcommand};
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "nwc-relay")]
@@ -38,7 +40,8 @@ pub fn validate_pubkey(pubkey: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn main() {
+#[tokio::main]
+async fn main() -> Result<(), String> {
     env_logger::init();
     dotenvy::dotenv().ok();
 
@@ -53,9 +56,8 @@ fn main() {
             let config = config::Config::from_env();
             match whitelist::open_whitelist_store(&config.data_dir) {
                 Ok(store) => {
-                    let store = std::sync::Arc::new(store);
-                    let runtime = tokio::runtime::Runtime::new().unwrap();
-                    let was_present = runtime.block_on(store.add(&pubkey)).unwrap();
+                    let store = Arc::new(store);
+                    let was_present = store.add(&pubkey).await?;
                     if was_present {
                         println!("Pubkey already exists: {}", pubkey);
                     } else {
@@ -76,9 +78,8 @@ fn main() {
             let config = config::Config::from_env();
             match whitelist::open_whitelist_store(&config.data_dir) {
                 Ok(store) => {
-                    let store = std::sync::Arc::new(store);
-                    let runtime = tokio::runtime::Runtime::new().unwrap();
-                    let was_present = runtime.block_on(store.remove(&pubkey)).unwrap();
+                    let store = Arc::new(store);
+                    let was_present = store.remove(&pubkey).await?;
                     if was_present {
                         println!("Removed pubkey: {}", pubkey);
                     } else {
@@ -95,9 +96,8 @@ fn main() {
             let config = config::Config::from_env();
             match whitelist::open_whitelist_store(&config.data_dir) {
                 Ok(store) => {
-                    let store = std::sync::Arc::new(store);
-                    let runtime = tokio::runtime::Runtime::new().unwrap();
-                    let pubkeys = runtime.block_on(store.list()).unwrap();
+                    let store = Arc::new(store);
+                    let pubkeys = store.list().await?;
                     if pubkeys.is_empty() {
                         println!("No whitelisted pubkeys");
                     } else {
@@ -115,8 +115,20 @@ fn main() {
         Commands::Run { port } => {
             let config = config::Config::from_env();
             let final_port = port.unwrap_or(config.relay_port);
+            let run_config = config::Config {
+                relay_port: final_port,
+                ..config
+            };
+
             println!("Starting relay on port {}...", final_port);
-            println!("Data directory: {:?}", config.data_dir);
+            println!("Data directory: {:?}", run_config.data_dir);
+
+            let whitelist_store = whitelist::open_whitelist_store(&run_config.data_dir)
+                .expect("Failed to open whitelist store");
+            let whitelist = Arc::new(whitelist_store);
+
+            relay::run_server(run_config, whitelist).await?;
         }
     }
+    Ok(())
 }
