@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::config::Config;
 use crate::whitelist::WhitelistStore;
-use crate::relay;
+use crate::nips;
 
 #[derive(Parser)]
 #[command(name = "nwc-relay")]
@@ -72,8 +72,8 @@ pub async fn handle_run(config: Config, whitelist: Arc<WhitelistStore>) {
     println!("Starting HTTP relay on port {}...", config.http_port);
     println!("Data directory: {:?}", config.data_dir);
 
-    let ws_handle = tokio::spawn(relay::run_server(config.clone(), whitelist.clone()));
-    let http_handle = tokio::spawn(crate::http::run_http_server(config.clone()));
+    let ws_handle = tokio::spawn(nips::run_ws_server(config.clone(), whitelist.clone()));
+    let http_handle = tokio::spawn(nips::run_http_server(config.clone()));
 
     tokio::select! {
         result = ws_handle => {

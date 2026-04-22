@@ -1,9 +1,7 @@
 mod config;
 mod whitelist;
-mod relay;
-mod http;
-mod relay_info;
 mod cli;
+mod nips;
 
 use std::sync::Arc;
 use clap::Parser;

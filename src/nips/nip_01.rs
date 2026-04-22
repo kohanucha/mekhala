@@ -19,7 +19,7 @@ struct ClientState {
 
 type ClientMap = Arc<Mutex<HashMap<String, ClientState>>>;
 
-pub async fn run_server(config: Config, whitelist: Arc<WhitelistStore>) -> Result<(), String> {
+pub async fn run_ws_server(config: Config, whitelist: Arc<WhitelistStore>) -> Result<(), String> {
     let addr = format!("0.0.0.0:{}", config.relay_port);
     let listener = TcpListener::bind(&addr)
         .await
