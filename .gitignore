@@ -4,3 +4,12 @@ Cargo.lock
 .env
 .DS_Store
 *.pdb
+
+# Node.js
+node_modules/
+package-lock.json
+.wrangler/
+
+# Build
+/build/
+/target/
