@@ -1,0 +1,18 @@
+name = "nwc-worker"
+main = "build/worker/shim.mjs"
+compatibility_date = "2024-04-03"
+
+[vars]
+# Add any environment variables here
+
+[[durable_objects.bindings]]
+name = "NWC_RELAY"
+class_name = "NwcRelay"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["NwcRelay"]
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+watch_dir = "src"

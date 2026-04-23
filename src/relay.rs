@@ -1,405 +1,301 @@
-use futures_util::{SinkExt, StreamExt};
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::collections::HashMap;
-use tokio::net::TcpListener;
-use tokio::sync::Mutex;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio_tungstenite::tungstenite::Message;
-use log::{info, warn, error};
-use nostr::{Event, Filter, JsonUtil};
-use serde::{Serialize, Deserialize};
+use k256::schnorr::Signature;
+use k256::schnorr::VerifyingKey;
+use k256::schnorr::signature::hazmat::PrehashVerifier;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-use crate::config::Config;
-use crate::whitelist::WsSink;
-use crate::whitelist::WhitelistStore;
-
-pub struct ClientState {
-    pub sink: Arc<Mutex<WsSink>>,
-    pub subscriptions: HashMap<String, Vec<Filter>>,
-}
-
-pub type ClientMap = Arc<Mutex<HashMap<String, ClientState>>>;
-
-pub async fn run_relay(config: Config, whitelist: Arc<WhitelistStore>) -> Result<(), String> {
-    let addr = format!("0.0.0.0:{}", config.relay_port);
-    let listener = TcpListener::bind(&addr)
-        .await
-        .map_err(|e| format!("Failed to bind: {}", e))?;
-
-    info!("NWC Relay listening on {}", addr);
-
-    let client_map: ClientMap = Arc::new(Mutex::new(HashMap::new()));
-
-    loop {
-        match listener.accept().await {
-            Ok((stream, peer_addr)) => {
-                let whitelist = whitelist.clone();
-                let client_map = client_map.clone();
-
-                tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, peer_addr, whitelist, client_map).await {
-                        warn!("Connection error: {}", e);
-                    }
-                });
-            }
-            Err(e) => {
-                error!("Failed to accept connection: {}", e);
-            }
-        }
-    }
-}
-
-async fn handle_connection(
-    stream: tokio::net::TcpStream,
-    peer_addr: std::net::SocketAddr,
-    whitelist: Arc<WhitelistStore>,
-    client_map: ClientMap,
-) -> Result<(), String> {
-    let ws_stream = tokio_tungstenite::accept_async(stream)
-        .await
-        .map_err(|e| format!("WebSocket handshake failed: {}", e))?;
-
-    info!("New connection from: {}", peer_addr);
-
-    let (write, mut read) = ws_stream.split();
-    let client_id = format!("{}", peer_addr);
-    let write = Arc::new(Mutex::new(write));
-
-    {
-        let mut clients = client_map.lock().await;
-        clients.insert(client_id.clone(), ClientState {
-            sink: write.clone(),
-            subscriptions: HashMap::new(),
-        });
-    }
-
-    while let Some(msg_result) = read.next().await {
-        match msg_result {
-            Ok(Message::Text(text)) => {
-                if let Err(e) = handle_message(&text, &client_id, &whitelist, &client_map).await {
-                    warn!("Message handling error for {}: {}", peer_addr, e);
-                    break;
-                }
-            }
-            Ok(Message::Close(_)) => {
-                info!("Client {} disconnected", peer_addr);
-                break;
-            }
-            Err(e) => {
-                warn!("Read error from {}: {}", peer_addr, e);
-                break;
-            }
-            _ => {}
-        }
-    }
-
-    {
-        let mut clients = client_map.lock().await;
-        clients.remove(&client_id);
-    }
-
-    info!("Connection closed: {}", peer_addr);
-    Ok(())
-}
-
-async fn handle_message(
-    text: &str,
-    client_id: &str,
-    whitelist: &Arc<WhitelistStore>,
-    client_map: &ClientMap,
-) -> Result<(), String> {
-    let msg: Vec<serde_json::Value> = serde_json::from_str(text)
-        .map_err(|e| format!("Invalid JSON: {}", e))?;
-
-    if msg.is_empty() {
-        return Err("Empty message".to_string());
-    }
-
-    let msg_type = msg[0].as_str().ok_or("Message type must be a string")?;
-
-    match msg_type {
-        "EVENT" => {
-            if msg.len() < 2 {
-                return Err("EVENT requires event data".to_string());
-            }
-            handle_event(msg[1].clone(), client_id, whitelist, client_map).await
-        }
-        "REQ" => {
-            if msg.len() < 3 {
-                return Err("REQ requires subscription_id and filters".to_string());
-            }
-            let sub_id = msg[1].as_str().ok_or("Subscription ID must be a string")?.to_string();
-            let filters: Vec<Filter> = msg[2..].iter()
-                .filter_map(|f| Filter::from_json(f.to_string()).ok())
-                .collect();
-            handle_req(filters, &sub_id, client_id, whitelist, client_map).await
-        }
-        "CLOSE" => {
-            if msg.len() < 2 {
-                return Err("CLOSE requires subscription_id".to_string());
-            }
-            let sub_id = msg[1].as_str().ok_or("Subscription ID must be a string")?;
-            handle_close(sub_id, client_id, client_map).await
-        }
-        _ => Err(format!("Unknown message type: {}", msg_type)),
-    }
-}
-
-async fn handle_event(
-    event_val: serde_json::Value,
-    client_id: &str,
-    whitelist: &Arc<WhitelistStore>,
-    client_map: &ClientMap,
-) -> Result<(), String> {
-    let event = Event::from_json(event_val.to_string())
-        .map_err(|e| format!("Invalid event: {}", e))?;
-
-    event.verify().map_err(|e| format!("Invalid signature: {}", e))?;
-
-    let pubkey = event.pubkey.to_string();
-
-    if !whitelist.contains(&pubkey).await? {
-        send_ok(client_map, client_id, &event.id.to_string(), false, "restricted: not authorized").await?;
-        return Err(format!("Pubkey {} not whitelisted", pubkey));
-    }
-
-    send_ok(client_map, client_id, &event.id.to_string(), true, "").await?;
-
-    let kind = event.kind.as_u16();
-
-    if kind == 23194 || kind == 23195 || kind == 23197 {
-        broadcast_nwc_message(client_map, client_id, &event).await?;
-    } else if kind == 0 || kind == 1 || kind == 3 || kind == 4 {
-        broadcast_to_matching_clients(client_map, client_id, &event).await?;
-    }
-
-    Ok(())
-}
-
-async fn handle_req(
-    filters: Vec<Filter>,
-    sub_id: &str,
-    client_id: &str,
-    whitelist: &Arc<WhitelistStore>,
-    client_map: &ClientMap,
-) -> Result<(), String> {
-    for filter in &filters {
-        if let Some(authors) = &filter.authors {
-            for author in authors {
-                if !whitelist.contains(&author.to_string()).await? {
-                    let _ = send_closed(client_map, client_id, sub_id, "restricted: not authorized").await;
-                    return Err(format!("Filter author {} not whitelisted", author));
-                }
-            }
-        }
-
-        if let Some(p_tags) = filter.generic_tags.get(&nostr::SingleLetterTag::from_char('p').unwrap()) {
-            for p_tag in p_tags {
-                let pubkey = p_tag.to_string();
-                if !whitelist.contains(&pubkey).await? {
-                    let _ = send_closed(client_map, client_id, sub_id, "restricted: not authorized").await;
-                    return Err(format!("Filter #p tag {} not whitelisted", pubkey));
-                }
-            }
-        }
-    }
-
-    {
-        let mut clients = client_map.lock().await;
-        if let Some(client) = clients.get_mut(client_id) {
-            client.subscriptions.insert(sub_id.to_string(), filters);
-        }
-    }
-
-    let _ = send_eose(client_map, client_id, sub_id).await;
-    Ok(())
-}
-
-async fn handle_close(
-    sub_id: &str,
-    client_id: &str,
-    client_map: &ClientMap,
-) -> Result<(), String> {
-    {
-        let mut clients = client_map.lock().await;
-        if let Some(client) = clients.get_mut(client_id) {
-            client.subscriptions.remove(sub_id);
-        }
-    }
-    let _ = send_closed(client_map, client_id, sub_id, "unsubscribed").await;
-    Ok(())
-}
-
-async fn send_ok(
-    client_map: &ClientMap,
-    client_id: &str,
-    event_id: &str,
-    ok: bool,
-    message: &str,
-) -> Result<(), String> {
-    let response = serde_json::json!(["OK", event_id, ok, message]);
-    send_to_client(client_map, client_id, &response.to_string()).await
-}
-
-async fn send_eose(
-    client_map: &ClientMap,
-    client_id: &str,
-    sub_id: &str,
-) -> Result<(), String> {
-    let response = serde_json::json!(["EOSE", sub_id]);
-    send_to_client(client_map, client_id, &response.to_string()).await
-}
-
-async fn send_closed(
-    client_map: &ClientMap,
-    client_id: &str,
-    sub_id: &str,
-    message: &str,
-) -> Result<(), String> {
-    let response = serde_json::json!(["CLOSED", sub_id, message]);
-    send_to_client(client_map, client_id, &response.to_string()).await
-}
-
-async fn broadcast_nwc_message(
-    client_map: &ClientMap,
-    sender_id: &str,
-    event: &Event,
-) -> Result<(), String> {
-    let event_json = serde_json::json!(["EVENT", event]).to_string();
-    let clients = client_map.lock().await;
-
-    for (client_id, client_state) in clients.iter() {
-        if *client_id == sender_id {
-            continue;
-        }
-
-        let mut sink = client_state.sink.lock().await;
-        if let Err(e) = sink.send(Message::Text(event_json.clone())).await {
-            warn!("Failed to broadcast NWC to {}: {}", client_id, e);
-        }
-    }
-    Ok(())
-}
-
-async fn broadcast_to_matching_clients(
-    client_map: &ClientMap,
-    sender_id: &str,
-    event: &Event,
-) -> Result<(), String> {
-    let clients = client_map.lock().await;
-
-    for (client_id, client_state) in clients.iter() {
-        if client_id == sender_id {
-            continue;
-        }
-
-        for (sub_id, filters) in &client_state.subscriptions {
-            let mut matches = false;
-            for filter in filters {
-                if filter.match_event(event, nostr::filter::MatchEventOptions::default()) {
-                    matches = true;
-                    break;
-                }
-            }
-
-            if matches {
-                let msg_to_send = serde_json::json!(["EVENT", sub_id, event]).to_string();
-                let mut sink = client_state.sink.lock().await;
-                if let Err(e) = sink.send(Message::Text(msg_to_send)).await {
-                    warn!("Failed to send to {}: {}", client_id, e);
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn send_to_client(
-    client_map: &ClientMap,
-    client_id: &str,
-    message: &str,
-) -> Result<(), String> {
-    let clients = client_map.lock().await;
-    if let Some(client_state) = clients.get(client_id) {
-        let mut sink = client_state.sink.lock().await;
-        sink.send(Message::Text(message.to_string())).await
-            .map_err(|e| format!("Send error: {}", e))?;
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RelayInfo {
-    pub name: String,
-    pub description: String,
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Event {
+    pub id: String,
     pub pubkey: String,
-    pub contact: String,
-    pub supported_nips: Vec<u32>,
-    pub software: String,
-    pub version: String,
+    pub created_at: u64,
+    pub kind: u64,
+    pub tags: Vec<Vec<String>>,
+    pub content: String,
+    pub sig: String,
 }
 
-impl RelayInfo {
-    pub fn from_config(config: &crate::config::Config) -> Self {
-        Self {
-            name: config.relay_name.clone(),
-            description: config.relay_description.clone(),
-            pubkey: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-            contact: String::new(),
-            supported_nips: vec![1, 11, 47],
-            software: "https://github.com/rust-nwc/nwc-relay".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
+impl Event {
+    pub fn verify(&self) -> bool {
+        // 1. Verify Allowed Kinds (NIP-01, NIP-47)
+        let allowed_kinds = [0, 1, 13194, 23194, 23195, 23197];
+        if !allowed_kinds.contains(&self.kind) {
+            return false;
         }
-    }
 
-    pub fn to_json(&self) -> String {
-        serde_json::to_string(self).unwrap_or_default()
+        // 2. Verify NIP-47 constraints (p-tag enforcement)
+        if self.kind == 23194 || self.kind == 23195 || self.kind == 23197 {
+            let has_p_tag = self.tags.iter().any(|t| t.len() >= 2 && t[0] == "p");
+            if !has_p_tag {
+                return false;
+            }
+        }
+
+        // 3. Verify ID (NIP-01)
+        let serialized = match serde_json::to_string(&serde_json::json!([
+            0,
+            self.pubkey,
+            self.created_at,
+            self.kind,
+            self.tags,
+            self.content
+        ])) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+
+        let mut hasher = Sha256::new();
+        hasher.update(serialized.as_bytes());
+        let id_bytes = hasher.finalize();
+        let id_hex = hex::encode(id_bytes);
+
+        if id_hex != self.id {
+            return false;
+        }
+
+        // 4. Verify Signature (NIP-01)
+        let pubkey_bytes = match hex::decode(&self.pubkey) {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+
+        let sig_bytes = match hex::decode(&self.sig) {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+
+        let verifying_key = match VerifyingKey::from_bytes(&pubkey_bytes) {
+            Ok(k) => k,
+            Err(_) => return false,
+        };
+
+        let signature = match Signature::try_from(sig_bytes.as_slice()) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+
+        verifying_key.verify_prehash(&id_bytes, &signature).is_ok()
     }
 }
 
-pub async fn run_http_server(config: crate::config::Config) -> Result<(), String> {
-    let addr: SocketAddr = format!("0.0.0.0:{}", config.http_port)
-        .parse()
-        .map_err(|e| format!("Invalid address: {}", e))?;
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Filter {
+    pub ids: Option<Vec<String>>,
+    pub authors: Option<Vec<String>>,
+    pub kinds: Option<Vec<u64>>,
+    #[serde(rename = "#p")]
+    pub p_tags: Option<Vec<String>>,
+    pub since: Option<u64>,
+    pub until: Option<u64>,
+    pub limit: Option<usize>,
+}
 
-    let listener = TcpListener::bind(addr).await
-        .map_err(|e| format!("Failed to bind HTTP: {}", e))?;
+impl Filter {
+    pub fn matches(&self, event: &Event) -> bool {
+        if let Some(ids) = &self.ids {
+            if !ids.contains(&event.id) {
+                return false;
+            }
+        }
+        if let Some(authors) = &self.authors {
+            if !authors.contains(&event.pubkey) {
+                return false;
+            }
+        }
+        if let Some(kinds) = &self.kinds {
+            if !kinds.contains(&event.kind) {
+                return false;
+            }
+        }
+        if let Some(p_tags) = &self.p_tags {
+            let event_p_tags: Vec<String> = event
+                .tags
+                .iter()
+                .filter(|t| t.len() >= 2 && t[0] == "p")
+                .map(|t| t[1].clone())
+                .collect();
+            if !p_tags.iter().any(|p| event_p_tags.contains(p)) {
+                return false;
+            }
+        }
+        if let Some(since) = self.since {
+            if event.created_at < since {
+                return false;
+            }
+        }
+        if let Some(until) = self.until {
+            if event.created_at > until {
+                return false;
+            }
+        }
+        true
+    }
+}
 
-    info!("HTTP server listening on {}", addr);
+#[derive(Debug)]
+pub enum ClientMessage {
+    Event(Event),
+    Req(String, Vec<Filter>),
+    Close(String),
+}
 
-    loop {
-        match listener.accept().await {
-            Ok((mut stream, _)) => {
-                let mut buf = [0u8; 2048];
-                if let Ok(n) = stream.read(&mut buf).await {
-                    let request = String::from_utf8_lossy(&buf[..n]);
-                    if request.contains("Accept: application/nostr+json") || request.contains("Accept:application/nostr+json") {
-                        let relay_info = RelayInfo::from_config(&config);
-                        let json = relay_info.to_json();
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\n\
-                            Content-Type: application/nostr+json\r\n\
-                            Access-Control-Allow-Origin: *\r\n\
-                            Access-Control-Allow-Headers: Content-Type\r\n\
-                            Access-Control-Allow-Methods: GET, OPTIONS\r\n\
-                            Content-Length: {}\r\n\r\n{}",
-                            json.len(),
-                            json
-                        );
-                        let _ = stream.write_all(response.as_bytes()).await;
-                    } else if request.starts_with("GET / HTTP") {
-                        let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nHello";
-                        let _ = stream.write_all(response.as_bytes()).await;
-                    } else {
-                        let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
-                        let _ = stream.write_all(response.as_bytes()).await;
-                    }
+impl ClientMessage {
+    pub fn from_json(text: &str) -> Option<Self> {
+        let arr: Vec<serde_json::Value> = serde_json::from_str(text).ok()?;
+        if arr.is_empty() { return None; }
+        
+        match arr[0].as_str()? {
+            "EVENT" => {
+                if arr.len() < 2 { return None; }
+                let event: Event = serde_json::from_value(arr[1].clone()).ok()?;
+                Some(ClientMessage::Event(event))
+            }
+            "REQ" => {
+                if arr.len() < 3 { return None; }
+                let sub_id = arr[1].as_str()?.to_string();
+                let mut filters = Vec::new();
+                for i in 2..arr.len() {
+                    let filter: Filter = serde_json::from_value(arr[i].clone()).ok()?;
+                    filters.push(filter);
                 }
+                Some(ClientMessage::Req(sub_id, filters))
             }
-            Err(e) => {
-                error!("HTTP accept error: {}", e);
+            "CLOSE" => {
+                if arr.len() < 2 { return None; }
+                let sub_id = arr[1].as_str()?.to_string();
+                Some(ClientMessage::Close(sub_id))
+            }
+            _ => None
+        }
+    }
+}
+
+pub enum RelayMessage {
+    Ok(String, bool, String),
+    Event(String, Event),
+    Eose(String),
+    Notice(String),
+}
+
+impl RelayMessage {
+    pub fn to_json(&self) -> String {
+        match self {
+            RelayMessage::Ok(id, ok, msg) => {
+                serde_json::json!(["OK", id, ok, msg]).to_string()
+            }
+            RelayMessage::Event(sub_id, event) => {
+                serde_json::json!(["EVENT", sub_id, event]).to_string()
+            }
+            RelayMessage::Eose(sub_id) => {
+                serde_json::json!(["EOSE", sub_id]).to_string()
+            }
+            RelayMessage::Notice(msg) => {
+                serde_json::json!(["NOTICE", msg]).to_string()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use k256::schnorr::SigningKey;
+    use k256::schnorr::signature::hazmat::PrehashSigner;
+
+    #[test]
+    fn test_event_verification() {
+        // Use a fixed private key for testing
+        let priv_key_hex = "0101010101010101010101010101010101010101010101010101010101010101";
+        let priv_key_bytes = hex::decode(priv_key_hex).unwrap();
+        let signing_key = SigningKey::from_bytes(&priv_key_bytes).unwrap();
+        let verifying_key = signing_key.verifying_key();
+        let pubkey = hex::encode(verifying_key.to_bytes());
+
+        let created_at = 1712160000;
+        let kind = 1;
+        let tags: Vec<Vec<String>> = vec![];
+        let content = "Hello, world!".into();
+
+        let serialized = serde_json::json!([
+            0,
+            pubkey,
+            created_at,
+            kind,
+            tags,
+            content
+        ]).to_string();
+
+        let mut hasher = Sha256::new();
+        hasher.update(serialized.as_bytes());
+        let id_bytes = hasher.finalize();
+        let id = hex::encode(id_bytes);
+
+        let signature = signing_key.sign_prehash(&id_bytes).unwrap();
+        let sig = hex::encode(signature.to_bytes());
+
+        let event = Event {
+            id,
+            pubkey,
+            created_at,
+            kind,
+            tags,
+            content,
+            sig,
+        };
+
+        assert!(event.verify());
+    }
+
+    #[test]
+    fn test_nip47_p_tag_enforcement() {
+        let event = Event {
+            id: "1".into(),
+            pubkey: "pub1".into(),
+            created_at: 100,
+            kind: 23194,
+            tags: vec![], // Missing p-tag
+            content: "".into(),
+            sig: "".into(),
+        };
+
+        // Should fail because kind 23194 requires a p-tag
+        assert!(!event.verify());
+    }
+
+    #[test]
+    fn test_filter_matching() {
+        let event = Event {
+            id: "1".into(),
+            pubkey: "pub1".into(),
+            created_at: 100,
+            kind: 23194,
+            tags: vec![vec!["p".into(), "recipient1".into()]],
+            content: "".into(),
+            sig: "".into(),
+        };
+
+        let filter = Filter {
+            ids: None,
+            authors: None,
+            kinds: Some(vec![23194]),
+            p_tags: Some(vec!["recipient1".into()]),
+            since: Some(50),
+            until: Some(150),
+            limit: None,
+        };
+
+        assert!(filter.matches(&event));
+
+        let non_matching_filter = Filter {
+            ids: None,
+            authors: None,
+            kinds: Some(vec![23194]),
+            p_tags: Some(vec!["recipient2".into()]),
+            since: None,
+            until: None,
+            limit: None,
+        };
+
+        assert!(!non_matching_filter.matches(&event));
     }
 }
