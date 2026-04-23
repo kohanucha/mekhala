@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::collections::HashMap;
