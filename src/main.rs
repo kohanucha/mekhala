@@ -1,14 +1,14 @@
+#![allow(dead_code)]
+
 mod cli;
 mod config;
 mod whitelist;
-mod error;
-mod nips;
 mod relay;
 
 use std::sync::Arc;
+use tokio::signal;
 
 use nwc_relay::{Config, open_whitelist_store, run_relay, run_http_server};
-use tokio::signal;
 
 #[tokio::main]
 async fn main() -> Result<(), String> {

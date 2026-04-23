@@ -14,7 +14,7 @@ FROM alpine:latest
 RUN apk add --no-cache libgcc
 RUN mkdir -p /data
 
-COPY --from=builder /usr/src/nwc-relay/target/release/nwc-relay-server /usr/local/bin/nwc-relay-server
+COPY --from=builder /usr/src/nwc-relay/target/release/nwc-relay /usr/local/bin/nwc-relay
 COPY --from=builder /usr/src/nwc-relay/target/release/nwc-relay-cli /usr/local/bin/nwc-relay-cli
 
 EXPOSE 7777 7778
@@ -23,4 +23,4 @@ ENV DATA_DIR=/data
 ENV RELAY_PORT=7777
 ENV HTTP_PORT=7778
 
-ENTRYPOINT ["nwc-relay-server"]
+ENTRYPOINT ["nwc-relay"]

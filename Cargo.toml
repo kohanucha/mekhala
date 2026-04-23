@@ -8,7 +8,7 @@ name = "nwc_relay"
 path = "src/lib.rs"
 
 [[bin]]
-name = "nwc-relay-server"
+name = "nwc-relay"
 path = "src/main.rs"
 
 [[bin]]

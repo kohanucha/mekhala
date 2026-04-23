@@ -1,8 +1,8 @@
+#![allow(dead_code)]
+
 mod cli;
 mod config;
 mod whitelist;
-mod error;
-mod nips;
 
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
