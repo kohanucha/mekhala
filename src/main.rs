@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-mod cli;
 mod config;
 mod whitelist;
 mod relay;
@@ -8,7 +7,7 @@ mod relay;
 use std::sync::Arc;
 use tokio::signal;
 
-use nwc_relay::{Config, open_whitelist_store, run_relay, run_http_server};
+use nwc_relay::{open_whitelist_store, run_http_server, run_relay, Config};
 
 #[tokio::main]
 async fn main() -> Result<(), String> {

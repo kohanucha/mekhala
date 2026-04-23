@@ -1,15 +1,14 @@
 #![allow(dead_code)]
 
-mod cli;
 mod config;
 mod whitelist;
+mod relay;
 
-use clap::{Parser, Subcommand};
 use std::sync::Arc;
+use clap::{Parser, Subcommand};
 
 use crate::config::Config;
-use crate::whitelist::open_whitelist_store;
-use crate::cli::{validate_pubkey, handle_add, handle_remove, handle_list};
+use crate::whitelist::{open_whitelist_store, WhitelistStore};
 
 #[derive(Parser)]
 #[command(name = "nwc-relay-cli")]
@@ -30,6 +29,43 @@ pub enum Commands {
         pubkey: String,
     },
     List,
+}
+
+fn validate_pubkey(pubkey: &str) -> Result<(), String> {
+    if pubkey.len() != 64 {
+        return Err("Pubkey must be 64 hex characters".to_string());
+    }
+    if pubkey.chars().any(|c| !c.is_ascii_hexdigit()) {
+        return Err("Pubkey must be valid hex".to_string());
+    }
+    Ok(())
+}
+
+async fn handle_add(store: Arc<WhitelistStore>, pubkey: &str) -> Result<String, String> {
+    let was_present = store.add(pubkey).await?;
+    if was_present {
+        Ok(format!("Pubkey already exists: {}", pubkey))
+    } else {
+        Ok(format!("Added pubkey: {}", pubkey))
+    }
+}
+
+async fn handle_remove(store: Arc<WhitelistStore>, pubkey: &str) -> Result<String, String> {
+    let was_present = store.remove(pubkey).await?;
+    if was_present {
+        Ok(format!("Removed pubkey: {}", pubkey))
+    } else {
+        Ok(format!("Pubkey not found: {}", pubkey))
+    }
+}
+
+async fn handle_list(store: Arc<WhitelistStore>) -> Result<String, String> {
+    let pubkeys = store.list().await?;
+    if pubkeys.is_empty() {
+        Ok("No whitelisted pubkeys".to_string())
+    } else {
+        Ok(pubkeys.join("\n"))
+    }
 }
 
 #[tokio::main]
