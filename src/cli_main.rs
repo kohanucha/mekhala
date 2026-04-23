@@ -1,14 +1,7 @@
-#![allow(dead_code)]
-
-mod config;
-mod whitelist;
-mod relay;
-
 use std::sync::Arc;
 use clap::{Parser, Subcommand};
 
-use crate::config::Config;
-use crate::whitelist::{open_whitelist_store, WhitelistStore};
+use nwc_relay::{Config, open_whitelist_store, WhitelistStore};
 
 #[derive(Parser)]
 #[command(name = "nwc-relay-cli")]

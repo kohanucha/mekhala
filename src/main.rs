@@ -1,9 +1,3 @@
-#![allow(dead_code)]
-
-mod config;
-mod whitelist;
-mod relay;
-
 use std::sync::Arc;
 use tokio::signal;
 
