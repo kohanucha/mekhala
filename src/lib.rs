@@ -109,8 +109,17 @@ impl DurableObject for NwcRelay {
                     let _ = ws.send_with_str(&RelayMessage::Ok(event.id.clone(), true, "".into()).to_json());
 
                     // NIP-47: Cache Info Event (kind 13194) in Durable Object storage
+                    // Ensure it is a replaceable event (newer created_at wins)
                     if event.kind == 13194 {
-                        let _ = self.state.storage().put(&format!("info_{}", event.pubkey), &event).await;
+                        let key = format!("info_{}", event.pubkey);
+                        let should_put = match self.state.storage().get::<relay::Event>(&key).await {
+                            Ok(Some(existing_event)) => event.created_at >= existing_event.created_at,
+                            _ => true,
+                        };
+                        
+                        if should_put {
+                            let _ = self.state.storage().put(&key, &event).await;
+                        }
                     }
 
                     // Broadcast to ALL connected websockets managed by this Durable Object

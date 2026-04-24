@@ -282,62 +282,70 @@ async function testNwcFlow() {
     });
 }
 
-async function testNip47InfoCaching() {
-    console.log('\n--- Testing NIP-47 Info Event Caching ---');
+async function testNip47InfoReplaceable() {
+    console.log('\n--- Testing NIP-47 Info Event (Replaceable) ---');
     
     const walletSk = generateSecretKey();
     const walletPk = getPublicKey(walletSk);
+    const now = Math.floor(Date.now() / 1000);
 
-    // 1. Wallet connects and publishes Info Event
+    const eventA = finalizeEvent({ kind: 13194, created_at: now, tags: [], content: 'A' }, walletSk);
+    const eventB = finalizeEvent({ kind: 13194, created_at: now + 100, tags: [], content: 'B' }, walletSk); // Newer
+    const eventC = finalizeEvent({ kind: 13194, created_at: now - 100, tags: [], content: 'C' }, walletSk); // Older
+
+    // 1. Wallet connects and publishes A, then B (replaces A), then C (ignored)
     const walletWs = new WebSocket(RELAY_URL);
     await new Promise((resolve, reject) => {
-        walletWs.on('open', () => {
-            const infoEvent = finalizeEvent({
-                kind: 13194,
-                created_at: Math.floor(Date.now() / 1000),
-                tags: [],
-                content: 'cached_methods=pay_invoice'
-            }, walletSk);
-            walletWs.send(JSON.stringify(['EVENT', infoEvent]));
+        walletWs.on('open', async () => {
+            console.log('Wallet publishing Event A...');
+            walletWs.send(JSON.stringify(['EVENT', eventA]));
             
+            let oks = 0;
             walletWs.on('message', (data) => {
                 const msg = JSON.parse(data.toString());
-                if (msg[0] === 'OK' && msg[1] === infoEvent.id && msg[2] === true) {
-                    console.log('Wallet Info Event published and OK received.');
-                    walletWs.close();
-                    resolve();
+                if (msg[0] === 'OK') {
+                    oks++;
+                    if (oks === 1) {
+                        console.log('Wallet publishing Newer Event B...');
+                        walletWs.send(JSON.stringify(['EVENT', eventB]));
+                    } else if (oks === 2) {
+                        console.log('Wallet publishing Older Event C...');
+                        walletWs.send(JSON.stringify(['EVENT', eventC]));
+                    } else if (oks === 3) {
+                        console.log('All 3 events published and acknowledged.');
+                        walletWs.close();
+                        resolve();
+                    }
                 }
             });
         });
         walletWs.on('error', reject);
-        setTimeout(() => reject(new Error('Wallet publish timeout')), 5000);
+        setTimeout(() => reject(new Error('Wallet publish timeout')), 10000);
     });
 
-    // 2. App connects later and REQs the cached info event
+    // 2. App connects and REQs 13194. Should only get Event B.
     const appWs = new WebSocket(RELAY_URL);
     return new Promise((resolve, reject) => {
-        let cachedInfoReceived = false;
+        let eventsReceived = [];
 
         appWs.on('open', () => {
             console.log('App connecting to fetch cached info...');
-            appWs.send(JSON.stringify(['REQ', 'fetch-cached', { kinds: [13194], authors: [walletPk] }]));
+            appWs.send(JSON.stringify(['REQ', 'fetch-replaceable', { kinds: [13194], authors: [walletPk] }]));
         });
 
         appWs.on('message', (data) => {
             const msg = JSON.parse(data.toString());
-            if (msg[0] === 'EVENT' && msg[1] === 'fetch-cached') {
-                if (msg[2].kind === 13194 && msg[2].pubkey === walletPk) {
-                    console.log('✅ App received cached Wallet Info (13194).');
-                    cachedInfoReceived = true;
-                }
+            if (msg[0] === 'EVENT' && msg[1] === 'fetch-replaceable') {
+                eventsReceived.push(msg[2]);
+                console.log('App received Event with content:', msg[2].content);
             }
-            if (msg[0] === 'EOSE' && msg[1] === 'fetch-cached') {
-                if (cachedInfoReceived) {
-                    console.log('✅ EOSE received after cached event.');
+            if (msg[0] === 'EOSE' && msg[1] === 'fetch-replaceable') {
+                if (eventsReceived.length === 1 && eventsReceived[0].id === eventB.id) {
+                    console.log('✅ Correct: App only received the newest Event B.');
                     appWs.close();
                     resolve();
                 } else {
-                    reject(new Error('EOSE received but no cached event found.'));
+                    reject(new Error(`FAILED: Expected only Event B, but received ${eventsReceived.length} events: ${eventsReceived.map(e => e.content).join(', ')}`));
                 }
             }
         });
@@ -352,7 +360,7 @@ async function runAll() {
         await testNip11();
         await testRelay();
         await testNwcFlow();
-        await testNip47InfoCaching();
+        await testNip47InfoReplaceable();
         console.log('\nAll tests passed successfully! 🚀');
         process.exit(0);
     } catch (err) {
