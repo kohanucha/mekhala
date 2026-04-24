@@ -15,11 +15,15 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let router = Router::new();
 
     router
-        .get("/", handle_get_info)
-        .get_async("/ws", |req, ctx| async move {
-            let namespace = ctx.env.durable_object("NWC_RELAY")?;
-            let stub = namespace.id_from_name("GLOBAL")?.get_stub()?;
-            stub.fetch_with_request(req).await
+        .get_async("/", |req, ctx| async move {
+            if let Ok(Some(upgrade)) = req.headers().get("Upgrade") {
+                if upgrade.to_lowercase() == "websocket" {
+                    let namespace = ctx.env.durable_object("NWC_RELAY")?;
+                    let stub = namespace.id_from_name("GLOBAL")?.get_stub()?;
+                    return stub.fetch_with_request(req).await;
+                }
+            }
+            handle_get_info(req, ctx)
         })
         .run(req, env)
         .await

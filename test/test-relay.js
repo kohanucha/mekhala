@@ -2,7 +2,7 @@ import { WebSocket } from 'ws';
 import * as nostr from 'nostr-tools';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 
-const RELAY_URL = 'ws://localhost:8787/ws';
+const RELAY_URL = 'ws://localhost:8787/';
 const HTTP_URL = 'http://localhost:8787/';
 
 async function testNip11() {

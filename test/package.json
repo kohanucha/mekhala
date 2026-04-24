@@ -1,10 +1,10 @@
 {
   "name": "nwc-worker-test",
   "version": "1.0.0",
-  "main": "test/test-relay.js",
+  "main": "test-relay.js",
   "type": "module",
   "scripts": {
-    "test": "node test/test-relay.js"
+    "test": "node test-relay.js"
   },
   "dependencies": {
     "nostr-tools": "^2.10.3",
