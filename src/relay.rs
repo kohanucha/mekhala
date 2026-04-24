@@ -18,7 +18,7 @@ pub struct Event {
 impl Event {
     pub fn verify(&self) -> bool {
         // 1. Verify Allowed Kinds (NIP-01, NIP-47)
-        let allowed_kinds = [0, 1, 13194, 23194, 23195, 23196, 23197];
+        let allowed_kinds = [0, 1, 23194, 23195, 23196, 23197];
         if !allowed_kinds.contains(&self.kind) {
             return false;
         }

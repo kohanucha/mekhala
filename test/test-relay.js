@@ -69,7 +69,7 @@ async function testRelay() {
       }, sk);
       ws.send(JSON.stringify(['EVENT', eventNoPTag]));
 
-      // 4. Test Restricted Kinds (ensure kind not in [0, 1, 13194, 23194, 23195] is rejected)
+      // 4. Test Restricted Kinds (ensure kind not in [0, 1, 23194, 23195, 23196, 23197] is rejected)
       console.log('Testing Restricted Kinds (Kind 3)...');
       eventKind3 = finalizeEvent({
         kind: 3, // Contacts, not in allowed list
@@ -174,33 +174,19 @@ async function testNwcFlow() {
 
         appWs.on('open', () => {
             console.log('App connected.');
-            // App subscribes with two filters:
-            // 1. Wallet Info (13194) from the Wallet author
-            // 2. Responses (23195) and Notifications (23197) targeted to the App (#p)
+            // App subscribes to:
+            // 1. Responses (23195) and Notifications (23197) targeted to the App (#p)
             appWs.send(JSON.stringify(['REQ', 'app-subs', 
-                { kinds: [13194], authors: [walletPk] },
-                { kinds: [23195, 23197], '#p': [appPk] }
+                { kinds: [23195, 23196, 23197], '#p': [appPk] }
             ]));
         });
 
-        let infoReceived = false;
         let requestReceived = false;
         let responseReceived = false;
         let notificationReceived = false;
 
         const startFlow = () => {
-            console.log('Step 1: Wallet sending NWC Info (kind 13194)...');
-            const infoEvent = finalizeEvent({
-                kind: 13194,
-                created_at: Math.floor(Date.now() / 1000),
-                tags: [],
-                content: 'supported_methods=pay_invoice'
-            }, walletSk);
-            walletWs.send(JSON.stringify(['EVENT', infoEvent]));
-        };
-
-        const sendRequest = () => {
-            console.log('Step 2: App sending NWC Request (kind 23194) to Wallet...');
+            console.log('Step 1: App sending NWC Request (kind 23194) to Wallet...');
             const reqEvent = finalizeEvent({
                 kind: 23194,
                 created_at: Math.floor(Date.now() / 1000),
@@ -253,20 +239,15 @@ async function testNwcFlow() {
             }
             if (msg[0] === 'EVENT' && msg[1] === 'app-subs') {
                 const event = msg[2];
-                if (event.kind === 13194 && !infoReceived) {
-                    console.log('✅ App received Wallet Info (13194).');
-                    infoReceived = true;
-                    // Proceed to send request after info is received
-                    sendRequest();
-                } else if (event.kind === 23195) {
+                if (event.kind === 23195) {
                     console.log('✅ App received Response (23195).');
                     responseReceived = true;
-                } else if (event.kind === 23197) {
-                    console.log('✅ App received Notification (23197).');
+                } else if (event.kind === 23196 || event.kind === 23197) {
+                    console.log(`✅ App received Notification (${event.kind}).`);
                     notificationReceived = true;
                 }
 
-                if (infoReceived && requestReceived && responseReceived && notificationReceived) {
+                if (requestReceived && responseReceived && notificationReceived) {
                     console.log('✅ All NWC Flow steps completed.');
                     walletWs.close();
                     appWs.close();
@@ -276,82 +257,9 @@ async function testNwcFlow() {
         });
 
         setTimeout(() => {
-            const status = `Eoses: W=${walletEose}, A=${appEose} | Info: ${infoReceived}, Req: ${requestReceived}, Res: ${responseReceived}, Notify: ${notificationReceived}`;
+            const status = `Eoses: W=${walletEose}, A=${appEose} | Req: ${requestReceived}, Res: ${responseReceived}, Notify: ${notificationReceived}`;
             reject(new Error(`NWC Flow Timeout. Status: ${status}`));
         }, 10000);
-    });
-}
-
-async function testNip47InfoReplaceable() {
-    console.log('\n--- Testing NIP-47 Info Event (Replaceable) ---');
-    
-    const walletSk = generateSecretKey();
-    const walletPk = getPublicKey(walletSk);
-    const now = Math.floor(Date.now() / 1000);
-
-    const eventA = finalizeEvent({ kind: 13194, created_at: now, tags: [], content: 'A' }, walletSk);
-    const eventB = finalizeEvent({ kind: 13194, created_at: now + 100, tags: [], content: 'B' }, walletSk); // Newer
-    const eventC = finalizeEvent({ kind: 13194, created_at: now - 100, tags: [], content: 'C' }, walletSk); // Older
-
-    // 1. Wallet connects and publishes A, then B (replaces A), then C (ignored)
-    const walletWs = new WebSocket(RELAY_URL);
-    await new Promise((resolve, reject) => {
-        walletWs.on('open', async () => {
-            console.log('Wallet publishing Event A...');
-            walletWs.send(JSON.stringify(['EVENT', eventA]));
-            
-            let oks = 0;
-            walletWs.on('message', (data) => {
-                const msg = JSON.parse(data.toString());
-                if (msg[0] === 'OK') {
-                    oks++;
-                    if (oks === 1) {
-                        console.log('Wallet publishing Newer Event B...');
-                        walletWs.send(JSON.stringify(['EVENT', eventB]));
-                    } else if (oks === 2) {
-                        console.log('Wallet publishing Older Event C...');
-                        walletWs.send(JSON.stringify(['EVENT', eventC]));
-                    } else if (oks === 3) {
-                        console.log('All 3 events published and acknowledged.');
-                        walletWs.close();
-                        resolve();
-                    }
-                }
-            });
-        });
-        walletWs.on('error', reject);
-        setTimeout(() => reject(new Error('Wallet publish timeout')), 10000);
-    });
-
-    // 2. App connects and REQs 13194. Should only get Event B.
-    const appWs = new WebSocket(RELAY_URL);
-    return new Promise((resolve, reject) => {
-        let eventsReceived = [];
-
-        appWs.on('open', () => {
-            console.log('App connecting to fetch cached info...');
-            appWs.send(JSON.stringify(['REQ', 'fetch-replaceable', { kinds: [13194], authors: [walletPk] }]));
-        });
-
-        appWs.on('message', (data) => {
-            const msg = JSON.parse(data.toString());
-            if (msg[0] === 'EVENT' && msg[1] === 'fetch-replaceable') {
-                eventsReceived.push(msg[2]);
-                console.log('App received Event with content:', msg[2].content);
-            }
-            if (msg[0] === 'EOSE' && msg[1] === 'fetch-replaceable') {
-                if (eventsReceived.length === 1 && eventsReceived[0].id === eventB.id) {
-                    console.log('✅ Correct: App only received the newest Event B.');
-                    appWs.close();
-                    resolve();
-                } else {
-                    reject(new Error(`FAILED: Expected only Event B, but received ${eventsReceived.length} events: ${eventsReceived.map(e => e.content).join(', ')}`));
-                }
-            }
-        });
-
-        appWs.on('error', reject);
-        setTimeout(() => reject(new Error('App fetch timeout')), 5000);
     });
 }
 
@@ -360,7 +268,6 @@ async function runAll() {
         await testNip11();
         await testRelay();
         await testNwcFlow();
-        await testNip47InfoReplaceable();
         console.log('\nAll tests passed successfully! 🚀');
         process.exit(0);
     } catch (err) {

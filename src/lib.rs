@@ -108,20 +108,6 @@ impl DurableObject for NwcRelay {
 
                     let _ = ws.send_with_str(&RelayMessage::Ok(event.id.clone(), true, "".into()).to_json());
 
-                    // NIP-47: Cache Info Event (kind 13194) in Durable Object storage
-                    // Ensure it is a replaceable event (newer created_at wins)
-                    if event.kind == 13194 {
-                        let key = format!("info_{}", event.pubkey);
-                        let should_put = match self.state.storage().get::<relay::Event>(&key).await {
-                            Ok(Some(existing_event)) => event.created_at >= existing_event.created_at,
-                            _ => true,
-                        };
-                        
-                        if should_put {
-                            let _ = self.state.storage().put(&key, &event).await;
-                        }
-                    }
-
                     // Broadcast to ALL connected websockets managed by this Durable Object
                     for other_ws in self.state.get_websockets() {
                         let other_subs: HashMap<String, Vec<Filter>> = other_ws.deserialize_attachment()?.unwrap_or_default();
@@ -133,21 +119,6 @@ impl DurableObject for NwcRelay {
                     }
                 }
                 ClientMessage::Req(sub_id, filters) => {
-                    // NIP-47: Serve cached Info Event (kind 13194) if requested by authors
-                    for filter in filters.iter() {
-                        if let (Some(kinds), Some(authors)) = (&filter.kinds, &filter.authors) {
-                            if kinds.contains(&13194) {
-                                for author in authors.iter() {
-                                    if let Ok(Some(stored_event)) = self.state.storage().get::<relay::Event>(&format!("info_{}", author)).await {
-                                        if filter.matches(&stored_event) {
-                                            let _ = ws.send_with_str(&RelayMessage::Event(sub_id.clone(), stored_event).to_json());
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
                     subscriptions.insert(sub_id.clone(), filters);
                     ws.serialize_attachment(&subscriptions)?;
                     let _ = ws.send_with_str(&RelayMessage::Eose(sub_id).to_json());

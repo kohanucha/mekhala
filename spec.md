@@ -58,8 +58,8 @@ Provide metadata to clients to announce NWC compatibility.
 * **Allowed Kinds:** Prioritize routing for:
     * `23194` (Wallet Request)
     * `23195` (Wallet Response)
-    * `13194` (Wallet Info)
-* **Tag Enforcement (`#p` tag):** For kinds `23194` and `23195`, the relay MUST ensure that a `p` tag (recipient pubkey) exists. 
+    * `23196`/`23197` (Wallet Notification)
+* **Tag Enforcement (`#p` tag):** For kinds `23194`, `23195`, `23196`, and `23197`, the relay MUST ensure that a `p` tag (recipient pubkey) exists. 
 * **Filter Matching Strategy:** * When an `EVENT` arrives, the relay iterates through active `REQ` filters in memory.
     * If the event's `kind` matches the filter's `kinds` array, AND the event's `p` tag matches the filter's `#p` array, forward the event to that connection via `["EVENT", <subscription_id>, <event_json>]`.
 

@@ -7,7 +7,7 @@ RELAY_NAME = "nwc-edge-relay"
 RELAY_DESCRIPTION = "A stateless public NWC relay running on Cloudflare Workers."
 RELAY_PUBKEY = "-"
 RELAY_CONTACT = "-"
-RELAY_SOFTWARE = "-"
+RELAY_SOFTWARE = "https://github.com/kohanucha/nwc-edge-relay"
 RELAY_VERSION = "main"
 
 [[durable_objects.bindings]]
