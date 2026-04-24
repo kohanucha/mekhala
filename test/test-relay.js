@@ -26,7 +26,7 @@ async function testNip11() {
     headers: { 'Accept': 'application/nostr+json' }
   });
   const data = await response.json();
-  if (data.name !== 'nwc-worker' || !data.supported_nips.includes(47)) {
+  if (data.name !== 'nwc-edge-relay' || !data.supported_nips.includes(47)) {
     throw new Error('NIP-11 failed: ' + JSON.stringify(data));
   }
   console.log('✅ NIP-11 passed.');

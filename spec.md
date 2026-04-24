@@ -1,7 +1,7 @@
-# Specification: nwc-worker (Public Stateless NWC Relay)
+# Specification: nwc-edge-relay (Public Stateless NWC Relay)
 
 ## 1. Project Overview
-A specialized, high-performance, and stateless Nostr relay built with **Rust** for **Cloudflare Workers**, named **`nwc-worker`**. The primary goal is to provide a public, zero-maintenance bridge for **NIP-47 (Nostr Wallet Connect)**. It operates entirely in-memory without persistent storage, routing NWC events freely, securely, and efficiently.
+A specialized, high-performance, and stateless Nostr relay built with **Rust** for **Cloudflare Workers**, named **`nwc-edge-relay`**. The primary goal is to provide a public, zero-maintenance bridge for **NIP-47 (Nostr Wallet Connect)**. It operates entirely in-memory without persistent storage, routing NWC events freely, securely, and efficiently.
 
 ## 2. Technical Stack
 * **Language:** Rust (Stable)
@@ -10,7 +10,7 @@ A specialized, high-performance, and stateless Nostr relay built with **Rust** f
 * **Nostr Protocol:** `nostr` core crate (Wasm-compatible)
 * **Deployment:** Cloudflare Workers (using `wrangler` CLI)
 * **CI/CD:** GitHub Actions
-* **Version Control:** Git (Remote: `git@github.com:kohanucha/nwc-worker.git`)
+* **Version Control:** Git (Remote: `git@github.com:kohanucha/nwc-edge-relay.git`)
 
 ## 3. Pre-Implementation Instructions for AI Agent
 **CRITICAL:** This specification requires strict adherence to the Nostr protocol. Base your implementation on these exact standards:
@@ -48,9 +48,9 @@ Provide metadata to clients to announce NWC compatibility.
 * **Headers:** MUST include `Access-Control-Allow-Origin: *`.
 * **Payload Structure:**
 (Return the following as a JSON object)
-  "name": "nwc-worker"
+  "name": "nwc-edge-relay"
   "description": "A stateless public NWC relay running on Cloudflare Workers."
-  "software": "https://github.com/kohanucha/nwc-worker"
+  "software": "https://github.com/kohanucha/nwc-edge-relay"
   "supported_nips": [1, 11, 47]
 
 ### C. NIP-47: Nostr Wallet Connect (The Routing Engine)
@@ -68,8 +68,8 @@ Provide metadata to clients to announce NWC compatibility.
 ## 6. Implementation Plan (Phased)
 
 ### Phase 1: Infrastructure & Scaffolding
-- [ ] Initialize `worker-rs` project named `nwc-worker` and `git init`.
-- [ ] Set remote: `git remote add origin git@github.com:kohanucha/nwc-worker.git`.
+- [ ] Initialize `worker-rs` project named `nwc-edge-relay` and `git init`.
+- [ ] Set remote: `git remote add origin git@github.com:kohanucha/nwc-edge-relay.git`.
 - [ ] Configure `wrangler.toml` and Wasm-compatible `Cargo.toml`.
 
 ### Phase 2: Core Logic & Parsers (Pure Rust - No Worker Context)

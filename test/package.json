@@ -1,5 +1,5 @@
 {
-  "name": "nwc-worker-test",
+  "name": "nwc-edge-relay-test",
   "version": "1.0.0",
   "main": "test-relay.js",
   "type": "module",

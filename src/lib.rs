@@ -30,12 +30,12 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 fn handle_get_info(req: Request, _ctx: RouteContext<()>) -> Result<Response> {
     if req.headers().get("Accept")?.as_deref() == Some("application/nostr+json") {
         let info = serde_json::json!({
-            "name": "nwc-worker",
+            "name": "nwc-edge-relay",
             "description": "A stateless public NWC relay running on Cloudflare Workers.",
             "pubkey": "6e468422c0020d52899347d4e3415c464c483a3d53716d6100c5c3b9b46e3d00",
-            "contact": "https://github.com/kohanucha/nwc-worker",
+            "contact": "https://github.com/kohanucha/nwc-edge-relay",
             "supported_nips": [1, 11, 47],
-            "software": "https://github.com/kohanucha/nwc-worker",
+            "software": "https://github.com/kohanucha/nwc-edge-relay",
             "version": "0.1.0"
         });
 
@@ -46,7 +46,7 @@ fn handle_get_info(req: Request, _ctx: RouteContext<()>) -> Result<Response> {
         return Ok(Response::from_json(&info)?.with_headers(headers));
     }
 
-    Response::ok("nwc-worker: Nostr Wallet Connect Relay")
+    Response::ok("nwc-edge-relay: Nostr Wallet Connect Relay")
 }
 
 #[durable_object]
