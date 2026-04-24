@@ -1,6 +1,6 @@
 # nwc-edge-relay ⚡️
 
-**High-performance, stateless Nostr relay for NWC, built with Rust for Cloudflare Workers.**
+**High-performance, 100% stateless Nostr relay for NWC, built with Rust for Cloudflare Workers.**
 
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](#)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](#)
@@ -15,6 +15,7 @@
 - **Zero Latency:** No database I/O. Events are routed instantly in memory.
 - **Zero Maintenance:** No database to scale, back up, or manage.
 - **Privacy First:** Ephemeral routing. Your NWC traffic is never logged or stored.
+- **100% Stateless:** No Durable Object storage is used. All data exists only in-flight.
 - **Cost Efficient:** Uses **WebSocket Hibernation** to minimize resource usage.
 
 ---
@@ -22,8 +23,11 @@
 ## 🚀 Key Features
 - **Global Edge:** Runs on Cloudflare's network, physically close to you.
 - **Secure:** Instant Rust-powered signature verification.
-- **Standard Compliant:** Supports NIP-01, NIP-11 (Relay Info), and NIP-47 (NWC).
+- **NWC Focused:** Supports NIP-47 routing for Requests (23194), Responses (23195), and Notifications (23196/23197).
 - **Auto-Build:** Fully automated environment setup and Wasm compilation.
+
+### ⚠️ Note on NIP-47 Info Event (13194)
+To ensure the relay remains **completely stateless**, this relay **does NOT support kind 13194 (Info Event)**. Wallet services should publish their info events to a persistent relay or clients should be configured with the necessary connection details directly.
 
 ---
 
