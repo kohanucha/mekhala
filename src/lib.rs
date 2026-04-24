@@ -30,11 +30,11 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 fn handle_get_info(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     if req.headers().get("Accept")?.as_deref() == Some("application/nostr+json") {
         let name = ctx.env.var("RELAY_NAME").map(|v| v.to_string()).unwrap_or_else(|_| "-".to_string());
-        let description = ctx.env.var("RELAY_DESCRIPTION").map(|v| v.to_string()).unwrap_or_else(|_| "-".to_string());
+        let description = ctx.env.var("RELAY_DESCRIPTION").map(|v| v.to_string()).unwrap_or_else(|_| "A stateless public NWC relay running on Cloudflare Workers.".to_string());
         let pubkey = ctx.env.var("RELAY_PUBKEY").map(|v| v.to_string()).unwrap_or_else(|_| "".to_string());
         let contact = ctx.env.var("RELAY_CONTACT").map(|v| v.to_string()).unwrap_or_else(|_| "".to_string());
         let software = ctx.env.var("RELAY_SOFTWARE").map(|v| v.to_string()).unwrap_or_else(|_| "".to_string());
-        let version = ctx.env.var("RELAY_VERSION").map(|v| v.to_string()).unwrap_or_else(|_| "".to_string());
+        let version = ctx.env.var("RELAY_VERSION").map(|v| v.to_string()).unwrap_or_else(|_| "main".to_string());
 
         let info = serde_json::json!({
             "name": name,

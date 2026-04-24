@@ -4,11 +4,11 @@ compatibility_date = "2026-04-23"
 
 [vars]
 RELAY_NAME = "nwc-edge-relay"
-RELAY_DESCRIPTION = "-"
+RELAY_DESCRIPTION = "A stateless public NWC relay running on Cloudflare Workers."
 RELAY_PUBKEY = "-"
 RELAY_CONTACT = "-"
 RELAY_SOFTWARE = "-"
-RELAY_VERSION = "dev"
+RELAY_VERSION = "main"
 
 [[durable_objects.bindings]]
 name = "NWC_RELAY"
