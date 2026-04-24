@@ -18,13 +18,13 @@ pub struct Event {
 impl Event {
     pub fn verify(&self) -> bool {
         // 1. Verify Allowed Kinds (NIP-01, NIP-47)
-        let allowed_kinds = [0, 1, 13194, 23194, 23195, 23197];
+        let allowed_kinds = [0, 1, 13194, 23194, 23195, 23196, 23197];
         if !allowed_kinds.contains(&self.kind) {
             return false;
         }
 
         // 2. Verify NIP-47 constraints (p-tag enforcement)
-        if self.kind == 23194 || self.kind == 23195 || self.kind == 23197 {
+        if self.kind == 23194 || self.kind == 23195 || self.kind == 23196 || self.kind == 23197 {
             let has_p_tag = self.tags.iter().any(|t| t.len() >= 2 && t[0] == "p");
             if !has_p_tag {
                 return false;
@@ -260,6 +260,19 @@ mod tests {
 
         // Should fail because kind 23194 requires a p-tag
         assert!(!event.verify());
+
+        let event_23196 = Event {
+            id: "2".into(),
+            pubkey: "pub1".into(),
+            created_at: 100,
+            kind: 23196,
+            tags: vec![], // Missing p-tag
+            content: "".into(),
+            sig: "".into(),
+        };
+
+        // Should fail because kind 23196 requires a p-tag
+        assert!(!event_23196.verify());
     }
 
     #[test]

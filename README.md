@@ -1,80 +1,70 @@
 # nwc-edge-relay ⚡️
 
+**High-performance, stateless Nostr relay for NWC, built with Rust for Cloudflare Workers.**
+
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](#)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-## Introduction
-**nwc-edge-relay** is a specialized, high-performance, and stateless Nostr relay built with **Rust** for **Cloudflare Workers**.
+---
 
-The primary goal is to provide a public, zero-maintenance bridge for **NIP-47 (Nostr Wallet Connect)**. It addresses the overhead of traditional relays by providing an instant, secure, and ephemeral communication channel between wallet applications and Lightning nodes. By routing events in real-time without persistent storage, it serves as a lightweight, specialized infrastructure for the NWC ecosystem.
+## 🎯 The Concept
+**nwc-edge-relay** is a specialized "routing engine" for **NIP-47 (Nostr Wallet Connect)**. It replaces heavy, database-backed relays with a lightweight, in-memory bridge between your wallet apps and your Lightning node.
 
-## Features
-- 🚀 **Edge-Native Performance:** Deployed on Cloudflare's global edge network to minimize latency by routing events physically close to users.
-- 🪶 **100% Stateless:** Operates entirely in-memory with zero requirements for databases or persistent volumes.
-- 🔋 **WebSocket Hibernation:** Optimized resource utilization via Cloudflare's Durable Objects Hibernation API, ensuring high efficiency and low cost.
-- 🛡️ **Secure Routing:** Immediate signature verification and encrypted transport for all routed events.
-- 📡 **NIP Support:** Fully compliant with **NIP-01** (Basic Protocol), **NIP-11** (Relay Information Document), and **NIP-47** (Nostr Wallet Connect).
+### Why use it?
+- **Zero Latency:** No database I/O. Events are routed instantly in memory.
+- **Zero Maintenance:** No database to scale, back up, or manage.
+- **Privacy First:** Ephemeral routing. Your NWC traffic is never logged or stored.
+- **Cost Efficient:** Uses **WebSocket Hibernation** to minimize resource usage.
 
-## Architecture
-**nwc-edge-relay** is designed around the principles of **Stateless Edge Computing**.
-When an event is received, the relay performs an instantaneous cryptographic signature check and matches the event against active in-memory subscription filters (such as recipient `#p` tags). If a match is found, the event is forwarded immediately to the subscriber. Because the relay maintains no history, any request for historical data (`REQ`) is immediately met with an `EOSE` (End of Stored Events) message. This architecture maximizes privacy and speed while eliminating operational complexity.
+---
 
-## Public Usage
-You can use the public instance of this relay for your Nostr Wallet Connect setups for free!
+## 🚀 Key Features
+- **Global Edge:** Runs on Cloudflare's network, physically close to you.
+- **Secure:** Instant Rust-powered signature verification.
+- **Standard Compliant:** Supports NIP-01, NIP-11 (Relay Info), and NIP-47 (NWC).
+- **Auto-Build:** Fully automated environment setup and Wasm compilation.
 
-**Relay URL:**
-```
-wss://nwc-edge-relay.<YOUR_SUBDOMAIN>.workers.dev
-```
+---
 
-**How to use with Alby Hub / Alby Go:**
-1. Open your **Alby Hub** or **Alby Go** wallet settings.
-2. Navigate to the **Relay** configuration in your connection settings.
-3. Update the relay URL to `wss://nwc-edge-relay.<YOUR_SUBDOMAIN>.workers.dev`.
-4. Your wallet will now utilize this high-performance edge relay for NWC communication.
+## ⚙️ Configuration
+You can customize your relay's identity (NIP-11 metadata) by editing the `[vars]` section in `wrangler.toml`:
+- `RELAY_NAME`: The name of your relay.
+- `RELAY_DESCRIPTION`: A short description of the service.
+- `RELAY_PUBKEY`: The administrator's hex pubkey.
+- `RELAY_CONTACT`: Contact information (URI).
+- `RELAY_SOFTWARE`: Link to the software repository.
+- `RELAY_VERSION`: Software version.
 
-## Deploy Your Own
-Deploying your own private or public instance on Cloudflare takes only a few minutes.
+---
 
-**Prerequisites:**
-- [Node.js](https://nodejs.org/) & npm
-- [Rust](https://www.rust-lang.org/) (`rustup target add wasm32-unknown-unknown`)
-- [Cloudflare Wrangler](https://developers.cloudflare.com/workers/wrangler/install-and-setup/) (`npm i -g wrangler`)
+## 🌍 Quick Setup (Alby Hub / Alby Go)
+1. **URL:** `wss://your-relay-name.workers.dev`
+2. **Setup:** Go to your wallet's **App Connection settings** -> **Advanced**.
+3. **Connect:** Set the **Relay URL** to your edge relay. Your wallet and node are now connected via the edge!
 
-**Deployment Steps:**
+---
 
-1. **Clone the repository**
+## 📦 Deploy Your Own
+1. **Clone**
    ```bash
-   git clone https://github.com/kohanucha/nwc-edge-relay.git
-   cd nwc-edge-relay
+   git clone https://github.com/kohanucha/nwc-edge-relay.git && cd nwc-edge-relay
    ```
-
-2. **Login to Cloudflare**
+2. **Login & Deploy**
    ```bash
    wrangler login
+   ./deploy.sh
    ```
+   *(That's it! Our script handles Rust installation, Wasm compilation, and Git version injection automatically.)*
 
-3. **Deploy to the edge**
-   The project is configured to automatically set up the Rust environment and build the Wasm binary. Simply run:
-   ```bash
-   wrangler deploy
-   ```
-   *(This will trigger `./build.sh` as defined in `wrangler.toml`, which handles Rust installation, target addition, and the build process automatically.)*
+---
 
-## Local Development
-Instructions for running and testing the relay in your local environment.
+## 💻 Development & Testing
+- **Local Dev:** `./build.sh && wrangler dev`
+- **Unit Tests:** `cargo test`
+- **Integration Tests:** `cd test && npm i && node test-relay.js`
 
-```bash
-# Build the project using the build script
-./build.sh
+---
 
-# Run the local development server (Miniflare)
-wrangler dev
-
-# Run unit tests
-cargo test
-```
-
-## License
-This project is licensed under the [MIT License](LICENSE).
+## ⚖️ License
+[MIT License](LICENSE)

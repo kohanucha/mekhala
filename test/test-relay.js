@@ -282,11 +282,77 @@ async function testNwcFlow() {
     });
 }
 
+async function testNip47InfoCaching() {
+    console.log('\n--- Testing NIP-47 Info Event Caching ---');
+    
+    const walletSk = generateSecretKey();
+    const walletPk = getPublicKey(walletSk);
+
+    // 1. Wallet connects and publishes Info Event
+    const walletWs = new WebSocket(RELAY_URL);
+    await new Promise((resolve, reject) => {
+        walletWs.on('open', () => {
+            const infoEvent = finalizeEvent({
+                kind: 13194,
+                created_at: Math.floor(Date.now() / 1000),
+                tags: [],
+                content: 'cached_methods=pay_invoice'
+            }, walletSk);
+            walletWs.send(JSON.stringify(['EVENT', infoEvent]));
+            
+            walletWs.on('message', (data) => {
+                const msg = JSON.parse(data.toString());
+                if (msg[0] === 'OK' && msg[1] === infoEvent.id && msg[2] === true) {
+                    console.log('Wallet Info Event published and OK received.');
+                    walletWs.close();
+                    resolve();
+                }
+            });
+        });
+        walletWs.on('error', reject);
+        setTimeout(() => reject(new Error('Wallet publish timeout')), 5000);
+    });
+
+    // 2. App connects later and REQs the cached info event
+    const appWs = new WebSocket(RELAY_URL);
+    return new Promise((resolve, reject) => {
+        let cachedInfoReceived = false;
+
+        appWs.on('open', () => {
+            console.log('App connecting to fetch cached info...');
+            appWs.send(JSON.stringify(['REQ', 'fetch-cached', { kinds: [13194], authors: [walletPk] }]));
+        });
+
+        appWs.on('message', (data) => {
+            const msg = JSON.parse(data.toString());
+            if (msg[0] === 'EVENT' && msg[1] === 'fetch-cached') {
+                if (msg[2].kind === 13194 && msg[2].pubkey === walletPk) {
+                    console.log('✅ App received cached Wallet Info (13194).');
+                    cachedInfoReceived = true;
+                }
+            }
+            if (msg[0] === 'EOSE' && msg[1] === 'fetch-cached') {
+                if (cachedInfoReceived) {
+                    console.log('✅ EOSE received after cached event.');
+                    appWs.close();
+                    resolve();
+                } else {
+                    reject(new Error('EOSE received but no cached event found.'));
+                }
+            }
+        });
+
+        appWs.on('error', reject);
+        setTimeout(() => reject(new Error('App fetch timeout')), 5000);
+    });
+}
+
 async function runAll() {
     try {
         await testNip11();
         await testRelay();
         await testNwcFlow();
+        await testNip47InfoCaching();
         console.log('\nAll tests passed successfully! 🚀');
         process.exit(0);
     } catch (err) {

@@ -27,16 +27,23 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .await
 }
 
-fn handle_get_info(req: Request, _ctx: RouteContext<()>) -> Result<Response> {
+fn handle_get_info(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     if req.headers().get("Accept")?.as_deref() == Some("application/nostr+json") {
+        let name = ctx.env.var("RELAY_NAME").map(|v| v.to_string()).unwrap_or_else(|_| "nwc-edge-relay".to_string());
+        let description = ctx.env.var("RELAY_DESCRIPTION").map(|v| v.to_string()).unwrap_or_else(|_| "A stateless public NWC relay running on Cloudflare Workers.".to_string());
+        let pubkey = ctx.env.var("RELAY_PUBKEY").map(|v| v.to_string()).unwrap_or_else(|_| "6e468422c0020d52899347d4e3415c464c483a3d53716d6100c5c3b9b46e3d00".to_string());
+        let contact = ctx.env.var("RELAY_CONTACT").map(|v| v.to_string()).unwrap_or_else(|_| "https://github.com/kohanucha/nwc-edge-relay".to_string());
+        let software = ctx.env.var("RELAY_SOFTWARE").map(|v| v.to_string()).unwrap_or_else(|_| "https://github.com/kohanucha/nwc-edge-relay".to_string());
+        let version = ctx.env.var("RELAY_VERSION").map(|v| v.to_string()).unwrap_or_else(|_| "0.1.0".to_string());
+
         let info = serde_json::json!({
-            "name": "nwc-edge-relay",
-            "description": "A stateless public NWC relay running on Cloudflare Workers.",
-            "pubkey": "6e468422c0020d52899347d4e3415c464c483a3d53716d6100c5c3b9b46e3d00",
-            "contact": "https://github.com/kohanucha/nwc-edge-relay",
+            "name": name,
+            "description": description,
+            "pubkey": pubkey,
+            "contact": contact,
             "supported_nips": [1, 11, 47],
-            "software": "https://github.com/kohanucha/nwc-edge-relay",
-            "version": "0.1.0"
+            "software": software,
+            "version": version
         });
 
         let headers = Headers::new();
@@ -101,6 +108,11 @@ impl DurableObject for NwcRelay {
 
                     let _ = ws.send_with_str(&RelayMessage::Ok(event.id.clone(), true, "".into()).to_json());
 
+                    // NIP-47: Cache Info Event (kind 13194) in Durable Object storage
+                    if event.kind == 13194 {
+                        let _ = self.state.storage().put(&format!("info_{}", event.pubkey), &event).await;
+                    }
+
                     // Broadcast to ALL connected websockets managed by this Durable Object
                     for other_ws in self.state.get_websockets() {
                         let other_subs: HashMap<String, Vec<Filter>> = other_ws.deserialize_attachment()?.unwrap_or_default();
@@ -112,6 +124,21 @@ impl DurableObject for NwcRelay {
                     }
                 }
                 ClientMessage::Req(sub_id, filters) => {
+                    // NIP-47: Serve cached Info Event (kind 13194) if requested by authors
+                    for filter in filters.iter() {
+                        if let (Some(kinds), Some(authors)) = (&filter.kinds, &filter.authors) {
+                            if kinds.contains(&13194) {
+                                for author in authors.iter() {
+                                    if let Ok(Some(stored_event)) = self.state.storage().get::<relay::Event>(&format!("info_{}", author)).await {
+                                        if filter.matches(&stored_event) {
+                                            let _ = ws.send_with_str(&RelayMessage::Event(sub_id.clone(), stored_event).to_json());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     subscriptions.insert(sub_id.clone(), filters);
                     ws.serialize_attachment(&subscriptions)?;
                     let _ = ws.send_with_str(&RelayMessage::Eose(sub_id).to_json());
