@@ -11,7 +11,7 @@ class_name = "NwcRelay"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["NwcRelay"]
+new_sqlite_classes = ["NwcRelay"]
 
 [build]
 command = "./build.sh"
