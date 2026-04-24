@@ -2,8 +2,23 @@ import { WebSocket } from 'ws';
 import * as nostr from 'nostr-tools';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 
-const RELAY_URL = 'ws://localhost:8787/';
-const HTTP_URL = 'http://localhost:8787/';
+// Get URL from command line args or use default
+const args = process.argv.slice(2);
+let baseURL = args[0] || 'localhost:8787';
+
+// Clean up the input URL (remove protocol if user provided it)
+baseURL = baseURL.replace(/^https?:\/\//, '').replace(/^wss?:\/\//, '').replace(/\/$/, '');
+
+const isLocal = baseURL.includes('localhost') || baseURL.includes('127.0.0.1');
+const wsProtocol = isLocal ? 'ws://' : 'wss://';
+const httpProtocol = isLocal ? 'http://' : 'https://';
+
+const RELAY_URL = `${wsProtocol}${baseURL}/`;
+const HTTP_URL = `${httpProtocol}${baseURL}/`;
+
+console.log(`Testing against:`);
+console.log(`  WebSocket: ${RELAY_URL}`);
+console.log(`  HTTP:      ${HTTP_URL}\n`);
 
 async function testNip11() {
   console.log('Testing NIP-11 (Relay Information)...');
