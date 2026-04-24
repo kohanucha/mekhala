@@ -4,11 +4,11 @@ compatibility_date = "2026-04-23"
 
 [vars]
 RELAY_NAME = "nwc-edge-relay"
-RELAY_DESCRIPTION = "A stateless public NWC relay running on Cloudflare Workers."
-RELAY_PUBKEY = "6e468422c0020d52899347d4e3415c464c483a3d53716d6100c5c3b9b46e3d00"
-RELAY_CONTACT = "https://github.com/kohanucha/nwc-edge-relay"
-RELAY_SOFTWARE = "https://github.com/kohanucha/nwc-edge-relay"
-RELAY_VERSION = "main"
+RELAY_DESCRIPTION = "-"
+RELAY_PUBKEY = "-"
+RELAY_CONTACT = "-"
+RELAY_SOFTWARE = "-"
+RELAY_VERSION = "dev"
 
 [[durable_objects.bindings]]
 name = "NWC_RELAY"
