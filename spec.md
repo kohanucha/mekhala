@@ -56,10 +56,12 @@ Provide metadata to clients to announce NWC compatibility.
 ### C. NIP-47: Nostr Wallet Connect (The Routing Engine)
 *Note: The relay acts ONLY as an encrypted transport layer. It MUST NOT decrypt the `content` field.*
 * **Allowed Kinds:** Prioritize routing for:
+    * `13194` (Wallet Info - Stateless Routing Only)
     * `23194` (Wallet Request)
     * `23195` (Wallet Response)
     * `23196`/`23197` (Wallet Notification)
 * **Tag Enforcement (`#p` tag):** For kinds `23194`, `23195`, `23196`, and `23197`, the relay MUST ensure that a `p` tag (recipient pubkey) exists. 
+* **Stateless Routing for 13194:** The relay supports routing `kind: 13194` in real-time. It is **not** stored or cached in Durable Object storage. Subscribers must be connected before the event is published to receive it.
 * **Filter Matching Strategy:** * When an `EVENT` arrives, the relay iterates through active `REQ` filters in memory.
     * If the event's `kind` matches the filter's `kinds` array, AND the event's `p` tag matches the filter's `#p` array, forward the event to that connection via `["EVENT", <subscription_id>, <event_json>]`.
 

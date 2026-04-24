@@ -69,7 +69,7 @@ async function testRelay() {
       }, sk);
       ws.send(JSON.stringify(['EVENT', eventNoPTag]));
 
-      // 4. Test Restricted Kinds (ensure kind not in [0, 1, 23194, 23195, 23196, 23197] is rejected)
+      // 4. Test Restricted Kinds (ensure kind not in [0, 1, 13194, 23194, 23195, 23196, 23197] is rejected)
       console.log('Testing Restricted Kinds (Kind 3)...');
       eventKind3 = finalizeEvent({
         kind: 3, // Contacts, not in allowed list
@@ -263,11 +263,62 @@ async function testNwcFlow() {
     });
 }
 
+async function testStatelessInfoEvent() {
+    console.log('\n--- Testing NIP-47 Info Event (Stateless Routing) ---');
+    
+    const walletSk = generateSecretKey();
+    const walletPk = getPublicKey(walletSk);
+
+    const appWs = new WebSocket(RELAY_URL);
+    const walletWs = new WebSocket(RELAY_URL);
+
+    return new Promise((resolve, reject) => {
+        let infoReceived = false;
+
+        appWs.on('open', () => {
+            console.log('App connected and subscribing to Info Event...');
+            appWs.send(JSON.stringify(['REQ', 'info-sub', { kinds: [13194], authors: [walletPk] }]));
+        });
+
+        appWs.on('message', (data) => {
+            const msg = JSON.parse(data.toString());
+            if (msg[0] === 'EVENT' && msg[1] === 'info-sub') {
+                if (msg[2].kind === 13194 && msg[2].pubkey === walletPk) {
+                    console.log('✅ App received live Info Event (13194) routing.');
+                    infoReceived = true;
+                    appWs.close();
+                    walletWs.close();
+                    resolve();
+                }
+            }
+        });
+
+        walletWs.on('open', () => {
+            // Wait a bit to ensure App's REQ is processed
+            setTimeout(() => {
+                console.log('Wallet publishing Info Event...');
+                const infoEvent = finalizeEvent({
+                    kind: 13194,
+                    created_at: Math.floor(Date.now() / 1000),
+                    tags: [],
+                    content: 'stateless_routing_test'
+                }, walletSk);
+                walletWs.send(JSON.stringify(['EVENT', infoEvent]));
+            }, 500);
+        });
+
+        appWs.on('error', reject);
+        walletWs.on('error', reject);
+        setTimeout(() => reject(new Error('Stateless Info Event Timeout')), 10000);
+    });
+}
+
 async function runAll() {
     try {
         await testNip11();
         await testRelay();
         await testNwcFlow();
+        await testStatelessInfoEvent();
         console.log('\nAll tests passed successfully! 🚀');
         process.exit(0);
     } catch (err) {
