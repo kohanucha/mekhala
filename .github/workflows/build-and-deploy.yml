@@ -34,6 +34,5 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
           wranglerVersion: '4'
-          command: deploy --name=${{ secrets.CLOUDFLARE_PROJECT_NAME }}
+          command: deploy
