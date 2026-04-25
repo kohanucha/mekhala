@@ -23,8 +23,19 @@ impl Event {
             return false;
         }
 
-        // 2. Verify NIP-47 constraints (p-tag enforcement)
-        if self.kind == 23194 || self.kind == 23195 || self.kind == 23196 || self.kind == 23197 {
+        // 2. Verify NIP-47 constraints (strict tag enforcement)
+        if self.kind == 23194 {
+            let has_p_tag = self.tags.iter().any(|t| t.len() >= 2 && t[0] == "p");
+            if !has_p_tag {
+                return false;
+            }
+        } else if self.kind == 23195 {
+            let has_p_tag = self.tags.iter().any(|t| t.len() >= 2 && t[0] == "p");
+            let has_e_tag = self.tags.iter().any(|t| t.len() >= 2 && t[0] == "e");
+            if !has_p_tag || !has_e_tag {
+                return false;
+            }
+        } else if self.kind == 23196 || self.kind == 23197 {
             let has_p_tag = self.tags.iter().any(|t| t.len() >= 2 && t[0] == "p");
             if !has_p_tag {
                 return false;
@@ -130,6 +141,23 @@ impl Filter {
         }
         true
     }
+
+    pub fn is_valid(&self) -> bool {
+        // If the filter specifies NIP-47 request/response/notification kinds,
+        // it MUST be narrowed by author or p-tag to prevent a global firehose.
+        let nip47_kinds = [23194, 23195, 23196, 23197];
+        if let Some(kinds) = &self.kinds {
+            let requests_nip47 = kinds.iter().any(|k| nip47_kinds.contains(k));
+            if requests_nip47 {
+                let has_author = self.authors.as_ref().map(|a| !a.is_empty()).unwrap_or(false);
+                let has_p_tag = self.p_tags.as_ref().map(|p| !p.is_empty()).unwrap_or(false);
+                if !has_author && !has_p_tag {
+                    return false;
+                }
+            }
+        }
+        true
+    }
 }
 
 #[derive(Debug)]
@@ -175,6 +203,7 @@ pub enum RelayMessage {
     Event(String, Event),
     Eose(String),
     Notice(String),
+    Closed(String, String),
 }
 
 impl RelayMessage {
@@ -192,6 +221,9 @@ impl RelayMessage {
             RelayMessage::Notice(msg) => {
                 serde_json::json!(["NOTICE", msg]).to_string()
             }
+            RelayMessage::Closed(sub_id, msg) => {
+                serde_json::json!(["CLOSED", sub_id, msg]).to_string()
+            }
         }
     }
 }
@@ -202,113 +234,148 @@ mod tests {
     use k256::schnorr::SigningKey;
     use k256::schnorr::signature::hazmat::PrehashSigner;
 
-    #[test]
-    fn test_event_verification() {
-        // Use a fixed private key for testing
-        let priv_key_hex = "0101010101010101010101010101010101010101010101010101010101010101";
+    fn create_test_event(priv_key_hex: &str, kind: u64, tags: Vec<Vec<String>>, content: &str) -> Event {
         let priv_key_bytes = hex::decode(priv_key_hex).unwrap();
         let signing_key = SigningKey::from_bytes(&priv_key_bytes).unwrap();
         let verifying_key = signing_key.verifying_key();
         let pubkey = hex::encode(verifying_key.to_bytes());
-
         let created_at = 1712160000;
-        let kind = 1;
-        let tags: Vec<Vec<String>> = vec![];
-        let content = "Hello, world!".into();
 
-        let serialized = serde_json::json!([
-            0,
-            pubkey,
-            created_at,
-            kind,
-            tags,
-            content
-        ]).to_string();
-
+        let serialized = serde_json::json!([0, pubkey, created_at, kind, tags, content]).to_string();
         let mut hasher = Sha256::new();
         hasher.update(serialized.as_bytes());
         let id_bytes = hasher.finalize();
         let id = hex::encode(id_bytes);
-
         let signature = signing_key.sign_prehash(&id_bytes).unwrap();
         let sig = hex::encode(signature.to_bytes());
 
-        let event = Event {
-            id,
-            pubkey,
-            created_at,
-            kind,
-            tags,
-            content,
-            sig,
-        };
+        Event { id, pubkey, created_at, kind, tags, content: content.into(), sig }
+    }
 
+    #[test]
+    fn test_event_verify_valid() {
+        let event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", 1, vec![], "test");
         assert!(event.verify());
     }
 
     #[test]
-    fn test_nip47_p_tag_enforcement() {
-        let event = Event {
-            id: "1".into(),
-            pubkey: "pub1".into(),
-            created_at: 100,
-            kind: 23194,
-            tags: vec![], // Missing p-tag
-            content: "".into(),
-            sig: "".into(),
-        };
-
-        // Should fail because kind 23194 requires a p-tag
+    fn test_event_verify_invalid_sig() {
+        let mut event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", 1, vec![], "test");
+        event.sig = "0".repeat(128);
         assert!(!event.verify());
-
-        let event_23196 = Event {
-            id: "2".into(),
-            pubkey: "pub1".into(),
-            created_at: 100,
-            kind: 23196,
-            tags: vec![], // Missing p-tag
-            content: "".into(),
-            sig: "".into(),
-        };
-
-        // Should fail because kind 23196 requires a p-tag
-        assert!(!event_23196.verify());
     }
 
     #[test]
-    fn test_filter_matching() {
-        let event = Event {
-            id: "1".into(),
-            pubkey: "pub1".into(),
-            created_at: 100,
-            kind: 23194,
-            tags: vec![vec!["p".into(), "recipient1".into()]],
-            content: "".into(),
-            sig: "".into(),
-        };
+    fn test_event_verify_invalid_id() {
+        let mut event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", 1, vec![], "test");
+        event.id = "0".repeat(64);
+        assert!(!event.verify());
+    }
 
-        let filter = Filter {
+    #[test]
+    fn test_event_verify_malformed_hex() {
+        let mut event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", 1, vec![], "test");
+        event.pubkey = "nothex".into();
+        assert!(!event.verify());
+    }
+
+    #[test]
+    fn test_event_verify_disallowed_kind() {
+        let event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", 3, vec![], "test");
+        assert!(!event.verify());
+    }
+
+    #[test]
+    fn test_nip47_tags_enforcement() {
+        let sk = "0101010101010101010101010101010101010101010101010101010101010101";
+        
+        // 23194 missing p
+        let e = create_test_event(sk, 23194, vec![], "");
+        assert!(!e.verify());
+        
+        // 23194 with p
+        let e = create_test_event(sk, 23194, vec![vec!["p".into(), "pub".into()]], "");
+        assert!(e.verify());
+
+        // 23195 missing e or p
+        let e = create_test_event(sk, 23195, vec![vec!["p".into(), "pub".into()]], "");
+        assert!(!e.verify());
+        let e = create_test_event(sk, 23195, vec![vec!["e".into(), "id".into()]], "");
+        assert!(!e.verify());
+        
+        // 23195 with both
+        let e = create_test_event(sk, 23195, vec![vec!["p".into(), "pub".into()], vec!["e".into(), "id".into()]], "");
+        assert!(e.verify());
+    }
+
+    #[test]
+    fn test_client_message_parsing() {
+        // Valid Event
+        let raw_event = r#"["EVENT",{"id":"id","pubkey":"pub","created_at":100,"kind":1,"tags":[],"content":"","sig":"sig"}]"#;
+        assert!(ClientMessage::from_json(raw_event).is_some());
+
+        // Valid REQ
+        let raw_req = r#"["REQ","sub",{"kinds":[1]}]"#;
+        assert!(ClientMessage::from_json(raw_req).is_some());
+
+        // Valid CLOSE
+        let raw_close = r#"["CLOSE","sub"]"#;
+        assert!(ClientMessage::from_json(raw_close).is_some());
+
+        // Malformed
+        assert!(ClientMessage::from_json("invalid").is_none());
+        assert!(ClientMessage::from_json(r#"["EVENT"]"#).is_none());
+    }
+
+    #[test]
+    fn test_filter_is_valid() {
+        // Broad NWC
+        let f = Filter { kinds: Some(vec![23194]), ..Default::default() };
+        assert!(!f.is_valid());
+
+        // Narrowed NWC
+        let f = Filter { kinds: Some(vec![23194]), authors: Some(vec!["p".into()]), ..Default::default() };
+        assert!(f.is_valid());
+
+        // Broad non-NWC
+        let f = Filter { kinds: Some(vec![1]), ..Default::default() };
+        assert!(f.is_valid());
+    }
+
+    #[test]
+    fn test_filter_matches() {
+        let event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", 1, vec![vec!["p".into(), "target".into()]], "hi");
+        
+        let f = Filter { kinds: Some(vec![1]), ..Default::default() };
+        assert!(f.matches(&event));
+
+        let f = Filter { p_tags: Some(vec!["target".into()]), ..Default::default() };
+        assert!(f.matches(&event));
+
+        let f = Filter { authors: Some(vec!["wrong".into()]), ..Default::default() };
+        assert!(!f.matches(&event));
+    }
+
+    #[test]
+    fn test_relay_message_serialization() {
+        let msg = RelayMessage::Closed("sub".into(), "reason".into());
+        assert_eq!(msg.to_json(), r#"["CLOSED","sub","reason"]"#);
+
+        let msg = RelayMessage::Ok("id".into(), false, "error".into());
+        assert_eq!(msg.to_json(), r#"["OK","id",false,"error"]"#);
+    }
+}
+
+impl Default for Filter {
+    fn default() -> Self {
+        Filter {
             ids: None,
             authors: None,
-            kinds: Some(vec![23194]),
-            p_tags: Some(vec!["recipient1".into()]),
-            since: Some(50),
-            until: Some(150),
-            limit: None,
-        };
-
-        assert!(filter.matches(&event));
-
-        let non_matching_filter = Filter {
-            ids: None,
-            authors: None,
-            kinds: Some(vec![23194]),
-            p_tags: Some(vec!["recipient2".into()]),
+            kinds: None,
+            p_tags: None,
             since: None,
             until: None,
             limit: None,
-        };
-
-        assert!(!non_matching_filter.matches(&event));
+        }
     }
 }

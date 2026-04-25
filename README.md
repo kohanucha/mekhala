@@ -39,13 +39,6 @@ You can customize your relay's identity (NIP-11 metadata) by editing the `[vars]
 
 ---
 
-## 🌍 Quick Setup (Alby Hub / Alby Go)
-1. **URL:** `wss://your-relay-name.workers.dev`
-2. **Setup:** Go to your wallet's **App Connection settings** -> **Advanced**.
-3. **Connect:** Set the **Relay URL** to your edge relay. Your wallet and node are now connected via the edge!
-
----
-
 ## 📦 Deploy Your Own (Automatic CI/CD)
 
 The recommended way to deploy is using Cloudflare's built-in **Git Integration**. This automatically builds and deploys your relay every time you push to GitHub.

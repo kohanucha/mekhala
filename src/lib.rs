@@ -119,6 +119,10 @@ impl DurableObject for NwcRelay {
                     }
                 }
                 ClientMessage::Req(sub_id, filters) => {
+                    if filters.iter().any(|f| !f.is_valid()) {
+                        let _ = ws.send_with_str(&RelayMessage::Closed(sub_id, "restricted: NIP-47 subscriptions must be narrowed by author or p-tag".into()).to_json());
+                        return Ok(());
+                    }
                     subscriptions.insert(sub_id.clone(), filters);
                     ws.serialize_attachment(&subscriptions)?;
                     let _ = ws.send_with_str(&RelayMessage::Eose(sub_id).to_json());

@@ -15,6 +15,17 @@ The relay acts as an ephemeral "routing engine" between Lightning wallet applica
 - **Stateless Routing**: Events are verified and broadcasted to active subscribers instantly. No event history is kept.
 - **WebSocket Hibernation**: Subscription filters are serialized into WebSocket "attachments," allowing the Durable Object to hibernate when idle and resume state upon new messages.
 
+## Project Structure
+- `src/`: Core Rust source code.
+    - `lib.rs`: Worker entry point and Durable Object implementation.
+    - `relay.rs`: Nostr relay logic, including event verification and filter matching.
+    - `utils.rs`: Shared utility functions.
+- `test/`: Integration tests.
+    - `test-relay.js`: Node.js tests using `nostr-tools`.
+- `build.sh`: Build script for compiling Rust to Wasm and preparing the worker.
+- `wrangler.toml`: Cloudflare Workers configuration.
+- `Cargo.toml`: Rust dependencies and workspace configuration.
+
 ## Building and Running
 
 ### Prerequisites
