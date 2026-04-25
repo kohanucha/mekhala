@@ -41,14 +41,25 @@ You can customize your relay's identity (NIP-11 metadata) by editing the `[vars]
 
 ## 📦 Deploy Your Own (Automatic CI/CD)
 
-The recommended way to deploy is using Cloudflare's built-in **Git Integration**. This automatically builds and deploys your relay every time you push to GitHub.
+Choose one of the following two ways to automatically deploy your relay.
+
+### Option 1: Cloudflare Git Integration (Simpler)
+This is the easiest setup. Cloudflare handles everything, but builds can take 4-5 minutes as Rust tools are re-installed each time.
 
 1. **Fork or Clone** this repository to your GitHub account.
 2. **Log in** to your [Cloudflare Dashboard](https://dash.cloudflare.com/).
 3. Go to **Workers & Pages** -> **Create application** -> **Connect to Git**.
 4. Select your repository and click **Save and Deploy**.
 
-Cloudflare will automatically detect the build settings from `wrangler.toml` and handle the Rust compilation for you!
+### Option 2: GitHub Actions (Faster Build)
+This method uses aggressive caching to reduce build times to **~30 seconds**.
+
+1. **Fork or Clone** this repository.
+2. Generate a **Cloudflare API Token** (Edit Cloudflare Workers template).
+3. In your GitHub repo, go to **Settings** -> **Secrets and variables** -> **Actions** and add:
+   - `CLOUDFLARE_API_TOKEN`: Your Cloudflare API Token.
+   - `CLOUDFLARE_ACCOUNT_ID`: Your Cloudflare Account ID (found in the dashboard sidebar).
+4. **Push to main** and the GitHub Action will handle the rest!
 
 ---
 
