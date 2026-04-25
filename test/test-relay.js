@@ -34,7 +34,8 @@ async function testNip11() {
   console.log('Testing NIP-11 (Plain HTTP fallback)...');
   const responsePlain = await fetch(HTTP_URL);
   const text = await responsePlain.text();
-  if (!text.includes('nwc-edge-relay: Nostr Wallet Connect Relay')) {
+  // Expecting the RELAY_DESCRIPTION from wrangler.toml
+  if (!text.includes('A stateless public NWC relay running on Cloudflare Workers.')) {
     throw new Error('Plain HTTP fallback failed: ' + text);
   }
   console.log('✅ NIP-11 Plain HTTP fallback passed.');
