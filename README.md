@@ -40,6 +40,15 @@ This is the easiest setup. Cloudflare handles everything, but builds can take 4-
 3. Go to **Workers & Pages** -> **Create application** -> **Connect to Git**.
 4. Select your repository and click **Save and Deploy**.
 
+#### 🚀 Faster Builds (Recommended)
+By default, Cloudflare runs everything in one step. To enable specialized caching and speed up your builds:
+1. Go to your Worker in the Cloudflare Dashboard.
+2. Go to **Settings** -> **Builds**.
+3. Set the following fields:
+   - **Build command**: `./build.sh`
+   - **Build output directory**: `build/worker`
+   - **Deployment command**: `npx wrangler deploy`
+
 ### Option 2: GitHub Actions (Faster Build)
 This method uses aggressive caching to reduce build times to **~30 seconds**.
 
