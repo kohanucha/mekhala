@@ -75,6 +75,14 @@ This method uses aggressive caching to reduce build times to **~30 seconds** and
      - `APP_PRIVATE_KEY`: The entire contents of the downloaded `.pem` file.
 5. **Push to main** and the GitHub Action will handle the rest!
 
+### Pull Request Checks
+Every time you open a Pull Request, an automated workflow will:
+- Run Rust Unit Tests.
+- Build the Worker.
+- Run Integration Tests against a local Miniflare instance.
+
+This ensures that your `main` branch remains stable. You can eventually enable **Branch Protection** in GitHub Settings to require these checks to pass before merging.
+
 ---
 
 ## 💻 Development & Testing
