@@ -46,7 +46,8 @@ This method uses aggressive caching to reduce build times to **~30 seconds**.
 1. **Fork or Clone** this repository.
 2. In your GitHub repo, go to **Settings** -> **Secrets and variables** -> **Actions** and add:
    - `CLOUDFLARE_API_TOKEN`: Your Cloudflare API Token (Edit Cloudflare Workers template).
-   - `CLOUDFLARE_ACCOUNT_ID`: Your Account ID (found in the dashboard sidebar).
+   - `CLOUDFLARE_ACCOUNT_ID`: Your Cloudflare Account ID (found in the dashboard sidebar).
+   - `CLOUDFLARE_PROJECT_NAME`: The name you want for your relay (e.g. `my-nwc-relay`).
 3. **Push to main** and the GitHub Action will handle the rest!
 
 ### Pull Request Checks
