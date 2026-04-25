@@ -26,19 +26,21 @@ async function testNip11() {
     headers: { 'Accept': 'application/nostr+json' }
   });
   const data = await response.json();
-  if (data.name !== 'nwc-edge-relay' || !data.supported_nips.includes(47)) {
+  if (!data.supported_nips.includes(47)) {
     throw new Error('NIP-11 failed: ' + JSON.stringify(data));
   }
   console.log('✅ NIP-11 JSON metadata passed.');
 
-  console.log('Testing NIP-11 (Plain HTTP fallback)...');
+  console.log('Testing NIP-11 (Plain HTTP fallback rejection)...');
   const responsePlain = await fetch(HTTP_URL);
-  const text = await responsePlain.text();
-  // Expecting the RELAY_DESCRIPTION from wrangler.toml
-  if (!text.includes('A stateless public NWC relay running on Cloudflare Workers.')) {
-    throw new Error('Plain HTTP fallback failed: ' + text);
+  if (responsePlain.status !== 400) {
+    throw new Error('Plain HTTP fallback should be rejected with 400, but got: ' + responsePlain.status);
   }
-  console.log('✅ NIP-11 Plain HTTP fallback passed.');
+  const text = await responsePlain.text();
+  if (!text.includes('Please use a Nostr client')) {
+    throw new Error('Plain HTTP fallback unexpected message: ' + text);
+  }
+  console.log('✅ NIP-11 Plain HTTP fallback rejected correctly.');
 }
 
 async function testRelay() {

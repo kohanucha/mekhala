@@ -2,14 +2,6 @@ name = "nwc-edge-relay"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-04-23"
 
-[vars]
-RELAY_NAME = "nwc-edge-relay"
-RELAY_DESCRIPTION = "A stateless public NWC relay running on Cloudflare Workers."
-RELAY_PUBKEY = "-"
-RELAY_CONTACT = "-"
-RELAY_SOFTWARE = "https://github.com/kohanucha/nwc-edge-relay"
-RELAY_VERSION = "main"
-
 [[durable_objects.bindings]]
 name = "NWC_RELAY"
 class_name = "NwcRelay"

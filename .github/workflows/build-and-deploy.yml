@@ -28,13 +28,6 @@ jobs:
             cargo install worker-build
           fi
 
-      - name: Inject Git Metadata
-        run: |
-          VERSION="${{ github.ref_name }}-${GITHUB_SHA:0:7}"
-          SOFTWARE="${{ github.server_url }}/${{ github.repository }}"
-          sed -i "s|^RELAY_SOFTWARE = .*|RELAY_SOFTWARE = \"$SOFTWARE\"|" wrangler.toml
-          sed -i "s|^RELAY_VERSION = .*|RELAY_VERSION = \"$VERSION\"|" wrangler.toml
-
       - name: Build & Deploy Worker
         uses: cloudflare/wrangler-action@v3
         with:

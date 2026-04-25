@@ -28,17 +28,6 @@
 
 ---
 
-## ⚙️ Configuration
-You can customize your relay's identity (NIP-11 metadata) by editing the `[vars]` section in `wrangler.toml`:
-- `RELAY_NAME`: The name of your relay.
-- `RELAY_DESCRIPTION`: A short description of the service.
-- `RELAY_PUBKEY`: The administrator's hex pubkey.
-- `RELAY_CONTACT`: Contact information (URI).
-- `RELAY_SOFTWARE`: Link to the software repository.
-- `RELAY_VERSION`: Software version.
-
----
-
 ## 📦 Deploy Your Own (Automatic CI/CD)
 
 Choose one of the following two ways to automatically deploy your relay.
