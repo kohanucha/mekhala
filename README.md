@@ -51,29 +51,14 @@ This is the easiest setup. Cloudflare handles everything, but builds can take 4-
 3. Go to **Workers & Pages** -> **Create application** -> **Connect to Git**.
 4. Select your repository and click **Save and Deploy**.
 
-### Option 2: GitHub Actions (Faster Build & Rich Metadata)
-This method uses aggressive caching to reduce build times to **~30 seconds** and correctly displays Git metadata (branch, commit) in the Cloudflare dashboard.
+### Option 2: GitHub Actions (Faster Build)
+This method uses aggressive caching to reduce build times to **~30 seconds**.
 
 1. **Fork or Clone** this repository.
-2. **Create a GitHub App** for your repository:
-   - Go to **Settings** -> **Developer settings** -> **GitHub Apps** -> **New GitHub App**.
-   - **Homepage URL**: Your repository URL (e.g., `https://github.com/your-username/nwc-edge-relay`).
-   - **Callback URL**: Leave blank.
-   - **Webhook**: Uncheck "Active" (not needed).
-   - **Permissions**: **Repository permissions** -> **Contents** (Read-only) & **Metadata** (Read-only).
-   - Click **Create GitHub App**.
-3. **Configure the App**:
-   - Note the **App ID**. (Note: Use the App ID even if GitHub suggests using Client ID).
-   - Scroll down to the **Private keys** section and click **Generate a private key**. This will download a `.pem` file.
-   - Install the app: Click **Install App** in the sidebar and install it to your repository.
-4. **Add GitHub Secrets**:
-   - In your GitHub repo, go to **Settings** -> **Secrets and variables** -> **Actions**.
-   - Add the following secrets:
-     - `CLOUDFLARE_API_TOKEN`: Your Cloudflare API Token.
-     - `CLOUDFLARE_ACCOUNT_ID`: Your Account ID.
-     - `APP_ID`: Your GitHub App ID.
-     - `APP_PRIVATE_KEY`: The entire contents of the downloaded `.pem` file.
-5. **Push to main** and the GitHub Action will handle the rest!
+2. In your GitHub repo, go to **Settings** -> **Secrets and variables** -> **Actions** and add:
+   - `CLOUDFLARE_API_TOKEN`: Your Cloudflare API Token (Edit Cloudflare Workers template).
+   - `CLOUDFLARE_ACCOUNT_ID`: Your Account ID (found in the dashboard sidebar).
+3. **Push to main** and the GitHub Action will handle the rest!
 
 ### Pull Request Checks
 Every time you open a Pull Request, an automated workflow will:
