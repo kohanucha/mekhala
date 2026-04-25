@@ -53,14 +53,9 @@ The recommended way to deploy is using Cloudflare's built-in **Git Integration**
 1. **Fork or Clone** this repository to your GitHub account.
 2. **Log in** to your [Cloudflare Dashboard](https://dash.cloudflare.com/).
 3. Go to **Workers & Pages** -> **Create application** -> **Connect to Git**.
-4. Select your repository and click **Begin setup**.
-5. **Configure Build Settings:**
-   - **Framework preset:** None
-   - **Build command:** `./build.sh`
-   - **Build output directory:** `build/worker`
-6. Click **Save and Deploy**.
+4. Select your repository and click **Save and Deploy**.
 
-Cloudflare will now handle the Rust compilation and WebAssembly deployment automatically!
+Cloudflare will automatically detect the build settings from `wrangler.toml` and handle the Rust compilation for you!
 
 ---
 
