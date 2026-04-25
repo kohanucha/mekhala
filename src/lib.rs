@@ -111,12 +111,16 @@ impl DurableObject for NwcRelay {
                         return Ok(());
                     }
                     subscriptions.insert(sub_id.clone(), filters);
-                    ws.serialize_attachment(&subscriptions)?;
+                    if let Err(e) = ws.serialize_attachment(&subscriptions) {
+                        let _ = ws.send_with_str(&RelayMessage::Notice(format!("error: failed to save subscription: {}", e)).to_json());
+                        return Ok(());
+                    }
                     let _ = ws.send_with_str(&RelayMessage::Eose(sub_id).to_json());
                 }
                 ClientMessage::Close(sub_id) => {
-                    subscriptions.remove(&sub_id);
-                    ws.serialize_attachment(&subscriptions)?;
+                    if subscriptions.remove(&sub_id).is_some() {
+                        let _ = ws.serialize_attachment(&subscriptions);
+                    }
                 }
             }
         }

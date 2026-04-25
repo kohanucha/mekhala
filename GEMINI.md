@@ -50,10 +50,6 @@ The relay acts as an ephemeral "routing engine" between Lightning wallet applica
 - **Strict Protocol Enforcement**: Incoming events must be instantly validated for ID integrity and Schnorr signatures.
 - **NIP-47 Constraints**: Enforce the presence of `#p` tags for NWC request/response kinds.
 
-### Configuration
-- Relay metadata (NIP-11) is configurable via `[vars]` in `wrangler.toml`.
-- Default values for `RELAY_NAME`, `RELAY_DESCRIPTION`, etc., should be kept generic; user-specific info should be provided via environment variables during deployment.
-
 ### Testing Practices
 - New features must include both Rust unit tests (in `src/relay.rs`) and integration tests (in `test/test-relay.js`).
 - Always verify that `13194` (Info) events are routed statelessly and not stored.

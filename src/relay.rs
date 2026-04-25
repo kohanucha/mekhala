@@ -4,6 +4,14 @@ use k256::schnorr::signature::hazmat::PrehashVerifier;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub const KIND_METADATA: u64 = 0;
+pub const KIND_TEXT_NOTE: u64 = 1;
+pub const KIND_NWC_INFO: u64 = 13194;
+pub const KIND_NWC_REQUEST: u64 = 23194;
+pub const KIND_NWC_RESPONSE: u64 = 23195;
+pub const KIND_NWC_NOTIFICATION_1: u64 = 23196;
+pub const KIND_NWC_NOTIFICATION_2: u64 = 23197;
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Event {
     pub id: String,
@@ -18,28 +26,32 @@ pub struct Event {
 impl Event {
     pub fn verify(&self) -> bool {
         // 1. Verify Allowed Kinds (NIP-01, NIP-47)
-        let allowed_kinds = [0, 1, 13194, 23194, 23195, 23196, 23197];
+        let allowed_kinds = [
+            KIND_METADATA,
+            KIND_TEXT_NOTE,
+            KIND_NWC_INFO,
+            KIND_NWC_REQUEST,
+            KIND_NWC_RESPONSE,
+            KIND_NWC_NOTIFICATION_1,
+            KIND_NWC_NOTIFICATION_2,
+        ];
         if !allowed_kinds.contains(&self.kind) {
             return false;
         }
 
         // 2. Verify NIP-47 constraints (strict tag enforcement)
-        if self.kind == 23194 {
-            let has_p_tag = self.tags.iter().any(|t| t.len() >= 2 && t[0] == "p");
-            if !has_p_tag {
-                return false;
+        match self.kind {
+            KIND_NWC_REQUEST | KIND_NWC_NOTIFICATION_1 | KIND_NWC_NOTIFICATION_2 => {
+                if !self.has_tag("p") {
+                    return false;
+                }
             }
-        } else if self.kind == 23195 {
-            let has_p_tag = self.tags.iter().any(|t| t.len() >= 2 && t[0] == "p");
-            let has_e_tag = self.tags.iter().any(|t| t.len() >= 2 && t[0] == "e");
-            if !has_p_tag || !has_e_tag {
-                return false;
+            KIND_NWC_RESPONSE => {
+                if !self.has_tag("p") || !self.has_tag("e") {
+                    return false;
+                }
             }
-        } else if self.kind == 23196 || self.kind == 23197 {
-            let has_p_tag = self.tags.iter().any(|t| t.len() >= 2 && t[0] == "p");
-            if !has_p_tag {
-                return false;
-            }
+            _ => {}
         }
 
         // 3. Verify ID (NIP-01)
@@ -58,9 +70,13 @@ impl Event {
         let mut hasher = Sha256::new();
         hasher.update(serialized.as_bytes());
         let id_bytes = hasher.finalize();
-        let id_hex = hex::encode(id_bytes);
 
-        if id_hex != self.id {
+        let expected_id_bytes = match hex::decode(&self.id) {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+
+        if expected_id_bytes != id_bytes.as_ref() as &[u8] {
             return false;
         }
 
@@ -86,6 +102,10 @@ impl Event {
         };
 
         verifying_key.verify_prehash(&id_bytes, &signature).is_ok()
+    }
+
+    fn has_tag(&self, tag_name: &str) -> bool {
+        self.tags.iter().any(|t| t.len() >= 2 && t[0] == tag_name)
     }
 }
 
@@ -119,13 +139,10 @@ impl Filter {
             }
         }
         if let Some(p_tags) = &self.p_tags {
-            let event_p_tags: Vec<String> = event
-                .tags
-                .iter()
-                .filter(|t| t.len() >= 2 && t[0] == "p")
-                .map(|t| t[1].clone())
-                .collect();
-            if !p_tags.iter().any(|p| event_p_tags.contains(p)) {
+            let has_match = event.tags.iter().any(|t| {
+                t.len() >= 2 && t[0] == "p" && p_tags.contains(&t[1])
+            });
+            if !has_match {
                 return false;
             }
         }
@@ -145,7 +162,12 @@ impl Filter {
     pub fn is_valid(&self) -> bool {
         // If the filter specifies NIP-47 request/response/notification kinds,
         // it MUST be narrowed by author or p-tag to prevent a global firehose.
-        let nip47_kinds = [23194, 23195, 23196, 23197];
+        let nip47_kinds = [
+            KIND_NWC_REQUEST,
+            KIND_NWC_RESPONSE,
+            KIND_NWC_NOTIFICATION_1,
+            KIND_NWC_NOTIFICATION_2,
+        ];
         if let Some(kinds) = &self.kinds {
             let requests_nip47 = kinds.iter().any(|k| nip47_kinds.contains(k));
             if requests_nip47 {
@@ -254,27 +276,27 @@ mod tests {
 
     #[test]
     fn test_event_verify_valid() {
-        let event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", 1, vec![], "test");
+        let event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", KIND_TEXT_NOTE, vec![], "test");
         assert!(event.verify());
     }
 
     #[test]
     fn test_event_verify_invalid_sig() {
-        let mut event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", 1, vec![], "test");
+        let mut event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", KIND_TEXT_NOTE, vec![], "test");
         event.sig = "0".repeat(128);
         assert!(!event.verify());
     }
 
     #[test]
     fn test_event_verify_invalid_id() {
-        let mut event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", 1, vec![], "test");
+        let mut event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", KIND_TEXT_NOTE, vec![], "test");
         event.id = "0".repeat(64);
         assert!(!event.verify());
     }
 
     #[test]
     fn test_event_verify_malformed_hex() {
-        let mut event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", 1, vec![], "test");
+        let mut event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", KIND_TEXT_NOTE, vec![], "test");
         event.pubkey = "nothex".into();
         assert!(!event.verify());
     }
@@ -290,21 +312,21 @@ mod tests {
         let sk = "0101010101010101010101010101010101010101010101010101010101010101";
         
         // 23194 missing p
-        let e = create_test_event(sk, 23194, vec![], "");
+        let e = create_test_event(sk, KIND_NWC_REQUEST, vec![], "");
         assert!(!e.verify());
         
         // 23194 with p
-        let e = create_test_event(sk, 23194, vec![vec!["p".into(), "pub".into()]], "");
+        let e = create_test_event(sk, KIND_NWC_REQUEST, vec![vec!["p".into(), "pub".into()]], "");
         assert!(e.verify());
 
         // 23195 missing e or p
-        let e = create_test_event(sk, 23195, vec![vec!["p".into(), "pub".into()]], "");
+        let e = create_test_event(sk, KIND_NWC_RESPONSE, vec![vec!["p".into(), "pub".into()]], "");
         assert!(!e.verify());
-        let e = create_test_event(sk, 23195, vec![vec!["e".into(), "id".into()]], "");
+        let e = create_test_event(sk, KIND_NWC_RESPONSE, vec![vec!["e".into(), "id".into()]], "");
         assert!(!e.verify());
         
         // 23195 with both
-        let e = create_test_event(sk, 23195, vec![vec!["p".into(), "pub".into()], vec!["e".into(), "id".into()]], "");
+        let e = create_test_event(sk, KIND_NWC_RESPONSE, vec![vec!["p".into(), "pub".into()], vec!["e".into(), "id".into()]], "");
         assert!(e.verify());
     }
 
@@ -330,23 +352,23 @@ mod tests {
     #[test]
     fn test_filter_is_valid() {
         // Broad NWC
-        let f = Filter { kinds: Some(vec![23194]), ..Default::default() };
+        let f = Filter { kinds: Some(vec![KIND_NWC_REQUEST]), ..Default::default() };
         assert!(!f.is_valid());
 
         // Narrowed NWC
-        let f = Filter { kinds: Some(vec![23194]), authors: Some(vec!["p".into()]), ..Default::default() };
+        let f = Filter { kinds: Some(vec![KIND_NWC_REQUEST]), authors: Some(vec!["p".into()]), ..Default::default() };
         assert!(f.is_valid());
 
         // Broad non-NWC
-        let f = Filter { kinds: Some(vec![1]), ..Default::default() };
+        let f = Filter { kinds: Some(vec![KIND_TEXT_NOTE]), ..Default::default() };
         assert!(f.is_valid());
     }
 
     #[test]
     fn test_filter_matches() {
-        let event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", 1, vec![vec!["p".into(), "target".into()]], "hi");
+        let event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", KIND_TEXT_NOTE, vec![vec!["p".into(), "target".into()]], "hi");
         
-        let f = Filter { kinds: Some(vec![1]), ..Default::default() };
+        let f = Filter { kinds: Some(vec![KIND_TEXT_NOTE]), ..Default::default() };
         assert!(f.matches(&event));
 
         let f = Filter { p_tags: Some(vec!["target".into()]), ..Default::default() };
