@@ -55,10 +55,11 @@ You need a random password to protect your relay. Open your computer's terminal 
 ### 2. Add the Password to Cloudflare
 - In your Cloudflare Dashboard, go to **Workers & Pages** and click on your `nwc-edge-relay`.
 - Go to the **Settings** tab, then click **Variables and Secrets**.
-- Under **Secrets**, click **Add secret**.
+- Click **Add**.
+- **Type:** Select **"Secret"** from the dropdown.
 - **Name:** Type exactly `RELAY_SECRET`
 - **Value:** Paste the secret you copied in Step 1.
-- Click **Save**.
+- Click **Deploy**.
 
 ---
 
