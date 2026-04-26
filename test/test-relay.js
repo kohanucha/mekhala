@@ -2,9 +2,10 @@ import { WebSocket } from 'ws';
 import * as nostr from 'nostr-tools';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 
-// Get URL from command line args or use default
+// Get URL and Secret from command line args or use default
 const args = process.argv.slice(2);
 let baseURL = args[0] || 'localhost:8787';
+const relaySecret = args[1] !== undefined ? args[1] : 'test-secret';
 
 // Clean up the input URL (remove protocol if user provided it)
 baseURL = baseURL.replace(/^https?:\/\//, '').replace(/^wss?:\/\//, '').replace(/\/$/, '');
@@ -13,19 +14,52 @@ const isLocal = baseURL.includes('localhost') || baseURL.includes('127.0.0.1');
 const wsProtocol = isLocal ? 'ws://' : 'wss://';
 const httpProtocol = isLocal ? 'http://' : 'https://';
 
-const RELAY_URL = `${wsProtocol}${baseURL}/`;
-const HTTP_URL = `${httpProtocol}${baseURL}/`;
+const RELAY_URL = `${wsProtocol}${baseURL}/${relaySecret}`;
+const HTTP_URL = `${httpProtocol}${baseURL}/${relaySecret}`;
 
 console.log(`Testing against:`);
 console.log(`  WebSocket: ${RELAY_URL}`);
 console.log(`  HTTP:      ${HTTP_URL}\n`);
+
+async function testAuth() {
+  if (!relaySecret || relaySecret === 'test-secret' && baseURL === 'localhost:8787') {
+    // If running with default 'test-secret' on localhost, we still want to test auth
+    // but if the user explicitly provided NO secret, we should skip this.
+    if (relaySecret === '') {
+        console.log('Skipping Authentication tests (Public Relay mode)...');
+        return;
+    }
+  }
+
+  console.log('Testing Authentication (Unauthorized access)...');
+  const rootURL = `${httpProtocol}${baseURL}/`;
+  const response = await fetch(rootURL);
+  if (response.status !== 401) {
+    throw new Error('Auth failed: Root path should return 401, but got ' + response.status);
+  }
+  
+  const wrongURL = `${httpProtocol}${baseURL}/wrong-secret`;
+  const responseWrong = await fetch(wrongURL);
+  if (responseWrong.status !== 401) {
+    throw new Error('Auth failed: Wrong secret path should return 401, but got ' + responseWrong.status);
+  }
+  console.log('✅ Authentication rejection passed.');
+}
 
 async function testNip11() {
   console.log('Testing NIP-11 (Relay Information)...');
   const response = await fetch(HTTP_URL, {
     headers: { 'Accept': 'application/nostr+json' }
   });
-  const data = await response.json();
+  let data;
+  try {
+      const clonedResponse = response.clone();
+      data = await clonedResponse.json();
+  } catch (e) {
+      const text = await response.text();
+      console.error(`Failed to parse JSON. Status: ${response.status}. Body: ${text}`);
+      throw e;
+  }
   if (!data.supported_nips.includes(47)) {
     throw new Error('NIP-11 failed: ' + JSON.stringify(data));
   }
@@ -529,6 +563,7 @@ async function testNip01EdgeCases() {
 
 async function runAll() {
     try {
+        await testAuth();
         await testNip11();
         await testRelay();
         await testNip01EdgeCases();

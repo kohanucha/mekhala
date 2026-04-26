@@ -13,18 +13,34 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let router = Router::new();
 
     router
-        .get_async("/", |req, ctx| async move {
-            if let Ok(Some(upgrade)) = req.headers().get("Upgrade") {
-                if upgrade.to_lowercase() == "websocket" {
-                    let namespace = ctx.env.durable_object("NWC_RELAY")?;
-                    let stub = namespace.id_from_name("GLOBAL")?.get_stub()?;
-                    return stub.fetch_with_request(req).await;
-                }
-            }
-            handle_get_info(req, ctx)
-        })
+        .get_async("/", handle_request)
+        .get_async("/:secret", handle_request)
         .run(req, env)
         .await
+}
+
+async fn handle_request(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let expected_secret = ctx.var("RELAY_SECRET").map(|v| v.to_string()).unwrap_or_default();
+    let provided_secret = ctx.param("secret").map(|s| s.as_str()).unwrap_or_default();
+
+    if !expected_secret.is_empty() && provided_secret != expected_secret {
+        return Response::error("Unauthorized", 401);
+    }
+
+    if let Ok(Some(upgrade)) = req.headers().get("Upgrade") {
+        if upgrade.to_lowercase() == "websocket" {
+            let namespace = ctx.env.durable_object("NWC_EDGE_RELAY")?;
+            let region = ctx.var("WALLET_REGION").map(|v| v.to_string()).unwrap_or_default();
+
+            let stub = if !region.is_empty() {
+                namespace.get_by_name_with_location_hint("GLOBAL", &region)?
+            } else {
+                namespace.id_from_name("GLOBAL")?.get_stub()?
+            };
+            return stub.fetch_with_request(req).await;
+        }
+    }
+    handle_get_info(req, ctx)
 }
 
 fn handle_get_info(req: Request, _ctx: RouteContext<()>) -> Result<Response> {
@@ -44,12 +60,12 @@ fn handle_get_info(req: Request, _ctx: RouteContext<()>) -> Result<Response> {
 }
 
 #[durable_object]
-pub struct NwcRelay {
+pub struct NwcEdgeRelay {
     state: State,
     _env: Env,
 }
 
-impl DurableObject for NwcRelay {
+impl DurableObject for NwcEdgeRelay {
     fn new(state: State, env: Env) -> Self {
         Self {
             state,

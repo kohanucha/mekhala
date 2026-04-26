@@ -44,7 +44,8 @@ jobs:
 
       - name: Run Integration Tests
         run: |
+          export RELAY_SECRET="ci-test-secret"
           npx wrangler dev --port 8787 &
           # Wait for Miniflare to start
           timeout 30s bash -c 'until curl -s http://localhost:8787 > /dev/null; do sleep 1; done'
-          cd test && npm test
+          cd test && node test-relay.js localhost:8787 ci-test-secret

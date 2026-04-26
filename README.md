@@ -28,6 +28,38 @@
 
 ---
 
+## 🔒 Securing Your Relay (Optional but Recommended)
+By default, the relay is public. To prevent unauthorized usage and ensure privacy, you can secure it with a secret path. 
+
+**Note:** If you choose not to set a `RELAY_SECRET`, anyone can use your relay, which may lead to Cloudflare limits being hit or your Durable Object crashing if abused.
+
+1. **Generate a Secret:**
+   Run the following command in your terminal to generate a secure, random string:
+   ```bash
+   ./generate_secret.sh
+   ```
+2. **Add to Cloudflare:**
+   - Go to your [Cloudflare Dashboard](https://dash.cloudflare.com/).
+   - Go to **Workers & Pages** -> click on your `nwc-edge-relay`.
+   - Go to **Settings** -> **Variables and Secrets**.
+   - Under **Environment Variables**, click **Add variable**.
+   - **Name:** `RELAY_SECRET`
+   - **Value:** (Paste the secret from step 1)
+   - Click **Deploy** to save.
+
+4. **Set Wallet Region (Optional):**
+   To minimize latency, you can specify a preferred geographic region for your relay:
+   - Go to **Settings** -> **Variables and Secrets**.
+   - Add a Variable named `WALLET_REGION`.
+   - Set the Value to a Cloudflare location hint (e.g., `apac` for Asia, `weur` for Europe, `wnam` for US West).
+   - Click **Deploy** to save.
+
+3. **Your Relay URL:**
+   - **Private mode:** `wss://your-relay.your-subdomain.workers.dev/<YOUR_SECRET>`
+   - **Public mode:** `wss://your-relay.your-subdomain.workers.dev/` (leave `RELAY_SECRET` unset)
+
+---
+
 ## 📦 Deploy Your Own (Automatic CI/CD)
 
 Choose one of the following two ways to automatically deploy your relay.

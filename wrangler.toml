@@ -2,13 +2,17 @@ name = "nwc-edge-relay"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-04-25"
 
+[vars]
+RELAY_SECRET = "test-secret"
+WALLET_REGION = ""
+
 [[durable_objects.bindings]]
-name = "NWC_RELAY"
-class_name = "NwcRelay"
+name = "NWC_EDGE_RELAY"
+class_name = "NwcEdgeRelay"
 
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["NwcRelay"]
+new_sqlite_classes = ["NwcEdgeRelay"]
 
 [build]
 command = "./build.sh"
