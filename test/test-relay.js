@@ -83,19 +83,15 @@ async function testNip11() {
   }
   console.log("✅ NIP-11 JSON metadata passed.");
 
-  console.log("Testing NIP-11 (Plain HTTP fallback rejection)...");
+  console.log("Testing NIP-11 (Plain HTTP fallback compatibility)...");
   const responsePlain = await fetch(HTTP_URL);
-  if (responsePlain.status !== 400) {
+  if (responsePlain.status !== 200) {
     throw new Error(
-      "Plain HTTP fallback should be rejected with 400, but got: " +
+      "Plain HTTP fallback should now return 200, but got: " +
         responsePlain.status,
     );
   }
-  const text = await responsePlain.text();
-  if (!text.includes("Please use a Nostr client")) {
-    throw new Error("Plain HTTP fallback unexpected message: " + text);
-  }
-  console.log("✅ NIP-11 Plain HTTP fallback rejected correctly.");
+  console.log("✅ NIP-11 Plain HTTP fallback compatibility passed.");
 }
 
 async function testRelay() {

@@ -27,6 +27,14 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 }
 
 async fn handle_request(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    if req.method() == Method::Options {
+        let headers = Headers::new();
+        headers.set("Access-Control-Allow-Origin", "*")?;
+        headers.set("Access-Control-Allow-Methods", "GET, OPTIONS")?;
+        headers.set("Access-Control-Allow-Headers", "*")?;
+        return Ok(Response::ok("")?.with_headers(headers));
+    }
+
     let expected_secret = ctx.var("RELAY_SECRET").map(|v| v.to_string()).unwrap_or_default();
     let provided_secret = ctx.param("secret").map(|s| s.as_str()).unwrap_or_default();
 
@@ -61,20 +69,16 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
     result == 0
 }
 
-fn handle_get_info(req: Request, _ctx: RouteContext<()>) -> Result<Response> {
-    if req.headers().get("Accept")?.as_deref() == Some("application/nostr+json") {
-        let info = serde_json::json!({
-            "supported_nips": [1, 11, 47]
-        });
+fn handle_get_info(_req: Request, _ctx: RouteContext<()>) -> Result<Response> {
+    let info = serde_json::json!({
+        "supported_nips": [1, 11, 47]
+    });
 
-        let headers = Headers::new();
-        headers.set("Content-Type", "application/nostr+json")?;
-        headers.set("Access-Control-Allow-Origin", "*")?;
+    let headers = Headers::new();
+    headers.set("Content-Type", "application/nostr+json")?;
+    headers.set("Access-Control-Allow-Origin", "*")?;
 
-        return Ok(Response::from_json(&info)?.with_headers(headers));
-    }
-
-    Response::error("Please use a Nostr client to connect.", 400)
+    Ok(Response::from_json(&info)?.with_headers(headers))
 }
 
 #[durable_object]
@@ -114,7 +118,10 @@ impl DurableObject for NwcRelay {
 
             let client_msg = match ClientMessage::from_json(&text) {
                 Some(m) => m,
-                None => return Ok(()),
+                None => {
+                    let _ = ws.send_with_str(&RelayMessage::Notice("error: unparseable message or invalid JSON format".into()).to_json());
+                    return Ok(());
+                }
             };
 
             // Get current state from the WebSocket attachment
