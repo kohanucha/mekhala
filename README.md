@@ -53,12 +53,17 @@ You need a random password to protect your relay. Open your computer's terminal 
 - **Value:** Paste the secret you copied in Step 1.
 - Click **Save**.
 
-### 3. (Optional) Set Your Region
-To make your relay even faster, you can tell Cloudflare to put it close to you.
-- On the same **Variables and Secrets** page, under **Environment Variables**, click **Add variable**.
-- **Name:** Type exactly `WALLET_REGION`
-- **Value:** Type `apac` (Asia), `weur` (Europe), or `wnam` (US West).
-- Click **Deploy**.
+---
+
+## 🌍 Set Your Region (Optional)
+
+To make your relay even faster, you can tell Cloudflare to put it physically close to your location. This defaults to `apac` (Asia) in `wrangler.toml`.
+
+1. In your Cloudflare Dashboard, go to **Settings** -> **Variables and Secrets**.
+2. Under **Environment Variables**, click **Add variable**.
+3. **Name:** Type exactly `WALLET_REGION`
+4. **Value:** Type `apac` (Asia), `weur` (Europe), or `wnam` (US West).
+5. Click **Deploy**.
 
 ---
 
