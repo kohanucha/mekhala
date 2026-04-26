@@ -36,7 +36,7 @@ async fn handle_request(req: Request, ctx: RouteContext<()>) -> Result<Response>
 
     if let Ok(Some(upgrade)) = req.headers().get("Upgrade") {
         if upgrade.to_lowercase() == "websocket" {
-            let namespace = ctx.env.durable_object("NWC_EDGE_RELAY")?;
+            let namespace = ctx.env.durable_object("NWC_RELAY")?;
             let region = ctx.var("WALLET_REGION").map(|v| v.to_string()).unwrap_or_default();
 
             let stub = if !region.is_empty() {
@@ -67,12 +67,12 @@ fn handle_get_info(req: Request, _ctx: RouteContext<()>) -> Result<Response> {
 }
 
 #[durable_object]
-pub struct NwcEdgeRelay {
+pub struct NwcRelay {
     state: State,
     _env: Env,
 }
 
-impl DurableObject for NwcEdgeRelay {
+impl DurableObject for NwcRelay {
     fn new(state: State, env: Env) -> Self {
         Self {
             state,

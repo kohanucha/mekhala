@@ -1,4 +1,4 @@
-# Project: nwc-edge-relay
+# Project: Mekhala
 
 A high-performance, 100% stateless Nostr relay built with **Rust** for **Cloudflare Workers**, specifically optimized for **NIP-47 (Nostr Wallet Connect)**.
 

@@ -1,4 +1,4 @@
-name = "nwc-edge-relay"
+name = "mekhala"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-04-25"
 
@@ -6,12 +6,12 @@ compatibility_date = "2026-04-25"
 WALLET_REGION = "apac"
 
 [[durable_objects.bindings]]
-name = "NWC_EDGE_RELAY"
-class_name = "NwcEdgeRelay"
+name = "NWC_RELAY"
+class_name = "NwcRelay"
 
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["NwcEdgeRelay"]
+new_sqlite_classes = ["NwcRelay"]
 
 [build]
 command = "./build.sh"

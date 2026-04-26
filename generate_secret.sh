@@ -9,7 +9,7 @@ else
 fi
 
 echo "===================================================="
-echo "          NWC EDGE RELAY SECRET GENERATOR           "
+echo "            MEKHALA SECRET GENERATOR                "
 echo "===================================================="
 echo ""
 echo "COPY THIS SECRET:"
@@ -19,7 +19,7 @@ echo "----------------------------------------------------"
 echo ""
 echo "HOW TO USE:"
 echo "1. Go to your Cloudflare Dashboard."
-echo "2. Workers & Pages -> click your 'nwc-edge-relay'."
+echo "2. Workers & Pages -> click your 'mekhala'."
 echo "3. Settings -> Variables and Secrets."
 echo "4. Click 'Add'."
 echo "5. Type: Select 'Secret'."
