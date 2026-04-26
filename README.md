@@ -72,15 +72,6 @@ This is the easiest setup. Cloudflare handles everything, but builds can take 4-
 3. Go to **Workers & Pages** -> **Create application** -> **Connect to Git**.
 4. Select your repository and click **Save and Deploy**.
 
-#### 🚀 Faster Builds (Recommended)
-By default, Cloudflare runs everything in one step. To enable specialized caching and speed up your builds:
-1. Go to your Worker in the Cloudflare Dashboard.
-2. Go to **Settings** -> **Builds**.
-3. Set the following fields:
-   - **Build command**: `./build.sh`
-   - **Build output directory**: `build/worker`
-   - **Deployment command**: `npx wrangler deploy`
-
 ### Option 2: GitHub Actions (Faster Build)
 This method uses aggressive caching to reduce build times to **~30 seconds**.
 
@@ -89,14 +80,6 @@ This method uses aggressive caching to reduce build times to **~30 seconds**.
    - `CLOUDFLARE_API_TOKEN`: Your Cloudflare API Token (Edit Cloudflare Workers template).
    - `CLOUDFLARE_ACCOUNT_ID`: Your Cloudflare Account ID (found in the dashboard sidebar).
 3. **Push to main** and the GitHub Action will handle the rest!
-
-### Pull Request Checks
-Every time you open a Pull Request, an automated workflow will:
-- Run Rust Unit Tests.
-- Build the Worker.
-- Run Integration Tests against a local Miniflare instance.
-
-This ensures that your `main` branch remains stable. You can eventually enable **Branch Protection** in GitHub Settings to require these checks to pass before merging.
 
 ---
 
