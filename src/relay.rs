@@ -130,6 +130,8 @@ pub struct Filter {
     pub kinds: Option<Vec<u64>>,
     #[serde(rename = "#p")]
     pub p_tags: Option<Vec<String>>,
+    #[serde(rename = "#e")]
+    pub e_tags: Option<Vec<String>>,
     pub since: Option<u64>,
     pub until: Option<u64>,
     pub limit: Option<usize>,
@@ -160,6 +162,14 @@ impl Filter {
                 return false;
             }
         }
+        if let Some(e_tags) = &self.e_tags {
+            let has_match = event.tags.iter().any(|t| {
+                t.len() >= 2 && t[0] == "e" && e_tags.contains(&t[1])
+            });
+            if !has_match {
+                return false;
+            }
+        }
         if let Some(since) = self.since {
             if event.created_at < since {
                 return false;
@@ -175,7 +185,7 @@ impl Filter {
 
     pub fn is_valid(&self) -> bool {
         // If the filter specifies NIP-47 request/response/notification kinds,
-        // it MUST be narrowed by author or p-tag to prevent a global firehose.
+        // it MUST be narrowed by author, p-tag, or e-tag to prevent a global firehose.
         let nip47_kinds = [
             KIND_NWC_REQUEST,
             KIND_NWC_RESPONSE,
@@ -187,7 +197,8 @@ impl Filter {
             if requests_nip47 {
                 let has_author = self.authors.as_ref().map(|a| !a.is_empty()).unwrap_or(false);
                 let has_p_tag = self.p_tags.as_ref().map(|p| !p.is_empty()).unwrap_or(false);
-                if !has_author && !has_p_tag {
+                let has_e_tag = self.e_tags.as_ref().map(|e| !e.is_empty()).unwrap_or(false);
+                if !has_author && !has_p_tag && !has_e_tag {
                     return false;
                 }
             }
@@ -428,6 +439,7 @@ impl Default for Filter {
             authors: None,
             kinds: None,
             p_tags: None,
+            e_tags: None,
             since: None,
             until: None,
             limit: None,

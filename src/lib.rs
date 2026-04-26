@@ -150,13 +150,13 @@ impl DurableObject for NwcRelay {
                     }
                 }
                 ClientMessage::Req(sub_id, filters) => {
-                    if conn_state.subscriptions.len() >= 5 && !conn_state.subscriptions.contains_key(&sub_id) {
-                        let _ = ws.send_with_str(&RelayMessage::Closed(sub_id, "rate-limited: too many subscriptions".into()).to_json());
+                    if conn_state.subscriptions.len() >= 20 && !conn_state.subscriptions.contains_key(&sub_id) {
+                        let _ = ws.send_with_str(&RelayMessage::Closed(sub_id, "rate-limited: max 20 subscriptions".into()).to_json());
                         return Ok(());
                     }
 
                     if filters.iter().any(|f| !f.is_valid()) {
-                        let _ = ws.send_with_str(&RelayMessage::Closed(sub_id, "restricted: NIP-47 subscriptions must be narrowed by author or p-tag".into()).to_json());
+                        let _ = ws.send_with_str(&RelayMessage::Closed(sub_id, "restricted: NIP-47 subscriptions must be narrowed by author, p-tag, or e-tag".into()).to_json());
                         return Ok(());
                     }
                     conn_state.subscriptions.insert(sub_id.clone(), filters.clone());
