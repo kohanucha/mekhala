@@ -18,6 +18,13 @@ Normally, relays store messages in a database. **nwc-edge-relay** is different. 
 
 ---
 
+## 📜 Supported NIPs
+- **[NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md):** Basic protocol (Event signing, ID verification, basic REQ/EVENT flow).
+- **[NIP-11](https://github.com/nostr-protocol/nips/blob/master/11.md):** Relay Information (JSON metadata for clients).
+- **[NIP-47](https://github.com/nostr-protocol/nips/blob/master/47.md):** Nostr Wallet Connect (Info, Request, Response, and Notifications).
+
+---
+
 ## 📦 1-Click Deployment (Recommended)
 
 The easiest way to get your own relay running is by using Cloudflare's built-in Git integration.
