@@ -20,6 +20,15 @@ Normally, relays store messages in a database. **Mekhala** is different. It acts
 
 ---
 
+## ⚠️ Current Limitations
+
+### Lightning Address Compatibility
+If you use a Lightning Address provided by a third-party service (like `name@getalby.com`), that service likely expects to communicate with your wallet through their own internal relays. 
+
+If your wallet (e.g., Alby Hub) is **only** connected to this private relay, those third-party services will not be able to reach you. To ensure your Lightning Address continues to work, you should keep your wallet connected to **both** this private relay and your provider's default relay.
+
+---
+
 ## 📜 Supported NIPs
 - **[NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md):** Basic protocol (Event signing, ID verification, basic REQ/EVENT flow).
 - **[NIP-11](https://github.com/nostr-protocol/nips/blob/master/11.md):** Relay Information (JSON metadata for clients).
