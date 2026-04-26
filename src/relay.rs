@@ -18,7 +18,7 @@ pub struct Event {
     pub pubkey: String,
     pub created_at: u64,
     pub kind: u64,
-    pub tags: Vec<Vec<String>>,
+    pub tags: Vec<Vec<serde_json::Value>>,
     pub content: String,
     pub sig: String,
 }
@@ -119,7 +119,7 @@ impl Event {
     }
 
     fn has_tag(&self, tag_name: &str) -> bool {
-        self.tags.iter().any(|t| t.len() >= 2 && t[0] == tag_name)
+        self.tags.iter().any(|t| t.len() >= 2 && t[0].as_str() == Some(tag_name))
     }
 }
 
@@ -156,7 +156,7 @@ impl Filter {
         }
         if let Some(p_tags) = &self.p_tags {
             let has_match = event.tags.iter().any(|t| {
-                t.len() >= 2 && t[0] == "p" && p_tags.contains(&t[1])
+                t.len() >= 2 && t[0].as_str() == Some("p") && t[1].as_str().map_or(false, |val| p_tags.contains(&val.to_string()))
             });
             if !has_match {
                 return false;
@@ -164,7 +164,7 @@ impl Filter {
         }
         if let Some(e_tags) = &self.e_tags {
             let has_match = event.tags.iter().any(|t| {
-                t.len() >= 2 && t[0] == "e" && e_tags.contains(&t[1])
+                t.len() >= 2 && t[0].as_str() == Some("e") && t[1].as_str().map_or(false, |val| e_tags.contains(&val.to_string()))
             });
             if !has_match {
                 return false;
@@ -281,7 +281,7 @@ mod tests {
     use k256::schnorr::SigningKey;
     use k256::schnorr::signature::hazmat::PrehashSigner;
 
-    fn create_test_event(priv_key_hex: &str, kind: u64, tags: Vec<Vec<String>>, content: &str, timestamp: Option<u64>) -> Event {
+    fn create_test_event(priv_key_hex: &str, kind: u64, tags: Vec<Vec<serde_json::Value>>, content: &str, timestamp: Option<u64>) -> Event {
         let priv_key_bytes = hex::decode(priv_key_hex).unwrap();
         let signing_key = SigningKey::from_bytes(&priv_key_bytes).unwrap();
         let verifying_key = signing_key.verifying_key();
@@ -360,17 +360,17 @@ mod tests {
         assert!(e.verify(now).is_err());
         
         // 23194 with p
-        let e = create_test_event(sk, KIND_NWC_REQUEST, vec![vec!["p".into(), "pub".into()]], "", None);
+        let e = create_test_event(sk, KIND_NWC_REQUEST, vec![vec![serde_json::json!("p"), serde_json::json!("pub")]], "", None);
         assert!(e.verify(now).is_ok());
 
         // 23195 missing e or p
-        let e = create_test_event(sk, KIND_NWC_RESPONSE, vec![vec!["p".into(), "pub".into()]], "", None);
+        let e = create_test_event(sk, KIND_NWC_RESPONSE, vec![vec![serde_json::json!("p"), serde_json::json!("pub")]], "", None);
         assert!(e.verify(now).is_err());
-        let e = create_test_event(sk, KIND_NWC_RESPONSE, vec![vec!["e".into(), "id".into()]], "", None);
+        let e = create_test_event(sk, KIND_NWC_RESPONSE, vec![vec![serde_json::json!("e"), serde_json::json!("id")]], "", None);
         assert!(e.verify(now).is_err());
         
         // 23195 with both
-        let e = create_test_event(sk, KIND_NWC_RESPONSE, vec![vec!["p".into(), "pub".into()], vec!["e".into(), "id".into()]], "", None);
+        let e = create_test_event(sk, KIND_NWC_RESPONSE, vec![vec![serde_json::json!("p"), serde_json::json!("pub")], vec![serde_json::json!("e"), serde_json::json!("id")]], "", None);
         assert!(e.verify(now).is_ok());
     }
 
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn test_filter_matches() {
-        let event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", KIND_TEXT_NOTE, vec![vec!["p".into(), "target".into()]], "hi", None);
+        let event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", KIND_TEXT_NOTE, vec![vec![serde_json::json!("p"), serde_json::json!("target")]], "hi", None);
         
         let f = Filter { kinds: Some(vec![KIND_TEXT_NOTE]), ..Default::default() };
         assert!(f.matches(&event));
