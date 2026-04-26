@@ -561,6 +561,58 @@ async function testNip01EdgeCases() {
     });
 }
 
+async function testInfoEventCaching() {
+    console.log('\n--- Testing NIP-47 Info Event Caching (Memory Persistence) ---');
+    
+    const walletSk = generateSecretKey();
+    const walletPk = getPublicKey(walletSk);
+
+    // 1. Wallet connects and publishes Info Event
+    const walletWs = new WebSocket(RELAY_URL);
+    await new Promise((resolve, reject) => {
+        walletWs.on('open', () => {
+            const infoEvent = finalizeEvent({
+                kind: 13194,
+                created_at: Math.floor(Date.now() / 1000),
+                tags: [],
+                content: 'cached_info_test'
+            }, walletSk);
+            walletWs.send(JSON.stringify(['EVENT', infoEvent]));
+        });
+        walletWs.on('message', (data) => {
+            const msg = JSON.parse(data.toString());
+            if (msg[0] === 'OK' && msg[2] === true) {
+                walletWs.close();
+                resolve();
+            }
+        });
+        walletWs.on('error', reject);
+        setTimeout(() => reject(new Error('Wallet publish timeout')), 5000);
+    });
+
+    // 2. App connects AFTER Wallet disconnected and requests Info Event
+    const appWs = new WebSocket(RELAY_URL);
+    return new Promise((resolve, reject) => {
+        appWs.on('open', () => {
+            appWs.send(JSON.stringify(['REQ', 'cache-sub', { kinds: [13194], authors: [walletPk] }]));
+        });
+
+        appWs.on('message', (data) => {
+            const msg = JSON.parse(data.toString());
+            if (msg[0] === 'EVENT' && msg[1] === 'cache-sub') {
+                if (msg[2].kind === 13194 && msg[2].content === 'cached_info_test') {
+                    console.log('✅ App received cached Info Event (13194) correctly.');
+                    appWs.close();
+                    resolve();
+                }
+            }
+        });
+
+        appWs.on('error', reject);
+        setTimeout(() => reject(new Error('App cache retrieval timeout')), 5000);
+    });
+}
+
 async function runAll() {
     try {
         await testAuth();
@@ -571,6 +623,7 @@ async function runAll() {
         await testNwcFlow();
         await testMultiClientIsolation();
         await testStatelessInfoEvent();
+        await testInfoEventCaching();
         console.log('\nAll tests passed successfully! 🚀');
         process.exit(0);
     } catch (err) {

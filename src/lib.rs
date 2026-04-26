@@ -1,10 +1,11 @@
 use std::collections::HashMap;
+use std::cell::RefCell;
 use worker::*;
 
 mod relay;
 mod utils;
 
-use relay::{ClientMessage, RelayMessage, Filter};
+use relay::{ClientMessage, RelayMessage, Filter, Event, KIND_NWC_INFO};
 
 #[event(fetch)]
 pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -63,6 +64,8 @@ fn handle_get_info(req: Request, _ctx: RouteContext<()>) -> Result<Response> {
 pub struct NwcEdgeRelay {
     state: State,
     _env: Env,
+    // Use RefCell for interior mutability since DO methods take &self
+    info_cache: RefCell<HashMap<String, Event>>,
 }
 
 impl DurableObject for NwcEdgeRelay {
@@ -70,6 +73,7 @@ impl DurableObject for NwcEdgeRelay {
         Self {
             state,
             _env: env,
+            info_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -109,11 +113,19 @@ impl DurableObject for NwcEdgeRelay {
                         return Ok(());
                     }
 
+                    // Cache NIP-47 Info Event
+                    if event.kind == KIND_NWC_INFO {
+                        self.info_cache.borrow_mut().insert(event.pubkey.clone(), event.clone());
+                    }
+
                     let _ = ws.send_with_str(&RelayMessage::Ok(event.id.clone(), true, "".into()).to_json());
 
                     // Broadcast to ALL connected websockets managed by this Durable Object
                     for other_ws in self.state.get_websockets() {
-                        let other_subs: HashMap<String, Vec<Filter>> = other_ws.deserialize_attachment()?.unwrap_or_default();
+                        let other_subs: HashMap<String, Vec<Filter>> = match other_ws.deserialize_attachment() {
+                            Ok(Some(s)) => s,
+                            _ => continue,
+                        };
                         for (sub_id, filters) in other_subs.iter() {
                             if filters.iter().any(|f| f.matches(&event)) {
                                 let _ = other_ws.send_with_str(&RelayMessage::Event(sub_id.clone(), event.clone()).to_json());
@@ -126,11 +138,22 @@ impl DurableObject for NwcEdgeRelay {
                         let _ = ws.send_with_str(&RelayMessage::Closed(sub_id, "restricted: NIP-47 subscriptions must be narrowed by author or p-tag".into()).to_json());
                         return Ok(());
                     }
-                    subscriptions.insert(sub_id.clone(), filters);
+                    subscriptions.insert(sub_id.clone(), filters.clone());
                     if let Err(e) = ws.serialize_attachment(&subscriptions) {
                         let _ = ws.send_with_str(&RelayMessage::Notice(format!("error: failed to save subscription: {}", e)).to_json());
                         return Ok(());
                     }
+
+                    // Serve cached NIP-47 Info Event
+                    if filters.iter().any(|f| f.kinds.as_ref().map_or(false, |k| k.contains(&KIND_NWC_INFO))) {
+                        let cache = self.info_cache.borrow();
+                        for (_, event) in cache.iter() {
+                            if filters.iter().any(|f| f.matches(event)) {
+                                let _ = ws.send_with_str(&RelayMessage::Event(sub_id.clone(), event.clone()).to_json());
+                            }
+                        }
+                    }
+
                     let _ = ws.send_with_str(&RelayMessage::Eose(sub_id).to_json());
                 }
                 ClientMessage::Close(sub_id) => {
