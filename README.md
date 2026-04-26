@@ -80,7 +80,7 @@ To make your relay even faster, you can tell Cloudflare to put it physically clo
 Now that your relay is deployed and secured, you can use it in your NWC connections!
 
 Your private relay URL will look like this:
-`wss://your-relay-name.your-subdomain.workers.dev/<YOUR_SECRET>`
+`wss://your-domain.com/<YOUR_SECRET>`
 
 *Just replace `<YOUR_SECRET>` with the password you saved in Cloudflare!*
 
