@@ -1,92 +1,88 @@
 # nwc-edge-relay ⚡️
 
-**High-performance, 100% stateless Nostr relay for NWC, built with Rust for Cloudflare Workers.**
+**A super fast, private, and secure Nostr relay for your Lightning Wallet, running on Cloudflare Workers.**
 
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](#)
-[![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
 ---
 
-## 🎯 The Concept
-**nwc-edge-relay** is a specialized "routing engine" for **NIP-47 (Nostr Wallet Connect)**. It replaces heavy, database-backed relays with a lightweight, in-memory bridge between your wallet apps and your Lightning node.
+## 🤔 What is this?
 
-### Why use it?
-- **Zero Latency:** No database I/O. Events are routed instantly in memory.
-- **Zero Maintenance:** No database to scale, back up, or manage.
-- **Privacy First:** Ephemeral routing. Your NWC traffic is never logged or stored.
-- **100% Stateless:** No Durable Object storage is used. All data exists only in-flight.
-- **Cost Efficient:** Uses **WebSocket Hibernation** to minimize resource usage.
+If you use **Nostr Wallet Connect (NWC)** to connect apps (like Damus, Amethyst, or web zaps) to your Lightning node (like Alby or Umbrel), they need a "relay" to talk to each other.
 
----
+Normally, relays store messages in a database. **nwc-edge-relay** is different. It acts like a direct, high-speed tunnel between your app and your wallet. It doesn't store anything, which means:
 
-## 🚀 Key Features
-- **Global Edge:** Runs on Cloudflare's network, physically close to you.
-- **Secure:** Instant Rust-powered signature verification.
-- **NWC Focused:** Supports NIP-47 routing for Info (13194), Requests (23194), Responses (23195), and Notifications (23196/23197).
-- **Auto-Build:** Fully automated environment setup and Wasm compilation.
+- 🚀 **It's blazingly fast** (instant routing)
+- 🔒 **It's completely private** (your data is never saved)
+- 💰 **It's completely free** (runs comfortably within Cloudflare's free limits)
 
 ---
 
-## 🔒 Securing Your Relay (Optional but Recommended)
-By default, the relay is public. To prevent unauthorized usage and ensure privacy, you can secure it with a secret path. 
+## 📦 1-Click Deployment (Recommended)
 
-**Note:** If you choose not to set a `RELAY_SECRET`, anyone can use your relay, which may lead to Cloudflare limits being hit or your Durable Object crashing if abused.
+The easiest way to get your own relay running is by using Cloudflare's built-in Git integration.
 
-1. **Generate a Secret:**
-   Run the following command in your terminal to generate a secure, random string:
-   ```bash
-   ./generate_secret.sh
-   ```
-2. **Add to Cloudflare:**
-   - Go to your [Cloudflare Dashboard](https://dash.cloudflare.com/).
-   - Go to **Workers & Pages** -> click on your `nwc-edge-relay`.
-   - Go to **Settings** -> **Variables and Secrets**.
-   - Under **Secrets**, click **Add secret**.
-   - **Name:** `RELAY_SECRET`
-   - **Value:** (Paste the secret from step 1)
-   - Click **Save** to deploy the secret.
+1. **Fork this repository:** Click the **"Fork"** button at the top right of this GitHub page to copy it to your account.
+2. **Log in to Cloudflare:** Go to your [Cloudflare Dashboard](https://dash.cloudflare.com/).
+3. **Create the Worker:**
+   - Go to **Workers & Pages** in the left sidebar.
+   - Click **Create application** -> **Connect to Git**.
+   - Select your forked `nwc-edge-relay` repository.
+   - Click **Save and Deploy**.
 
-4. **Set Wallet Region (Optional):**
-   To minimize latency, you can specify a preferred geographic region for your relay. This defaults to `apac` in `wrangler.toml`:
-   - Under **Environment Variables**, click **Add variable**.
-   - **Name:** `WALLET_REGION`
-   - **Value:** Set to a Cloudflare location hint (e.g., `apac` for Asia, `weur` for Europe, `wnam` for US West).
-   - Click **Deploy** to save.
-
-3. **Your Relay URL:**
-   - **Private mode:** `wss://your-relay.your-subdomain.workers.dev/<YOUR_SECRET>`
-   - **Public mode:** `wss://your-relay.your-subdomain.workers.dev/` (leave `RELAY_SECRET` unset)
+*Cloudflare will take a few minutes to install the necessary tools and build your relay for the first time.*
 
 ---
 
-## 📦 Deploy Your Own (Automatic CI/CD)
+## 🔒 Securing Your Relay (Very Important!)
 
-Choose one of the following two ways to automatically deploy your relay.
+If you don't secure your relay, anyone on the internet can use it. To keep it private and protect your free Cloudflare limits, follow these simple steps:
 
-### Option 1: Cloudflare Git Integration (Simpler)
-This is the easiest setup. Cloudflare handles everything, but builds can take 4-5 minutes as Rust tools are re-installed each time.
+### 1. Generate a Secret Password
+You need a random password to protect your relay. Open your computer's terminal (or command prompt), navigate to the folder where you cloned this code, and run:
+```bash
+./generate_secret.sh
+```
+*(Copy the secret text it gives you!)*
 
-1. **Fork or Clone** this repository to your GitHub account.
-2. **Log in** to your [Cloudflare Dashboard](https://dash.cloudflare.com/).
-3. Go to **Workers & Pages** -> **Create application** -> **Connect to Git**.
-4. Select your repository and click **Save and Deploy**.
+### 2. Add the Password to Cloudflare
+- In your Cloudflare Dashboard, go to **Workers & Pages** and click on your `nwc-edge-relay`.
+- Go to the **Settings** tab, then click **Variables and Secrets**.
+- Under **Secrets**, click **Add secret**.
+- **Name:** Type exactly `RELAY_SECRET`
+- **Value:** Paste the secret you copied in Step 1.
+- Click **Save**.
 
-### Option 2: GitHub Actions (Faster Build)
-This method uses aggressive caching to reduce build times to **~30 seconds**.
-
-1. **Fork or Clone** this repository.
-2. In your GitHub repo, go to **Settings** -> **Secrets and variables** -> **Actions** and add:
-   - `CLOUDFLARE_API_TOKEN`: Your Cloudflare API Token (Edit Cloudflare Workers template).
-   - `CLOUDFLARE_ACCOUNT_ID`: Your Cloudflare Account ID (found in the dashboard sidebar).
-3. **Push to main** and the GitHub Action will handle the rest!
+### 3. (Optional) Set Your Region
+To make your relay even faster, you can tell Cloudflare to put it close to you.
+- On the same **Variables and Secrets** page, under **Environment Variables**, click **Add variable**.
+- **Name:** Type exactly `WALLET_REGION`
+- **Value:** Type `apac` (Asia), `weur` (Europe), or `wnam` (US West).
+- Click **Deploy**.
 
 ---
 
-## 💻 Development & Testing
-- **Local Dev:** `./build.sh && wrangler dev`
+## 🔗 How to Use Your Relay
+
+Now that your relay is deployed and secured, you can use it in your NWC connections!
+
+Your private relay URL will look like this:
+`wss://your-relay-name.your-subdomain.workers.dev/<YOUR_SECRET>`
+
+*Just replace `<YOUR_SECRET>` with the password you saved in Cloudflare!*
+
+---
+
+## 💻 For Developers (Advanced)
+
+If you want to build or test locally:
+- **Build:** `./build.sh`
+- **Local Dev:** `npx wrangler dev`
 - **Unit Tests:** `cargo test`
 - **Integration Tests:** `cd test && npm i && node test-relay.js`
+
+### GitHub Actions Deployment
+You can also deploy via GitHub Actions for faster build times (~30 seconds). Just add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` to your GitHub Repository Secrets and push to `main`.
 
 ---
 
