@@ -91,7 +91,7 @@ If you want to build or test locally:
 - **Build:** `./build.sh`
 - **Local Dev:** `npx wrangler dev`
 - **Unit Tests:** `cargo test`
-- **Integration Tests:** `cd test && npm i && node test-relay.js`
+- **Integration Tests:** `cd test && npm i && npm test`
 
 ### GitHub Actions Deployment
 You can also deploy via GitHub Actions for faster build times (~30 seconds). Just add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` to your GitHub Repository Secrets and push to `main`.
