@@ -42,16 +42,16 @@ By default, the relay is public. To prevent unauthorized usage and ensure privac
    - Go to your [Cloudflare Dashboard](https://dash.cloudflare.com/).
    - Go to **Workers & Pages** -> click on your `nwc-edge-relay`.
    - Go to **Settings** -> **Variables and Secrets**.
-   - Under **Environment Variables**, click **Add variable**.
+   - Under **Secrets**, click **Add secret**.
    - **Name:** `RELAY_SECRET`
    - **Value:** (Paste the secret from step 1)
-   - Click **Deploy** to save.
+   - Click **Save** to deploy the secret.
 
 4. **Set Wallet Region (Optional):**
-   To minimize latency, you can specify a preferred geographic region for your relay:
-   - Go to **Settings** -> **Variables and Secrets**.
-   - Add a Variable named `WALLET_REGION`.
-   - Set the Value to a Cloudflare location hint (e.g., `apac` for Asia, `weur` for Europe, `wnam` for US West).
+   To minimize latency, you can specify a preferred geographic region for your relay. This defaults to `apac` in `wrangler.toml`:
+   - Under **Environment Variables**, click **Add variable**.
+   - **Name:** `WALLET_REGION`
+   - **Value:** Set to a Cloudflare location hint (e.g., `apac` for Asia, `weur` for Europe, `wnam` for US West).
    - Click **Deploy** to save.
 
 3. **Your Relay URL:**
