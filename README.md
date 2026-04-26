@@ -1,6 +1,8 @@
-# nwc-edge-relay ⚡️
+# Mekhala - เมขลา ⚡️
 
 **A super fast, private, and secure Nostr relay for your Lightning Wallet, running on Cloudflare Workers.**
+
+> According to legend, the phenomena of lightning and thunder is produced from the flashing of Manimekhala's crystal ball.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
@@ -10,7 +12,7 @@
 
 If you use **Nostr Wallet Connect (NWC)** to connect apps (like Damus, Amethyst, or web zaps) to your Lightning node (like Alby or Umbrel), they need a "relay" to talk to each other.
 
-Normally, relays store messages in a database. **nwc-edge-relay** is different. It acts like a direct, high-speed tunnel between your app and your wallet. It doesn't store anything, which means:
+Normally, relays store messages in a database. **Mekhala** is different. It acts like a direct, high-speed tunnel between your app and your wallet. It doesn't store anything, which means:
 
 - 🚀 **It's blazingly fast** (instant routing)
 - 🔒 **It's completely private** (your data is never saved)
@@ -34,7 +36,7 @@ The easiest way to get your own relay running is by using Cloudflare's built-in 
 3. **Create the Worker:**
    - Go to **Workers & Pages** in the left sidebar.
    - Click **Create application** -> **Connect to Git**.
-   - Select your forked `nwc-edge-relay` repository.
+   - Select your forked `mekhala` repository.
    - Click **Save and Deploy**.
 
 *Cloudflare will take a few minutes to install the necessary tools and build your relay for the first time.*
@@ -53,7 +55,7 @@ You need a random password to protect your relay. Open your computer's terminal 
 *(Copy the secret text it gives you!)*
 
 ### 2. Add the Password to Cloudflare
-- In your Cloudflare Dashboard, go to **Workers & Pages** and click on your `nwc-edge-relay`.
+- In your Cloudflare Dashboard, go to **Workers & Pages** and click on your `mekhala`.
 - Go to the **Settings** tab, then click **Variables and Secrets**.
 - Click **Add**.
 - **Type:** Select **"Secret"** from the dropdown.
