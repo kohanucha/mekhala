@@ -98,8 +98,3 @@ If you want to build or test locally:
 
 ### GitHub Actions Deployment
 You can also deploy via GitHub Actions for faster build times (~30 seconds). Just add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` to your GitHub Repository Secrets and push to `main`.
-
----
-
-## ⚖️ License
-[MIT License](LICENSE)

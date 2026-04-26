@@ -30,7 +30,7 @@ async fn handle_request(req: Request, ctx: RouteContext<()>) -> Result<Response>
     let expected_secret = ctx.var("RELAY_SECRET").map(|v| v.to_string()).unwrap_or_default();
     let provided_secret = ctx.param("secret").map(|s| s.as_str()).unwrap_or_default();
 
-    if !expected_secret.is_empty() && provided_secret != expected_secret {
+    if !expected_secret.is_empty() && !constant_time_eq(provided_secret, &expected_secret) {
         return Response::error("Unauthorized", 401);
     }
 
@@ -48,6 +48,17 @@ async fn handle_request(req: Request, ctx: RouteContext<()>) -> Result<Response>
         }
     }
     handle_get_info(req, ctx)
+}
+
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut result = 0;
+    for (byte_a, byte_b) in a.bytes().zip(b.bytes()) {
+        result |= byte_a ^ byte_b;
+    }
+    result == 0
 }
 
 fn handle_get_info(req: Request, _ctx: RouteContext<()>) -> Result<Response> {
@@ -111,8 +122,9 @@ impl DurableObject for NwcRelay {
 
             match client_msg {
                 ClientMessage::Event(event) => {
-                    if !event.verify() {
-                        let _ = ws.send_with_str(&RelayMessage::Ok(event.id, false, "invalid: signature verification failed".into()).to_json());
+                    let current_time = (Date::now().as_millis() / 1000) as u64;
+                    if let Err(reason) = event.verify(current_time) {
+                        let _ = ws.send_with_str(&RelayMessage::Ok(event.id, false, reason).to_json());
                         return Ok(());
                     }
 
@@ -138,6 +150,11 @@ impl DurableObject for NwcRelay {
                     }
                 }
                 ClientMessage::Req(sub_id, filters) => {
+                    if conn_state.subscriptions.len() >= 5 && !conn_state.subscriptions.contains_key(&sub_id) {
+                        let _ = ws.send_with_str(&RelayMessage::Closed(sub_id, "rate-limited: too many subscriptions".into()).to_json());
+                        return Ok(());
+                    }
+
                     if filters.iter().any(|f| !f.is_valid()) {
                         let _ = ws.send_with_str(&RelayMessage::Closed(sub_id, "restricted: NIP-47 subscriptions must be narrowed by author or p-tag".into()).to_json());
                         return Ok(());

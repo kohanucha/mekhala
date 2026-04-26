@@ -182,9 +182,9 @@ async function testRelay() {
         }
 
         if (msg[2] === false) {
-          if (msg[3].includes("signature")) {
+          if (msg[3].includes("signature") || msg[3].includes("invalid:")) {
             sigRejected = true;
-            console.log("✅ Signature rejection passed.");
+            console.log("✅ Rejection (invalid/signature) passed.");
           }
         }
       }
@@ -743,6 +743,57 @@ async function testInfoEventCaching() {
   walletWs.close();
 }
 
+async function testTimestampValidation() {
+  console.log("\n--- Testing Timestamp Validation Limits ---");
+  const ws = new WebSocket(RELAY_URL);
+  const sk = generateSecretKey();
+
+  return new Promise((resolve, reject) => {
+    ws.on("open", () => {
+      // 1. Future timestamp (+20 mins)
+      console.log("Step 1: Testing rejection of future timestamp...");
+      const futureEvent = finalizeEvent({
+        kind: 1,
+        created_at: Math.floor(Date.now() / 1000) + 1200,
+        tags: [],
+        content: "future"
+      }, sk);
+      ws.send(JSON.stringify(["EVENT", futureEvent]));
+
+      // 2. Old timestamp (-2 years)
+      console.log("Step 2: Testing rejection of ancient timestamp...");
+      const oldEvent = finalizeEvent({
+        kind: 1,
+        created_at: Math.floor(Date.now() / 1000) - (2 * 365 * 24 * 60 * 60),
+        tags: [],
+        content: "ancient"
+      }, sk);
+      ws.send(JSON.stringify(["EVENT", oldEvent]));
+    });
+
+    let futureRejected = false;
+    let oldRejected = false;
+
+    ws.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg[0] === "OK" && msg[2] === false && msg[3].includes("invalid: event creation date")) {
+        if (msg[3].includes("far off")) futureRejected = true;
+        if (msg[3].includes("too old")) oldRejected = true;
+      }
+
+      if (futureRejected && oldRejected) {
+        console.log("✅ Timestamp limits enforced correctly.");
+        ws.close();
+        resolve();
+      }
+    });
+
+    setTimeout(() => {
+      reject(new Error(`Timestamp Validation Timeout. Future: ${futureRejected}, Old: ${oldRejected}`));
+    }, 5000);
+  });
+}
+
 async function runAll() {
   try {
     await testAuth();
@@ -753,6 +804,7 @@ async function runAll() {
     await testNwcFlow();
     await testMultiClientIsolation();
     await testInfoEventCaching();
+    await testTimestampValidation();
     console.log("\nAll tests passed successfully! 🚀");
     process.exit(0);
   } catch (err) {

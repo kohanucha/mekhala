@@ -24,7 +24,7 @@ pub struct Event {
 }
 
 impl Event {
-    pub fn verify(&self) -> bool {
+    pub fn verify(&self, current_time: u64) -> Result<(), String> {
         // 1. Verify Allowed Kinds (NIP-01, NIP-47)
         let allowed_kinds = [
             KIND_METADATA,
@@ -36,25 +36,35 @@ impl Event {
             KIND_NWC_NOTIFICATION_2,
         ];
         if !allowed_kinds.contains(&self.kind) {
-            return false;
+            return Err("blocked: event kind not allowed".into());
         }
 
-        // 2. Verify NIP-47 constraints (strict tag enforcement)
+        // 2. Verify timestamp limits (Replay protection)
+        // Future limit: 15 minutes
+        if self.created_at > current_time + 900 {
+            return Err("invalid: event creation date is too far off from the current time".into());
+        }
+        // Past limit: 1 year
+        if self.created_at < current_time - 31_536_000 {
+            return Err("invalid: event creation date is too old".into());
+        }
+
+        // 3. Verify NIP-47 constraints (strict tag enforcement)
         match self.kind {
             KIND_NWC_REQUEST | KIND_NWC_NOTIFICATION_1 | KIND_NWC_NOTIFICATION_2 => {
                 if !self.has_tag("p") {
-                    return false;
+                    return Err("invalid: missing #p tag".into());
                 }
             }
             KIND_NWC_RESPONSE => {
                 if !self.has_tag("p") || !self.has_tag("e") {
-                    return false;
+                    return Err("invalid: missing #p or #e tag".into());
                 }
             }
             _ => {}
         }
 
-        // 3. Verify ID (NIP-01)
+        // 4. Verify ID (NIP-01)
         let serialized = match serde_json::to_string(&serde_json::json!([
             0,
             self.pubkey,
@@ -64,7 +74,7 @@ impl Event {
             self.content
         ])) {
             Ok(s) => s,
-            Err(_) => return false,
+            Err(_) => return Err("error: failed to serialize event for ID verification".into()),
         };
 
         let mut hasher = Sha256::new();
@@ -73,35 +83,39 @@ impl Event {
 
         let expected_id_bytes = match hex::decode(&self.id) {
             Ok(b) => b,
-            Err(_) => return false,
+            Err(_) => return Err("invalid: malformed event ID".into()),
         };
 
         if expected_id_bytes != id_bytes.as_ref() as &[u8] {
-            return false;
+            return Err("invalid: event ID mismatch".into());
         }
 
-        // 4. Verify Signature (NIP-01)
+        // 5. Verify Signature (NIP-01)
         let pubkey_bytes = match hex::decode(&self.pubkey) {
             Ok(b) => b,
-            Err(_) => return false,
+            Err(_) => return Err("invalid: malformed public key".into()),
         };
 
         let sig_bytes = match hex::decode(&self.sig) {
             Ok(b) => b,
-            Err(_) => return false,
+            Err(_) => return Err("invalid: malformed signature".into()),
         };
 
         let verifying_key = match VerifyingKey::from_bytes(&pubkey_bytes) {
             Ok(k) => k,
-            Err(_) => return false,
+            Err(_) => return Err("invalid: invalid public key format".into()),
         };
 
         let signature = match Signature::try_from(sig_bytes.as_slice()) {
             Ok(s) => s,
-            Err(_) => return false,
+            Err(_) => return Err("invalid: invalid signature format".into()),
         };
 
-        verifying_key.verify_prehash(&id_bytes, &signature).is_ok()
+        if verifying_key.verify_prehash(&id_bytes, &signature).is_ok() {
+            Ok(())
+        } else {
+            Err("invalid: signature verification failed".into())
+        }
     }
 
     fn has_tag(&self, tag_name: &str) -> bool {
@@ -256,12 +270,12 @@ mod tests {
     use k256::schnorr::SigningKey;
     use k256::schnorr::signature::hazmat::PrehashSigner;
 
-    fn create_test_event(priv_key_hex: &str, kind: u64, tags: Vec<Vec<String>>, content: &str) -> Event {
+    fn create_test_event(priv_key_hex: &str, kind: u64, tags: Vec<Vec<String>>, content: &str, timestamp: Option<u64>) -> Event {
         let priv_key_bytes = hex::decode(priv_key_hex).unwrap();
         let signing_key = SigningKey::from_bytes(&priv_key_bytes).unwrap();
         let verifying_key = signing_key.verifying_key();
         let pubkey = hex::encode(verifying_key.to_bytes());
-        let created_at = 1712160000;
+        let created_at = timestamp.unwrap_or(1712160000);
 
         let serialized = serde_json::json!([0, pubkey, created_at, kind, tags, content]).to_string();
         let mut hasher = Sha256::new();
@@ -276,58 +290,77 @@ mod tests {
 
     #[test]
     fn test_event_verify_valid() {
-        let event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", KIND_TEXT_NOTE, vec![], "test");
-        assert!(event.verify());
+        let event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", KIND_TEXT_NOTE, vec![], "test", None);
+        assert!(event.verify(1712160000).is_ok());
     }
 
     #[test]
     fn test_event_verify_invalid_sig() {
-        let mut event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", KIND_TEXT_NOTE, vec![], "test");
+        let mut event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", KIND_TEXT_NOTE, vec![], "test", None);
         event.sig = "0".repeat(128);
-        assert!(!event.verify());
+        assert!(event.verify(1712160000).is_err());
     }
 
     #[test]
     fn test_event_verify_invalid_id() {
-        let mut event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", KIND_TEXT_NOTE, vec![], "test");
+        let mut event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", KIND_TEXT_NOTE, vec![], "test", None);
         event.id = "0".repeat(64);
-        assert!(!event.verify());
+        assert!(event.verify(1712160000).is_err());
     }
 
     #[test]
     fn test_event_verify_malformed_hex() {
-        let mut event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", KIND_TEXT_NOTE, vec![], "test");
+        let mut event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", KIND_TEXT_NOTE, vec![], "test", None);
         event.pubkey = "nothex".into();
-        assert!(!event.verify());
+        assert!(event.verify(1712160000).is_err());
     }
 
     #[test]
     fn test_event_verify_disallowed_kind() {
-        let event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", 3, vec![], "test");
-        assert!(!event.verify());
+        let event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", 3, vec![], "test", None);
+        assert!(event.verify(1712160000).is_err());
+    }
+
+    #[test]
+    fn test_event_verify_timestamp_limits() {
+        let sk = "0101010101010101010101010101010101010101010101010101010101010101";
+        let now = 1712160000;
+        
+        // Future: +16 mins (960s)
+        let event = create_test_event(sk, KIND_TEXT_NOTE, vec![], "test", Some(now + 960));
+        assert!(event.verify(now).is_err());
+
+        // Past: -1.1 years
+        let event = create_test_event(sk, KIND_TEXT_NOTE, vec![], "test", Some(now - 35_000_000));
+        assert!(event.verify(now).is_err());
+
+        // Valid: +5 mins
+        let event = create_test_event(sk, KIND_TEXT_NOTE, vec![], "test", Some(now + 300));
+        assert!(event.verify(now).is_ok());
     }
 
     #[test]
     fn test_nip47_tags_enforcement() {
         let sk = "0101010101010101010101010101010101010101010101010101010101010101";
+        let now = 1712160000;
         
         // 23194 missing p
-        let e = create_test_event(sk, KIND_NWC_REQUEST, vec![], "");
-        assert!(!e.verify());
+        let e = create_test_event(sk, KIND_NWC_REQUEST, vec![], "", None);
+        assert!(e.verify(now).is_err());
         
         // 23194 with p
-        let e = create_test_event(sk, KIND_NWC_REQUEST, vec![vec!["p".into(), "pub".into()]], "");
-        assert!(e.verify());
+        let e = create_test_event(sk, KIND_NWC_REQUEST, vec![vec!["p".into(), "pub".into()]], "", None);
+        assert!(e.verify(now).is_ok());
 
         // 23195 missing e or p
-        let e = create_test_event(sk, KIND_NWC_RESPONSE, vec![vec!["p".into(), "pub".into()]], "");
-        assert!(!e.verify());
-        let e = create_test_event(sk, KIND_NWC_RESPONSE, vec![vec!["e".into(), "id".into()]], "");
-        assert!(!e.verify());
+        let e = create_test_event(sk, KIND_NWC_RESPONSE, vec![vec!["p".into(), "pub".into()]], "", None);
+        assert!(e.verify(now).is_err());
+        let e = create_test_event(sk, KIND_NWC_RESPONSE, vec![vec!["e".into(), "id".into()]], "", None);
+        assert!(e.verify(now).is_err());
         
         // 23195 with both
-        let e = create_test_event(sk, KIND_NWC_RESPONSE, vec![vec!["p".into(), "pub".into()], vec!["e".into(), "id".into()]], "");
-        assert!(e.verify());
+        let e = create_test_event(sk, KIND_NWC_RESPONSE, vec![vec!["p".into(), "pub".into()], vec!["e".into(), "id".into()]], "", None);
+        assert!(e.verify(now).is_ok());
     }
 
     #[test]
@@ -366,7 +399,7 @@ mod tests {
 
     #[test]
     fn test_filter_matches() {
-        let event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", KIND_TEXT_NOTE, vec![vec!["p".into(), "target".into()]], "hi");
+        let event = create_test_event("0101010101010101010101010101010101010101010101010101010101010101", KIND_TEXT_NOTE, vec![vec!["p".into(), "target".into()]], "hi", None);
         
         let f = Filter { kinds: Some(vec![KIND_TEXT_NOTE]), ..Default::default() };
         assert!(f.matches(&event));
