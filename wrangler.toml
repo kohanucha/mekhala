@@ -3,7 +3,6 @@ main = "build/worker/shim.mjs"
 compatibility_date = "2026-04-25"
 
 [vars]
-RELAY_SECRET = "test-secret"
 WALLET_REGION = ""
 
 [[durable_objects.bindings]]
