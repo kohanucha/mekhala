@@ -35,12 +35,15 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           # 1. Find existing KV ID by name (Wrangler names it <PROJECT>-<BINDING>)
-          KV_ID=$(npx wrangler kv namespace list | jq -r '.[] | select(.title == "mekhala-MEKHALA_NWC_KV") | .id')
+          # list outputs JSON by default
+          KV_ID=$(npx wrangler kv namespace list | jq -r '.[] | select(.title == "mekhala-MEKHALA_NWC_KV") | .id' | head -n 1)
 
           # 2. Create if not found
           if [ -z "$KV_ID" ] || [ "$KV_ID" == "null" ]; then
             echo "Creating new KV namespace..."
-            KV_ID=$(npx wrangler kv namespace create MEKHALA_NWC_KV --json | jq -r '.id')
+            # Create outputs a text block with the ID
+            CREATE_OUT=$(npx wrangler kv namespace create MEKHALA_NWC_KV)
+            KV_ID=$(echo "$CREATE_OUT" | grep 'id =' | sed 's/.*id = "\(.*\)".*/\1/')
           fi
 
           if [ -z "$KV_ID" ] || [ "$KV_ID" == "null" ]; then
