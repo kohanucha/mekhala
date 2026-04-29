@@ -38,12 +38,12 @@ jobs:
           command: deploy
           preCommands: |
             # 1. Find existing KV ID by name (Wrangler names it <PROJECT>-<BINDING>)
-            KV_ID=$(npx wrangler kv:namespace list | jq -r '.[] | select(.title == "mekhala-MEKHALA_NWC_KV") | .id')
+            KV_ID=$(npx wrangler kv namespace list | jq -r '.[] | select(.title == "mekhala-MEKHALA_NWC_KV") | .id')
 
             # 2. Create if not found
             if [ -z "$KV_ID" ] || [ "$KV_ID" == "null" ]; then
               echo "Creating new KV namespace..."
-              KV_ID=$(npx wrangler kv:namespace create MEKHALA_NWC_KV --json | jq -r '.id')
+              KV_ID=$(npx wrangler kv namespace create MEKHALA_NWC_KV --json | jq -r '.id')
             fi
 
             if [ -z "$KV_ID" ] || [ "$KV_ID" == "null" ]; then
