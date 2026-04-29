@@ -1,5 +1,6 @@
 import { WebSocket } from "ws";
 import * as nostr from "nostr-tools";
+import { nip04 } from "nostr-tools";
 import {
   finalizeEvent,
   generateSecretKey,
@@ -109,7 +110,7 @@ async function testRelay() {
       console.log("Testing Stateless REQ...");
       ws.send(JSON.stringify(["REQ", "sub-1", { kinds: [23194], "#p": [pk] }]));
 
-      // 2. Test Invalid Signature
+      // 2. Test Invalid Signature (NWC kind)
       console.log("Testing Signature Rejection...");
       ws.send(
         JSON.stringify([
@@ -118,8 +119,8 @@ async function testRelay() {
             id: "0".repeat(64),
             pubkey: pk,
             created_at: Math.floor(Date.now() / 1000),
-            kind: 1,
-            tags: [],
+            kind: 23194,
+            tags: [["p", pk]],
             content: "invalid",
             sig: "0".repeat(128),
           },
@@ -139,11 +140,11 @@ async function testRelay() {
       );
       ws.send(JSON.stringify(["EVENT", eventNoPTag]));
 
-      // 4. Test Restricted Kinds (ensure kind not in [0, 1, 13194, 23194, 23195, 23196, 23197] is rejected)
-      console.log("Testing Restricted Kinds (Kind 3)...");
+      // 4. Test Restricted Kinds (ensure kind not in [13194, 23194, 23195, 23196, 23197] is rejected)
+      console.log("Testing Restricted Kinds (Kind 1)...");
       eventKind3 = finalizeEvent(
         {
-          kind: 3, // Contacts, not in allowed list
+          kind: 1, // Text note, no longer allowed
           created_at: Math.floor(Date.now() / 1000),
           tags: [],
           content: "",
@@ -178,9 +179,9 @@ async function testRelay() {
         }
 
         if (msg[2] === false) {
-          if (msg[3].includes("signature") || msg[3].includes("invalid:")) {
+          if (msg[3].includes("signature") || msg[3].includes("invalid:") || msg[3].includes("blocked:")) {
             sigRejected = true;
-            console.log("✅ Rejection (invalid/signature) passed.");
+            console.log("✅ Rejection (invalid/signature/blocked) passed.");
           }
         }
       }
@@ -558,7 +559,7 @@ async function testMultiClientIsolation() {
 }
 
 async function testNip01EdgeCases() {
-  console.log("\n--- Testing NIP-01 Edge Cases ---");
+  console.log("\n--- Testing NIP-01 Edge Cases (Adapted for Strict NWC) ---");
   const ws = new WebSocket(RELAY_URL);
   const sk = generateSecretKey();
   const pk = getPublicKey(sk);
@@ -569,9 +570,9 @@ async function testNip01EdgeCases() {
       console.log("Step 1: Testing ID mismatch...");
       const event = finalizeEvent(
         {
-          kind: 1,
+          kind: 23194,
           created_at: Math.floor(Date.now() / 1000),
-          tags: [],
+          tags: [["p", pk]],
           content: "test",
         },
         sk,
@@ -594,8 +595,8 @@ async function testNip01EdgeCases() {
         JSON.stringify([
           "REQ",
           "multi-sub",
-          { kinds: [1], authors: [pk] },
-          { kinds: [13194] },
+          { kinds: [23194], authors: [pk] },
+          { kinds: [13194], "#p": [pk] },
         ]),
       );
     });
@@ -629,9 +630,9 @@ async function testNip01EdgeCases() {
         // Publish an event that would have matched
         const matchEvent = finalizeEvent(
           {
-            kind: 1,
+            kind: 23194,
             created_at: Math.floor(Date.now() / 1000),
-            tags: [],
+            tags: [["p", pk]],
             content: "after close",
           },
           sk,
@@ -743,15 +744,16 @@ async function testTimestampValidation() {
   console.log("\n--- Testing Timestamp Validation Limits ---");
   const ws = new WebSocket(RELAY_URL);
   const sk = generateSecretKey();
+  const pk = getPublicKey(sk);
 
   return new Promise((resolve, reject) => {
     ws.on("open", () => {
       // 1. Future timestamp (+20 mins)
       console.log("Step 1: Testing rejection of future timestamp...");
       const futureEvent = finalizeEvent({
-        kind: 1,
+        kind: 23194,
         created_at: Math.floor(Date.now() / 1000) + 1200,
-        tags: [],
+        tags: [["p", pk]],
         content: "future"
       }, sk);
       ws.send(JSON.stringify(["EVENT", futureEvent]));
@@ -759,9 +761,9 @@ async function testTimestampValidation() {
       // 2. Old timestamp (-2 years)
       console.log("Step 2: Testing rejection of ancient timestamp...");
       const oldEvent = finalizeEvent({
-        kind: 1,
+        kind: 23194,
         created_at: Math.floor(Date.now() / 1000) - (2 * 365 * 24 * 60 * 60),
-        tags: [],
+        tags: [["p", pk]],
         content: "ancient"
       }, sk);
       ws.send(JSON.stringify(["EVENT", oldEvent]));
@@ -790,6 +792,112 @@ async function testTimestampValidation() {
   });
 }
 
+async function testLnAddressFlow() {
+  console.log("\n--- Testing LN Address Flow (LUD-06 / LUD-16) ---");
+
+  const username = "testuser_relay";
+  // Use a fixed secret for deterministic test keys
+  const walletSk = new Uint8Array(32).fill(1); 
+  const walletPk = getPublicKey(walletSk);
+  const nwcSecret = "0101010101010101010101010101010101010101010101010101010101010101";
+  
+  // NWC URI pointing to this relay
+  const nwcUri = `nostr+walletconnect://${walletPk}?relay=${encodeURIComponent(RELAY_URL)}&secret=${nwcSecret}`;
+  
+  console.log(`Using pre-configured KV: ${username} -> ${nwcUri}`);
+
+  const wellKnownUrl = `${HTTP_URL.replace(/\/$/, "")}/.well-known/lnurlp/${username}`;
+  const response = await fetch(wellKnownUrl);
+  
+  if (response.status !== 200) {
+    throw new Error(`LNURLp well-known failed: ${response.status}`);
+  }
+
+  const data = await response.json();
+  console.log("✅ LNURLp well-known passed:", data.callback);
+
+  // Start a mock wallet listener
+  const walletWs = new WebSocket(RELAY_URL);
+  const invoice = "lnbc1test_relay_invoice...";
+
+  const walletReady = new Promise((resolve, reject) => {
+    walletWs.on("open", () => {
+      walletWs.send(JSON.stringify(["REQ", "wallet-ln-sub", { kinds: [23194], "#p": [walletPk] }]));
+    });
+    walletWs.on("message", async (msgData) => {
+      const msg = JSON.parse(msgData.toString());
+      if (msg[0] === "EOSE") resolve();
+      if (msg[0] === "EVENT" && msg[1] === "wallet-ln-sub") {
+        const event = msg[2];
+        console.log("Mock Wallet received NWC Request from relay.");
+        
+        // Decrypt and respond
+        const decrypted = await nip04.decrypt(walletSk, event.pubkey, event.content);
+        const req = JSON.parse(decrypted);
+        
+        if (req.method === "make_invoice") {
+          const resp = JSON.stringify({ result: { invoice } });
+          const encryptedResp = await nip04.encrypt(walletSk, event.pubkey, resp);
+          const resEvent = finalizeEvent({
+            kind: 23195,
+            created_at: Math.floor(Date.now() / 1000),
+            tags: [["p", event.pubkey], ["e", event.id]],
+            content: encryptedResp
+          }, walletSk);
+          walletWs.send(JSON.stringify(["EVENT", resEvent]));
+        }
+      }
+    });
+    setTimeout(() => reject(new Error("Mock Wallet timeout")), 5000);
+  });
+
+  await walletReady;
+
+  console.log("Calling callback URL...");
+  const callbackUrl = `${data.callback}?amount=21000`;
+  const callbackResp = await fetch(callbackUrl);
+  
+  if (callbackResp.status !== 200) {
+    const err = await callbackResp.text();
+    throw new Error(`LN Address callback failed: ${callbackResp.status} - ${err}`);
+  }
+
+  const callbackData = await callbackResp.json();
+  if (callbackData.pr === invoice) {
+    console.log("✅ LN Address flow (Well-known -> Callback -> NWC) passed!");
+  } else {
+    throw new Error(`Invoice mismatch: expected ${invoice}, got ${callbackData.pr}`);
+  }
+
+  walletWs.close();
+}
+
+async function testLnAddressOffline() {
+  console.log("\n--- Testing LN Address Offline Error Handling ---");
+  const username = "offline_user";
+  const walletSk = new Uint8Array(32).fill(2);
+  const walletPk = getPublicKey(walletSk);
+  
+  const wellKnownUrl = `${HTTP_URL.replace(/\/$/, "")}/.well-known/lnurlp/${username}`;
+  const response = await fetch(wellKnownUrl);
+  const data = await response.json();
+
+  console.log("Calling callback URL for offline wallet...");
+  const callbackUrl = `${data.callback}?amount=21000`;
+  const callbackResp = await fetch(callbackUrl);
+  
+  if (callbackResp.status === 200) {
+    const errData = await callbackResp.json();
+    if (errData.status === "ERROR" && errData.reason && errData.reason.includes("Wallet not connected")) {
+      console.log("✅ LN Address offline error handled correctly.");
+      return;
+    }
+    throw new Error(`Expected 'Wallet not connected' error, but got: 200 - ${JSON.stringify(errData)}`);
+  }
+  
+  throw new Error(`Expected 200 error, but got: ${callbackResp.status}`);
+}
+
 async function runAll() {
   try {
     await testAuth();
@@ -801,6 +909,8 @@ async function runAll() {
     await testMultiClientIsolation();
     await testInfoEventCaching();
     await testTimestampValidation();
+    await testLnAddressFlow();
+    await testLnAddressOffline();
     console.log("\nAll tests passed successfully! 🚀");
     process.exit(0);
   } catch (err) {

@@ -4,10 +4,18 @@ compatibility_date = "2026-04-25"
 
 [vars]
 WALLET_REGION = "apac"
+MAX_CONNECTIONS = "100"
+MAX_FILTER_ITEMS = "100"
+MAX_EVENT_TAGS = "100"
+MAX_CONTENT_LENGTH = "32768"
 
 [[durable_objects.bindings]]
 name = "NWC_RELAY"
 class_name = "NwcRelay"
+
+[[kv_namespaces]]
+binding = "MEKHALA_NWC_KV"
+id = "MEKHALA_NWC_KV"
 
 [[migrations]]
 tag = "v1"

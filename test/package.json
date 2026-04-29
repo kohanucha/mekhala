@@ -4,7 +4,9 @@
   "main": "test-relay.js",
   "type": "module",
   "scripts": {
-    "test": "node test-relay.js"
+    "test": "node test-relay.js",
+    "setup-test": "node setup-kv.js",
+    "pretest": "npm run setup-test"
   },
   "dependencies": {
     "nostr-tools": "^2.10.3",
