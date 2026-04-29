@@ -15,7 +15,7 @@ class_name = "NwcRelay"
 
 [[kv_namespaces]]
 binding = "MEKHALA_NWC_KV"
-id = "MEKHALA_NWC_KV"
+id = "MEKHALA_NWC_KV_ID"
 
 [[migrations]]
 tag = "v1"
