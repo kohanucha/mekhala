@@ -33,27 +33,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          # 1. Find existing KV ID by name (Wrangler names it <PROJECT>-<BINDING>)
-          # list outputs JSON by default
-          KV_ID=$(npx wrangler kv namespace list | jq -r '.[] | select(.title == "mekhala-MEKHALA_NWC_KV") | .id' | head -n 1)
-
-          # 2. Create if not found
-          if [ -z "$KV_ID" ] || [ "$KV_ID" == "null" ]; then
-            echo "Creating new KV namespace..."
-            # Create outputs a text block with the ID
-            CREATE_OUT=$(npx wrangler kv namespace create MEKHALA_NWC_KV)
-            KV_ID=$(echo "$CREATE_OUT" | grep 'id =' | sed 's/.*id = "\(.*\)".*/\1/')
-          fi
-
-          if [ -z "$KV_ID" ] || [ "$KV_ID" == "null" ]; then
-            echo "Error: Could not obtain KV ID"
-            exit 1
-          fi
-
-          echo "Using KV_ID: $KV_ID"
-          # 3. Inject into wrangler.toml for this CI run only
-          sed -i "s/id = \"MEKHALA_NWC_KV_ID\"/id = \"$KV_ID\"/" wrangler.toml
+        run: bash setup-kv.sh
 
       - name: Build & Deploy Worker
         uses: cloudflare/wrangler-action@v3
