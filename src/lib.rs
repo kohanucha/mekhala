@@ -100,7 +100,28 @@ impl DurableObject for NwcRelay {
             max_content_length,
         };
 
-        Self { state, active_wallets: RefCell::new(HashMap::new()), limits, max_connections }
+        // Rebuild active wallet map from hibernated WebSockets
+        let mut wallets = HashMap::new();
+        for ws in state.get_websockets() {
+            if let Ok(Some(conn_state)) = ws.deserialize_attachment::<ConnectionState>() {
+                for filters in conn_state.subscriptions.values() {
+                    for filter in filters {
+                        if let Some(p_tags) = &filter.p_tags {
+                            for pubkey in p_tags {
+                                *wallets.entry(pubkey.clone()).or_insert(0) += 1;
+                            }
+                        }
+                        if let Some(authors) = &filter.authors {
+                            for pubkey in authors {
+                                *wallets.entry(pubkey.clone()).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Self { state, active_wallets: RefCell::new(wallets), limits, max_connections }
     }
 
     async fn fetch(&self, req: Request) -> Result<Response> {
@@ -176,13 +197,19 @@ impl NwcRelay {
     fn update_wallet_count(&self, filters: &[Filter], increment: bool) {
         let mut wallets = self.active_wallets.borrow_mut();
         for filter in filters {
+            let mut keys = Vec::new();
             if let Some(p_tags) = &filter.p_tags {
-                for pubkey in p_tags {
-                    if increment {
-                        *wallets.entry(pubkey.clone()).or_insert(0) += 1;
-                    } else if let Some(count) = wallets.get_mut(pubkey) {
-                        *count = count.saturating_sub(1);
-                    }
+                keys.extend(p_tags.clone());
+            }
+            if let Some(authors) = &filter.authors {
+                keys.extend(authors.clone());
+            }
+
+            for pubkey in keys {
+                if increment {
+                    *wallets.entry(pubkey).or_insert(0) += 1;
+                } else if let Some(count) = wallets.get_mut(&pubkey) {
+                    *count = count.saturating_sub(1);
                 }
             }
         }
