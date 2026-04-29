@@ -1,9 +1,9 @@
 #!/bin/bash
 set -e
 
-# 1. Find existing KV ID by name (Wrangler names it <PROJECT>-<BINDING>)
+# 1. Find existing KV ID by name
 echo "Checking for existing KV namespace on Cloudflare..."
-KV_ID=$(npx wrangler kv namespace list | jq -r '.[] | select(.title == "mekhala-MEKHALA_NWC_KV") | .id' | head -n 1)
+KV_ID=$(npx wrangler kv namespace list | jq -r '.[] | select(.title == "MEKHALA_NWC_KV") | .id' | head -n 1)
 
 # 2. Create if not found
 if [ -z "$KV_ID" ] || [ "$KV_ID" == "null" ]; then
