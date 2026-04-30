@@ -2,6 +2,10 @@ use std::collections::HashMap;
 use std::cell::RefCell;
 use serde::{Deserialize, Serialize};
 use worker::*;
+use lru::LruCache;
+use std::num::NonZeroUsize;
+use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::prelude::*;
 
 mod relay;
 mod utils;
@@ -9,7 +13,7 @@ mod nwc_client;
 mod lnurl;
 
 use relay::{ClientMessage, RelayMessage, Filter, Event, KIND_NWC_INFO, Limits};
-use utils::{create_cors_response, constant_time_eq};
+use utils::{create_cors_response, constant_time_eq, DurableObjectStateExt, tags_supported};
 
 /// State associated with a single WebSocket connection
 #[derive(Serialize, Deserialize)]
@@ -83,6 +87,7 @@ async fn handle_request(req: Request, ctx: RouteContext<()>) -> Result<Response>
 pub struct NwcRelay {
     state: State,
     active_wallets: std::cell::RefCell<HashMap<String, usize>>,
+    verification_cache: RefCell<LruCache<String, Result<(), String>>>,
     limits: Limits,
     max_connections: usize,
 }
@@ -104,24 +109,17 @@ impl DurableObject for NwcRelay {
         let mut wallets = HashMap::new();
         for ws in state.get_websockets() {
             if let Ok(Some(conn_state)) = ws.deserialize_attachment::<ConnectionState>() {
-                for filters in conn_state.subscriptions.values() {
-                    for filter in filters {
-                        if let Some(p_tags) = &filter.p_tags {
-                            for pubkey in p_tags {
-                                *wallets.entry(pubkey.clone()).or_insert(0) += 1;
-                            }
-                        }
-                        if let Some(authors) = &filter.authors {
-                            for pubkey in authors {
-                                *wallets.entry(pubkey.clone()).or_insert(0) += 1;
-                            }
-                        }
-                    }
-                }
+                Self::rebuild_wallets_from_state(&mut wallets, &conn_state);
             }
         }
 
-        Self { state, active_wallets: RefCell::new(wallets), limits, max_connections }
+        Self { 
+            state, 
+            active_wallets: RefCell::new(wallets), 
+            verification_cache: RefCell::new(LruCache::new(NonZeroUsize::new(500).unwrap())),
+            limits, 
+            max_connections 
+        }
     }
 
     async fn fetch(&self, req: Request) -> Result<Response> {
@@ -194,6 +192,16 @@ impl DurableObject for NwcRelay {
 }
 
 impl NwcRelay {
+    fn rebuild_wallets_from_state(wallets: &mut HashMap<String, usize>, conn_state: &ConnectionState) {
+        for filters in conn_state.subscriptions.values() {
+            for filter in filters {
+                for pubkey in filter.pubkeys() {
+                    *wallets.entry(pubkey).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+
     fn update_wallet_count(&self, filters: &[Filter], increment: bool) {
         let mut wallets = self.active_wallets.borrow_mut();
         for filter in filters {
@@ -218,6 +226,29 @@ impl NwcRelay {
         }
     }
 
+    fn update_websocket_tags(&self, ws: &WebSocket, conn_state: &ConnectionState) {
+        let mut unique_pubkeys = std::collections::HashSet::new();
+        for filters in conn_state.subscriptions.values() {
+            for filter in filters {
+                for pubkey in filter.pubkeys() {
+                    unique_pubkeys.insert(pubkey);
+                }
+            }
+        }
+
+        let tags = js_sys::Array::new();
+        for pubkey in unique_pubkeys.into_iter().take(10) {
+            tags.push(&JsValue::from_str(&pubkey));
+        }
+
+        // Access the raw JS state object (DurableObjectState is a JsValue)
+        let state_js: &JsValue = unsafe { std::mem::transmute(&self.state) };
+        if tags_supported(state_js) {
+            let state_ext: &DurableObjectStateExt = state_js.unchecked_ref();
+            state_ext.set_websocket_tags(ws.as_ref(), tags);
+        }
+    }
+
     async fn handle_websocket_close(&self, ws: &WebSocket) -> Result<()> {
         let conn_state: ConnectionState = ws.deserialize_attachment()?.unwrap_or_default();
         let filters: Vec<Filter> = conn_state.subscriptions.into_values().flatten().collect();
@@ -228,33 +259,85 @@ impl NwcRelay {
     async fn handle_event(&self, ws: &WebSocket, conn_state: &mut ConnectionState, event: Event) -> Result<()> {
         let current_time = (Date::now().as_millis() / 1000) as u64;
         
-        // 1. Verify Event
-        if let Err(reason) = event.verify(current_time, &conn_state.limits) {
-            let _ = ws.send_with_str(&RelayMessage::Ok(event.id, false, reason.to_string()).to_json());
+        // 1. Verify Event (with cache)
+        let cached_res = self.verification_cache.borrow_mut().get(&event.id).cloned();
+        let verification_result = if let Some(res) = cached_res {
+            res
+        } else {
+            let res = event.verify(current_time, &conn_state.limits).map_err(|e| e.to_string());
+            self.verification_cache.borrow_mut().put(event.id.clone(), res.clone());
+            res
+        };
+
+        if let Err(reason) = verification_result {
+            let _ = ws.send_with_str(&RelayMessage::Ok(event.id, false, reason).to_json());
             return Ok(());
         }
 
         // 2. Cache Info Event (if applicable)
         if event.kind == KIND_NWC_INFO {
             conn_state.info_event = Some(event.clone());
-            let _ = ws.serialize_attachment(conn_state);
+            let _ = ws.serialize_attachment(&*conn_state);
         }
 
         // 3. Acknowledge Event
         let _ = ws.send_with_str(&RelayMessage::Ok(event.id.clone(), true, "".into()).to_json());
 
-        // 4. Broadcast to matching subscribers
-        for other_ws in self.state.get_websockets() {
-            let other_state: ConnectionState = match other_ws.deserialize_attachment() {
+        // 4. Broadcast to matching subscribers using WebSocket Tags
+        let state_js: &JsValue = unsafe { std::mem::transmute(&self.state) };
+        let mut target_websockets: Vec<WebSocket> = Vec::new();
+
+        let mut add_if_unique = |ws_js: JsValue| {
+            if let Ok(web_sys_ws) = ws_js.dyn_into::<worker::web_sys::WebSocket>() {
+                if !target_websockets.iter().any(|w| {
+                    let w_js: &JsValue = w.as_ref();
+                    let target_js: &JsValue = web_sys_ws.as_ref();
+                    w_js == target_js
+                }) {
+                    target_websockets.push(WebSocket::from(web_sys_ws));
+                }
+            }
+        };
+
+        if tags_supported(state_js) {
+            let state_ext: &DurableObjectStateExt = state_js.unchecked_ref();
+            let websockets_array = |tag: Option<&str>| state_ext.get_websockets(tag);
+
+            // Check author tag
+            for ws_js in websockets_array(Some(&event.pubkey)).iter() {
+                add_if_unique(ws_js);
+            }
+
+            // Check p-tags
+            for tag in &event.tags {
+                if tag.len() >= 2 && tag[0].as_str() == Some("p") {
+                    if let Some(p_pubkey) = tag[1].as_str() {
+                        for ws_js in websockets_array(Some(p_pubkey)).iter() {
+                            add_if_unique(ws_js);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Fallback: Get ALL WebSockets if tagging is not supported
+            for ws in self.state.get_websockets() {
+                target_websockets.push(ws);
+            }
+        }
+
+        // Broadcast to identified targets
+        for target_ws in &target_websockets {
+            let other_state: ConnectionState = match target_ws.deserialize_attachment() {
                 Ok(Some(s)) => s,
                 _ => continue,
             };
             for (sub_id, filters) in &other_state.subscriptions {
                 if filters.iter().any(|f| f.matches(&event)) {
-                    let _ = other_ws.send_with_str(&RelayMessage::Event(sub_id.clone(), event.clone()).to_json());
+                    let _ = target_ws.send_with_str(&RelayMessage::Event(sub_id.clone(), event.clone()).to_json());
                 }
             }
         }
+
         Ok(())
     }
 
@@ -274,12 +357,15 @@ impl NwcRelay {
 
         // 3. Save subscription
         conn_state.subscriptions.insert(sub_id.clone(), filters.clone());
-        ws.serialize_attachment(conn_state)?;
+        ws.serialize_attachment(&*conn_state)?;
 
         // 4. Track active wallet connections
         self.update_wallet_count(&filters, true);
 
-        // 5. Serve cached Info Events
+        // 5. Update WebSocket Tags for O(1) routing
+        self.update_websocket_tags(ws, conn_state);
+
+        // 6. Serve cached Info Events
         if filters.iter().any(|f| f.kinds.as_ref().map_or(false, |k| k.contains(&KIND_NWC_INFO))) {
             for other_ws in self.state.get_websockets() {
                 let other_state: ConnectionState = match other_ws.deserialize_attachment() {
@@ -301,9 +387,56 @@ impl NwcRelay {
 
     async fn handle_close(&self, ws: &WebSocket, conn_state: &mut ConnectionState, sub_id: String) -> Result<()> {
         if let Some(filters) = conn_state.subscriptions.remove(&sub_id) {
-            let _ = ws.serialize_attachment(conn_state);
+            let _ = ws.serialize_attachment(&*conn_state);
             self.update_wallet_count(&filters, false);
+            self.update_websocket_tags(ws, conn_state);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod nwc_relay_tests {
+    use super::*;
+    use crate::relay::Filter;
+
+    #[test]
+    fn test_rebuild_wallets_from_state() {
+        let mut wallets = HashMap::new();
+        let mut conn_state = ConnectionState::default();
+        
+        let mut filters = Vec::new();
+        filters.push(Filter {
+            authors: Some(vec!["pub1".into()]),
+            p_tags: Some(vec!["pub2".into()]),
+            ..Default::default()
+        });
+        
+        conn_state.subscriptions.insert("sub1".into(), filters);
+        
+        NwcRelay::rebuild_wallets_from_state(&mut wallets, &conn_state);
+        
+        assert_eq!(wallets.get("pub1"), Some(&1));
+        assert_eq!(wallets.get("pub2"), Some(&1));
+        assert_eq!(wallets.len(), 2);
+    }
+
+    #[test]
+    fn test_rebuild_wallets_multiple_subscriptions() {
+        let mut wallets = HashMap::new();
+        let mut conn_state = ConnectionState::default();
+        
+        conn_state.subscriptions.insert("sub1".into(), vec![Filter {
+            p_tags: Some(vec!["pub1".into()]),
+            ..Default::default()
+        }]);
+        conn_state.subscriptions.insert("sub2".into(), vec![Filter {
+            p_tags: Some(vec!["pub1".into()]),
+            ..Default::default()
+        }]);
+        
+        NwcRelay::rebuild_wallets_from_state(&mut wallets, &conn_state);
+        
+        assert_eq!(wallets.get("pub1"), Some(&2));
     }
 }

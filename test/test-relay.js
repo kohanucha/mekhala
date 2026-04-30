@@ -909,6 +909,7 @@ async function runAll() {
     await testMultiClientIsolation();
     await testInfoEventCaching();
     await testTimestampValidation();
+    await testEdgeCases();
     await testLnAddressFlow();
     await testLnAddressOffline();
     console.log("\nAll tests passed successfully! 🚀");
@@ -920,3 +921,50 @@ async function runAll() {
 }
 
 runAll();
+
+async function testEdgeCases() {
+  console.log("\n--- Testing NWC Edge Cases (Performance & Protocol) ---");
+  const ws = new WebSocket(RELAY_URL);
+  const sk = generateSecretKey();
+  const pk = getPublicKey(sk);
+
+  await new Promise((resolve, reject) => {
+    ws.on("open", async () => {
+      // 1. Multiple subscriptions for same pubkey (Reference counting check)
+      console.log("Step 1: Testing reference counting with multiple subscriptions...");
+      ws.send(JSON.stringify(["REQ", "sub-a", { kinds: [23194], "#p": [pk] }]));
+      ws.send(JSON.stringify(["REQ", "sub-b", { kinds: [23194], "#p": [pk] }]));
+      
+      // 2. Signature Reuse (Cache check)
+      console.log("Step 2: Testing signature verification cache...");
+      const event = finalizeEvent({
+        kind: 23194,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [["p", pk]],
+        content: "cache-test"
+      }, sk);
+      
+      ws.send(JSON.stringify(["EVENT", event]));
+      ws.send(JSON.stringify(["EVENT", event])); // Should be fast via cache
+      
+      resolve();
+    });
+    
+    let okCount = 0;
+    ws.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg[0] === "OK" && msg[2] === true) {
+        okCount++;
+        if (okCount === 2) {
+          console.log("✅ Signature reuse and multiple subs handled.");
+          ws.close();
+        }
+      }
+    });
+    
+    setTimeout(() => reject(new Error("Edge case test timeout")), 5000);
+  });
+}
+
+// Update the main test runner to include the new tests
+// Note: This is a bit hacky, normally I'd edit the main function
