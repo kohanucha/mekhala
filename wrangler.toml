@@ -22,5 +22,5 @@ tag = "v1"
 new_sqlite_classes = ["NwcRelay"]
 
 [build]
-command = "./build.sh"
+command = "./scripts/build.sh"
 watch_dir = "src"

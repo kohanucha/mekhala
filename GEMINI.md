@@ -30,7 +30,11 @@ The relay acts as an ephemeral "routing engine" between Lightning wallet applica
 - `test/`: Integration tests.
     - `setup-kv.js`: Utility to seed KV for testing LN Addresses.
     - `test-relay.js`: Comprehensive integration tests using `nostr-tools`.
-- `build.sh`: Build script for compiling Rust to Wasm.
+- `scripts/`: Shell scripts for development and CI.
+    - `build.sh`: Build script for compiling Rust to Wasm.
+    - `generate_secret.sh`: Utility to generate a secure relay secret.
+    - `setup-kv.sh`: Script to initialize KV for local testing.
+    - `test.sh`: Main entry point for running the full test suite.
 - `wrangler.toml`: Main configuration and security limits.
 
 ## Configuration (Environment Variables)
@@ -45,9 +49,9 @@ Mekhala is highly configurable via `wrangler.toml`:
 ## Building and Running
 
 ### Key Commands
-- **Test Everything**: `./test.sh`
+- **Test Everything**: `./scripts/test.sh`
   - **MANDATORY**: Run this script after every code change. It verifies Rust unit tests, builds the WASM binary, and runs the Node.js integration suite against a local relay.
-- **Build**: `./build.sh`
+- **Build**: `./scripts/build.sh`
 - **Local Development**: `npx wrangler dev`
 - **Unit Tests**: `cargo test` (Core logic, crypto, and filters).
 - **Integration Tests**: `cd test && npm test` (Full protocol and E2E flows).
@@ -55,7 +59,7 @@ Mekhala is highly configurable via `wrangler.toml`:
 ## Development Conventions
 
 ### Coding Standards
-- **Test Before Push**: NEVER commit or push code without a successful `./test.sh` run. This ensures that the Durable Object hibernation recovery logic is verified and no regressions are introduced in the NWC flow.
+- **Test Before Push**: NEVER commit or push code without a successful `./scripts/test.sh` run. This ensures that the Durable Object hibernation recovery logic is verified and no regressions are introduced in the NWC flow.
 - **Strict NWC Enforcement**: Reject any event or subscription not matching NWC kinds (13194, 23194-23197).
 - **Mandatory Filter Narrowing**: All `REQ` filters must include at least one criterion (`ids`, `authors`, `#p`, `#e`) to prevent broad snooping.
 - **Security First**: Use constant-time comparisons for secrets and random 16-byte IVs for NIP-04 encryption.

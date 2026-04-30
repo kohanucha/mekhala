@@ -30,7 +30,7 @@ cargo test
 
 # 2. Build for WASM
 echo "Step 2: Building for WASM..."
-./build.sh
+./scripts/build.sh
 
 # 3. Start Local Relay
 echo "Step 3: Starting local relay on port $PORT..."

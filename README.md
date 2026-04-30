@@ -59,7 +59,7 @@ If you don't secure your relay, anyone on the internet can use it. To keep it pr
 ### 1. Generate a Secret Password
 You need a random password to protect your relay. Open your computer's terminal (or command prompt), navigate to the folder where you cloned this code, and run:
 ```bash
-./generate_secret.sh
+./scripts/generate_secret.sh
 ```
 *(Copy the secret text it gives you!)*
 
@@ -100,7 +100,7 @@ Your private relay URL will look like this:
 ## 💻 For Developers (Advanced)
 
 If you want to build or test locally:
-- **Build:** `./build.sh`
+- **Build:** `./scripts/build.sh`
 - **Local Dev:** `npx wrangler dev`
 - **Unit Tests:** `cargo test`
 - **Integration Tests:** `cd test && npm i && npm test`
