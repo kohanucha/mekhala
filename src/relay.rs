@@ -304,6 +304,18 @@ impl Filter {
 
         true
     }
+
+    /// Returns all pubkeys (authors + p_tags) mentioned in this filter.
+    pub fn pubkeys(&self) -> Vec<String> {
+        let mut keys = Vec::new();
+        if let Some(authors) = &self.authors {
+            keys.extend(authors.clone());
+        }
+        if let Some(p_tags) = &self.p_tags {
+            keys.extend(p_tags.clone());
+        }
+        keys
+    }
 }
 
 /// Messages sent by the client to the relay
