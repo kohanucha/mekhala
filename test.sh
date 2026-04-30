@@ -3,11 +3,11 @@ set -e
 
 # --- Configuration ---
 PORT=8787
-LOG_FILE="test.log"
 
 # --- Cleanup Function ---
 cleanup() {
     echo ""
+    sleep 1
     echo "Stopping wrangler dev server..."
     # Find the process listening on the port and kill its process group
     PID=$(lsof -ti :$PORT)
@@ -34,7 +34,7 @@ echo "Step 2: Building for WASM..."
 
 # 3. Start Local Relay
 echo "Step 3: Starting local relay on port $PORT..."
-npx wrangler dev --port $PORT --ip 127.0.0.1 > $LOG_FILE 2>&1 &
+npx wrangler dev --port $PORT --ip 127.0.0.1 &
 WRANGLER_PID=$!
 
 # 4. Wait for Relay to be Ready
@@ -45,7 +45,7 @@ while ! lsof -i :$PORT > /dev/null; do
     sleep 1
     COUNT=$((COUNT + 1))
     if [ $COUNT -ge $MAX_RETRIES ]; then
-        echo "❌ Error: Relay failed to start in time. Check $LOG_FILE"
+        echo "❌ Error: Relay failed to start in time."
         exit 1
     fi
 done

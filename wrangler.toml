@@ -1,6 +1,6 @@
 name = "mekhala"
 main = "build/worker/shim.mjs"
-compatibility_date = "2026-04-25"
+compatibility_date = "2026-04-30"
 
 [vars]
 WALLET_REGION = "apac"

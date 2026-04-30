@@ -57,7 +57,7 @@ async fn handle_request(req: Request, ctx: RouteContext<()>) -> Result<Response>
     let provided_secret = ctx.param("secret").map(|s| s.as_str()).unwrap_or_default();
 
     if !expected_secret.is_empty() && !constant_time_eq(provided_secret, &expected_secret) {
-        return Response::error("Unauthorized", 401);
+        return utils::apply_security_headers(Response::error("Unauthorized", 401)?);
     }
 
     if let Ok(Some(upgrade)) = req.headers().get("Upgrade") {
@@ -113,11 +113,11 @@ impl DurableObject for NwcRelay {
         if path.starts_with("/check/") {
             let pubkey = path.strip_prefix("/check/").unwrap_or("");
             let is_online = self.active_wallets.borrow().get(pubkey).copied().unwrap_or(0) > 0;
-            return Response::ok(if is_online { "OK" } else { "OFFLINE" });
+            return utils::apply_security_headers(Response::ok(if is_online { "OK" } else { "OFFLINE" })?);
         }
 
         if self.state.get_websockets().len() >= self.max_connections {
-            return Response::error("Too Many Requests", 429);
+            return utils::apply_security_headers(Response::error("Too Many Requests", 429)?);
         }
 
         let WebSocketPair { client, server } = WebSocketPair::new()?;
@@ -134,7 +134,13 @@ impl DurableObject for NwcRelay {
                 return Ok(());
             }
 
-            let client_msg = ClientMessage::from_json(&text).map_err(|e| worker::Error::from(e.to_string()))?;
+            let client_msg = match ClientMessage::from_json(&text) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    let _ = ws.send_with_str(&RelayMessage::Notice(format!("error: {}", e)).to_json());
+                    return Ok(());
+                }
+            };
             let mut conn_state: ConnectionState = ws.deserialize_attachment()?.unwrap_or_default();
             
             let handler = RelayHandler {

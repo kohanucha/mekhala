@@ -60,6 +60,11 @@ Mekhala is highly configurable via `wrangler.toml`:
 - **Mandatory Filter Narrowing**: All `REQ` filters must include at least one criterion (`ids`, `authors`, `#p`, `#e`) to prevent broad snooping.
 - **Security First**: Use constant-time comparisons for secrets and random 16-byte IVs for NIP-04 encryption.
 - **Performance Focused**: Use `serde_json::to_string(&(0, ...))` for fast NIP-01 ID verification.
+- **Panic = Abort Resilience**: Since the project is compiled with `panic = "abort"`, any panic terminates the WebAssembly isolate and drops all concurrent requests. To prevent this:
+  - **No `unwrap()` / `expect()`**: Exclusively use `?` or explicit `match` statements to propagate errors and return graceful HTTP 5xx responses.
+  - **Safe Indexing**: Never access slices/arrays directly (e.g. `vec[0]`). Always use `.get()` to handle out-of-bounds safely.
+  - **Checked Math**: Use checked math operations (e.g. `checked_add()`, `saturating_add()`) to prevent panic on overflow.
+  - **Short-Lived State**: Flush critical state to storage frequently to avoid losing data if an isolate crashes.
 
 ### Testing Practices
 - **100% Coverage**: Core business logic in `relay.rs` and `nwc_client.rs` must have full unit test coverage.

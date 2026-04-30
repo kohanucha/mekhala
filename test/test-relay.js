@@ -602,6 +602,7 @@ async function testNip01EdgeCases() {
     });
 
     let idMismatchRejected = false;
+    let malformedJsonRejected = false;
     let largeMessageNotice = false;
     let multiSubEose = false;
     let closeTestPassed = false;
@@ -612,6 +613,11 @@ async function testNip01EdgeCases() {
       if (msg[0] === "OK" && msg[2] === false && msg[3]?.includes("id")) {
         console.log("✅ ID mismatch rejected.");
         idMismatchRejected = true;
+      }
+
+      if (msg[0] === "NOTICE" && msg[1]?.includes("parse failed")) {
+        console.log("✅ Malformed JSON rejected.");
+        malformedJsonRejected = true;
       }
 
       if (msg[0] === "NOTICE" && msg[1]?.includes("too large")) {
@@ -656,6 +662,7 @@ async function testNip01EdgeCases() {
     const checkDone = () => {
       if (
         idMismatchRejected &&
+        malformedJsonRejected &&
         largeMessageNotice &&
         multiSubEose &&
         closeTestPassed
@@ -668,7 +675,7 @@ async function testNip01EdgeCases() {
     setTimeout(() => {
       reject(
         new Error(
-          `NIP-01 Edge Cases Timeout. ID: ${idMismatchRejected}, Large: ${largeMessageNotice}, Multi: ${multiSubEose}, Close: ${closeTestPassed}`,
+          `NIP-01 Edge Cases Timeout. ID: ${idMismatchRejected}, JSON: ${malformedJsonRejected}, Large: ${largeMessageNotice}, Multi: ${multiSubEose}, Close: ${closeTestPassed}`,
         ),
       );
     }, 10000);
