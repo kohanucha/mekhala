@@ -12,7 +12,7 @@ mod lnurl;
 mod nwc_relay;
 
 use relay::{ClientMessage, RelayMessage, Filter, Event, Limits};
-use utils::{create_cors_response, constant_time_eq, tags_supported, DurableObjectStateExt, HibernationState};
+use utils::{create_cors_response, constant_time_eq};
 use nwc_relay::RelayHandler;
 
 /// State associated with a single WebSocket connection
