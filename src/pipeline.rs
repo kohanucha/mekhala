@@ -58,7 +58,7 @@ impl<'a> EventPipeline<'a> {
         // 4. Acknowledge and Broadcast
         let _ = ws.send_with_str(&RelayMessage::Ok(event.id.clone(), true, "".into()).to_json());
         
-        self.router.broadcast(self.state, &event)
+        self.router.broadcast(&event)
     }
 
     /// Process an incoming REQ.

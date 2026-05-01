@@ -16,8 +16,6 @@ extern "C" {
 /// Extension trait for worker::State to support the WebSocket Hibernation API
 pub trait HibernationState {
     fn set_tags(&self, ws: &WebSocket, tags: Vec<String>);
-    fn get_tagged_websockets(&self, tag: &str) -> Vec<WebSocket>;
-    fn is_tags_supported(&self) -> bool;
 }
 
 impl HibernationState for State {
@@ -31,27 +29,6 @@ impl HibernationState for State {
             }
             state_ext.set_websocket_tags_raw(ws.as_ref(), tags_array);
         }
-    }
-
-    fn get_tagged_websockets(&self, tag: &str) -> Vec<WebSocket> {
-        let state_js: &JsValue = unsafe { std::mem::transmute(self) };
-        let mut target_websockets = Vec::new();
-        
-        if Platform::tags_supported(state_js) {
-            let state_ext: &DurableObjectStateExt = state_js.unchecked_ref();
-            let ws_array = state_ext.get_websockets_raw(Some(tag));
-            for ws_js in ws_array.iter() {
-                if let Ok(web_sys_ws) = ws_js.dyn_into::<worker::web_sys::WebSocket>() {
-                    target_websockets.push(WebSocket::from(web_sys_ws));
-                }
-            }
-        }
-        target_websockets
-    }
-
-    fn is_tags_supported(&self) -> bool {
-        let state_js: &JsValue = unsafe { std::mem::transmute(self) };
-        Platform::tags_supported(state_js)
     }
 }
 

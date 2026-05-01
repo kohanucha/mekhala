@@ -17,6 +17,10 @@ pub struct Router {
     /// Aggregate index of active wallet pubkeys across all connections.
     /// Used for LNURL bridge "online check".
     active_wallets: RefCell<HashMap<String, usize>>,
+
+    /// High-performance lookup index for pubkey-based filters.
+    /// Maps a pubkey to a list of (connection_index, sub_id) pairs.
+    pubkey_index: RefCell<HashMap<String, Vec<(usize, String)>>>,
 }
 
 impl Router {
@@ -31,10 +35,14 @@ impl Router {
             }
         }
 
-        Self {
+        let router = Self {
             connections: RefCell::new(connections),
             active_wallets: RefCell::new(active_wallets),
-        }
+            pubkey_index: RefCell::new(HashMap::new()),
+        };
+
+        router.rebuild_index();
+        router
     }
 
     /// Gets the state for a specific connection, lazily loading it into the cache if missing.
@@ -51,7 +59,12 @@ impl Router {
         // Lazy load from hibernation state
         let state: ConnectionState = ws.deserialize_attachment()?.unwrap_or_default();
         conns.push((ws.clone(), state.clone()));
-        Ok(state)
+        
+        // Rebuild index whenever a new connection is cached
+        drop(conns);
+        self.rebuild_index();
+        
+        self.connections.borrow().last().map(|(_, s)| s.clone()).ok_or_else(|| Error::from("Failed to cache connection"))
     }
 
     /// Update subscriptions for a WebSocket.
@@ -78,7 +91,10 @@ impl Router {
         // 4. Update memory cache
         self.update_cache(ws, conn_state.clone());
 
-        // 5. Update WebSocket tags and attachment (for hibernation)
+        // 5. Rebuild lookup index
+        self.rebuild_index();
+
+        // 6. Update WebSocket tags and attachment (for hibernation)
         self.update_websocket_tags(state, ws, conn_state);
         ws.serialize_attachment(conn_state)?;
 
@@ -104,6 +120,10 @@ impl Router {
             self.remove_from_cache(ws);
         }
 
+        // Rebuild lookup index
+        drop(wallets);
+        self.rebuild_index();
+
         if is_specific_sub {
             self.update_websocket_tags(state, ws, conn_state);
         }
@@ -124,46 +144,40 @@ impl Router {
         }
     }
 
-    /// Broadcast an event to all matching subscribers using the in-memory cache.
-    pub fn broadcast(&self, state: &State, event: &Event) -> Result<()> {
-        let mut target_indices: Vec<usize> = Vec::new();
+    /// Broadcast an event to matching subscribers using O(1) pubkey lookup.
+    pub fn broadcast(&self, event: &Event) -> Result<()> {
+        let index = self.pubkey_index.borrow();
         let conns = self.connections.borrow();
 
-        // 1. Fast-path optimization: Use Cloudflare tags to narrow down the search
-        if state.is_tags_supported() {
-            let mut tagged_ws_list = state.get_tagged_websockets(&event.pubkey);
-            for tag in &event.tags {
-                if tag.len() >= 2 && tag[0].as_str() == Some("p") {
-                    if let Some(p_pubkey) = tag[1].as_str() {
-                        tagged_ws_list.extend(state.get_tagged_websockets(p_pubkey));
+        // 1. Identify candidate (connection, sub_id) pairs using the pubkey index
+        let mut candidates: Vec<(usize, &String)> = Vec::new();
+        
+        let mut add_candidates = |pk: &str| {
+            if let Some(matches) = index.get(pk) {
+                for (conn_idx, sub_id) in matches {
+                    if !candidates.iter().any(|(c, s)| *c == *conn_idx && *s == sub_id) {
+                        candidates.push((*conn_idx, sub_id));
                     }
                 }
             }
+        };
 
-            for tagged_ws in tagged_ws_list {
-                if let Some(idx) = conns.iter().position(|(w, _)| {
-                    let w_js: &JsValue = w.as_ref();
-                    let target_js: &JsValue = tagged_ws.as_ref();
-                    w_js == target_js
-                }) {
-                    if !target_indices.contains(&idx) {
-                        target_indices.push(idx);
-                    }
+        // Check author of the event
+        add_candidates(&event.pubkey);
+        
+        // Check p-tags in the event
+        for tag in &event.tags {
+            if tag.len() >= 2 && tag[0].as_str() == Some("p") {
+                if let Some(p_pubkey) = tag[1].as_str() {
+                    add_candidates(p_pubkey);
                 }
             }
         }
 
-        // 2. Identify the connections to check. 
-        let check_indices: Vec<usize> = if !target_indices.is_empty() {
-            target_indices
-        } else {
-            (0..conns.len()).collect()
-        };
-
-        // 3. Precise filter matching using the in-memory cache (No deserialization!)
-        for idx in check_indices {
-            if let Some((ws, conn_state)) = conns.get(idx) {
-                for (sub_id, filters) in &conn_state.subscriptions {
+        // 2. Iterate precise candidates and verify all filter criteria (kinds, since, etc.)
+        for (conn_idx, sub_id) in candidates {
+            if let Some((ws, conn_state)) = conns.get(conn_idx) {
+                if let Some(filters) = conn_state.subscriptions.get(sub_id) {
                     if filters.iter().any(|f| f.matches(event)) {
                         let _ = ws.send_with_str(
                             &RelayMessage::Event(sub_id.clone(), event.clone()).to_json(),
@@ -193,6 +207,25 @@ impl Router {
 
     pub fn is_wallet_online(&self, pubkey: &str) -> bool {
         self.active_wallets.borrow().get(pubkey).copied().unwrap_or(0) > 0
+    }
+
+    /// Rebuilds the high-performance pubkey lookup index.
+    fn rebuild_index(&self) {
+        let mut index = HashMap::new();
+        let conns = self.connections.borrow();
+
+        for (conn_idx, (_, state)) in conns.iter().enumerate() {
+            for (sub_id, filters) in &state.subscriptions {
+                for filter in filters {
+                    for pubkey in filter.pubkeys() {
+                        index.entry(pubkey)
+                            .or_insert_with(Vec::new)
+                            .push((conn_idx, sub_id.clone()));
+                    }
+                }
+            }
+        }
+        *self.pubkey_index.borrow_mut() = index;
     }
 
     fn update_cache(&self, ws: &WebSocket, conn_state: ConnectionState) {
@@ -284,6 +317,7 @@ mod tests {
         let router = Router {
             connections: RefCell::new(Vec::new()),
             active_wallets: RefCell::new(HashMap::new()),
+            pubkey_index: RefCell::new(HashMap::new()),
         };
         
         assert!(!router.is_wallet_online("pk1"));
