@@ -49,19 +49,15 @@ impl<'a> EventPipeline<'a> {
         }
 
         // 3. State-dependent logic: Cache Info Events
-        let mut state_changed = false;
         if event.kind == crate::protocol::KIND_NWC_INFO {
             conn_state.info_event = Some(event.clone());
-            state_changed = true;
+            self.router.update_info_event(ws, event.clone());
+            ws.serialize_attachment(conn_state)?;
         }
 
         // 4. Acknowledge and Broadcast
         let _ = ws.send_with_str(&RelayMessage::Ok(event.id.clone(), true, "".into()).to_json());
         
-        if state_changed {
-            ws.serialize_attachment(conn_state)?;
-        }
-
         self.router.broadcast(self.state, &event)
     }
 
@@ -98,7 +94,7 @@ impl<'a> EventPipeline<'a> {
         // 4. Register Subscription in Router
         self.router.subscribe(self.state, ws, sub_id.clone(), filters.clone(), conn_state)?;
 
-        // 5. Serve cached Info Events from other connections
+        // 5. Serve cached Info Events from other connections (Fast Path!)
         self.serve_cached_info_events(ws, &sub_id, &filters).await?;
 
         let _ = ws.send_with_str(&RelayMessage::Eose(sub_id).to_json());
@@ -120,7 +116,7 @@ impl<'a> EventPipeline<'a> {
         res
     }
 
-    /// Iterates through all active WebSockets to find and serve relevant NWC Info events.
+    /// Retrieves matching info events from the Router's in-memory cache and serves them.
     async fn serve_cached_info_events(&self, ws: &WebSocket, sub_id: &str, filters: &[Filter]) -> Result<()> {
         let is_requesting_info = filters
             .iter()
@@ -130,18 +126,11 @@ impl<'a> EventPipeline<'a> {
             return Ok(());
         }
 
-        for other_ws in self.state.get_websockets() {
-            let other_state: ConnectionState = match other_ws.deserialize_attachment() {
-                Ok(Some(s)) => s,
-                _ => continue,
-            };
-            if let Some(cached_info) = &other_state.info_event {
-                if filters.iter().any(|f| f.matches(cached_info)) {
-                    let _ = ws.send_with_str(
-                        &RelayMessage::Event(sub_id.to_string(), cached_info.clone()).to_json(),
-                    );
-                }
-            }
+        // Use the Router's high-leverage Speed Layer
+        for info in self.router.get_matching_info_events(filters) {
+            let _ = ws.send_with_str(
+                &RelayMessage::Event(sub_id.to_string(), info).to_json(),
+            );
         }
         Ok(())
     }

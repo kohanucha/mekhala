@@ -133,7 +133,8 @@ impl DurableObject for NwcRelay {
             }
         };
 
-        let mut conn_state: ConnectionState = ws.deserialize_attachment()?.unwrap_or_default();
+        // Use the Router's high-leverage Speed Layer
+        let mut conn_state = self.router.get_state(&ws)?;
         
         let pipeline = EventPipeline::new(
             &self.state,
@@ -163,7 +164,7 @@ impl DurableObject for NwcRelay {
 
 impl NwcRelay {
     async fn handle_websocket_close(&self, ws: &WebSocket) -> Result<()> {
-        let mut conn_state: ConnectionState = ws.deserialize_attachment()?.unwrap_or_default();
+        let mut conn_state = self.router.get_state(ws)?;
         self.router.unsubscribe(&self.state, ws, None, &mut conn_state)
     }
 }

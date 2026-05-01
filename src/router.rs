@@ -10,6 +10,10 @@ use wasm_bindgen::JsValue;
 /// The Router manages active WebSocket connections and their subscriptions.
 /// It provides high-performance broadcasting and keeps track of "online" wallets.
 pub struct Router {
+    /// In-memory cache of ConnectionState for all active WebSockets.
+    /// This is the "Speed Layer" that eliminates O(N) deserialization overhead.
+    connections: RefCell<Vec<(WebSocket, ConnectionState)>>,
+
     /// Aggregate index of active wallet pubkeys across all connections.
     /// Used for LNURL bridge "online check".
     active_wallets: RefCell<HashMap<String, usize>>,
@@ -17,17 +21,37 @@ pub struct Router {
 
 impl Router {
     pub fn new(state: &State) -> Self {
+        let mut connections = Vec::new();
         let mut active_wallets = HashMap::new();
 
         for ws in state.get_websockets() {
             if let Ok(Some(conn_state)) = ws.deserialize_attachment::<ConnectionState>() {
                 Self::update_wallet_index(&mut active_wallets, &conn_state.subscriptions, true);
+                connections.push((ws, conn_state));
             }
         }
 
         Self {
+            connections: RefCell::new(connections),
             active_wallets: RefCell::new(active_wallets),
         }
+    }
+
+    /// Gets the state for a specific connection, lazily loading it into the cache if missing.
+    pub fn get_state(&self, ws: &WebSocket) -> Result<ConnectionState> {
+        let mut conns = self.connections.borrow_mut();
+        if let Some((_, state)) = conns.iter().find(|(w, _)| {
+            let w_js: &JsValue = w.as_ref();
+            let target_js: &JsValue = ws.as_ref();
+            w_js == target_js
+        }) {
+            return Ok(state.clone());
+        }
+
+        // Lazy load from hibernation state
+        let state: ConnectionState = ws.deserialize_attachment()?.unwrap_or_default();
+        conns.push((ws.clone(), state.clone()));
+        Ok(state)
     }
 
     /// Update subscriptions for a WebSocket.
@@ -51,7 +75,10 @@ impl Router {
             m
         }, true);
 
-        // 4. Update WebSocket tags and attachment (for hibernation)
+        // 4. Update memory cache
+        self.update_cache(ws, conn_state.clone());
+
+        // 5. Update WebSocket tags and attachment (for hibernation)
         self.update_websocket_tags(state, ws, conn_state);
         ws.serialize_attachment(conn_state)?;
 
@@ -69,10 +96,12 @@ impl Router {
                 m.insert(id, old_filters);
                 Self::update_wallet_index(&mut wallets, &m, false);
             }
+            self.update_cache(ws, conn_state.clone());
         } else {
             // Full disconnect
             Self::update_wallet_index(&mut wallets, &conn_state.subscriptions, false);
             conn_state.subscriptions.clear();
+            self.remove_from_cache(ws);
         }
 
         if is_specific_sub {
@@ -83,54 +112,63 @@ impl Router {
         Ok(())
     }
 
-    /// Broadcast an event to all matching subscribers.
+    /// Updates the info event for a specific connection in the cache.
+    pub fn update_info_event(&self, ws: &WebSocket, event: Event) {
+        let mut conns = self.connections.borrow_mut();
+        if let Some((_, state)) = conns.iter_mut().find(|(w, _)| {
+            let w_js: &JsValue = w.as_ref();
+            let target_js: &JsValue = ws.as_ref();
+            w_js == target_js
+        }) {
+            state.info_event = Some(event);
+        }
+    }
+
+    /// Broadcast an event to all matching subscribers using the in-memory cache.
     pub fn broadcast(&self, state: &State, event: &Event) -> Result<()> {
-        let mut target_websockets: Vec<WebSocket> = Vec::new();
+        let mut target_indices: Vec<usize> = Vec::new();
+        let conns = self.connections.borrow();
 
-        let mut add_if_unique = |target_ws: WebSocket| {
-            if !target_websockets.iter().any(|w| {
-                let w_js: &JsValue = w.as_ref();
-                let target_js: &JsValue = target_ws.as_ref();
-                w_js == target_js
-            }) {
-                target_websockets.push(target_ws);
-            }
-        };
-
-        // Fast-path: Use Cloudflare tags (pubkeys)
+        // 1. Fast-path optimization: Use Cloudflare tags to narrow down the search
         if state.is_tags_supported() {
-            for target_ws in state.get_tagged_websockets(&event.pubkey) {
-                add_if_unique(target_ws);
-            }
+            let mut tagged_ws_list = state.get_tagged_websockets(&event.pubkey);
             for tag in &event.tags {
                 if tag.len() >= 2 && tag[0].as_str() == Some("p") {
                     if let Some(p_pubkey) = tag[1].as_str() {
-                        for target_ws in state.get_tagged_websockets(p_pubkey) {
-                            add_if_unique(target_ws);
-                        }
+                        tagged_ws_list.extend(state.get_tagged_websockets(p_pubkey));
+                    }
+                }
+            }
+
+            for tagged_ws in tagged_ws_list {
+                if let Some(idx) = conns.iter().position(|(w, _)| {
+                    let w_js: &JsValue = w.as_ref();
+                    let target_js: &JsValue = tagged_ws.as_ref();
+                    w_js == target_js
+                }) {
+                    if !target_indices.contains(&idx) {
+                        target_indices.push(idx);
                     }
                 }
             }
         }
 
-        // Slow-path fallback: If no tags matched, iterate all.
-        // Even if tags matched, we still need to check filters for exact match.
-        let check_list: Vec<WebSocket> = if !target_websockets.is_empty() {
-             target_websockets
+        // 2. Identify the connections to check. 
+        let check_indices: Vec<usize> = if !target_indices.is_empty() {
+            target_indices
         } else {
-             state.get_websockets()
+            (0..conns.len()).collect()
         };
 
-        for target_ws in check_list {
-            let other_state: ConnectionState = match target_ws.deserialize_attachment() {
-                Ok(Some(s)) => s,
-                _ => continue,
-            };
-            for (sub_id, filters) in &other_state.subscriptions {
-                if filters.iter().any(|f| f.matches(event)) {
-                    let _ = target_ws.send_with_str(
-                        &RelayMessage::Event(sub_id.clone(), event.clone()).to_json(),
-                    );
+        // 3. Precise filter matching using the in-memory cache (No deserialization!)
+        for idx in check_indices {
+            if let Some((ws, conn_state)) = conns.get(idx) {
+                for (sub_id, filters) in &conn_state.subscriptions {
+                    if filters.iter().any(|f| f.matches(event)) {
+                        let _ = ws.send_with_str(
+                            &RelayMessage::Event(sub_id.clone(), event.clone()).to_json(),
+                        );
+                    }
                 }
             }
         }
@@ -138,8 +176,47 @@ impl Router {
         Ok(())
     }
 
+    /// Retrieves all cached info events matching the provided filters.
+    pub fn get_matching_info_events(&self, filters: &[Filter]) -> Vec<Event> {
+        let mut matching = Vec::new();
+        let conns = self.connections.borrow();
+
+        for (_, state) in conns.iter() {
+            if let Some(info) = &state.info_event {
+                if filters.iter().any(|f| f.matches(info)) {
+                    matching.push(info.clone());
+                }
+            }
+        }
+        matching
+    }
+
     pub fn is_wallet_online(&self, pubkey: &str) -> bool {
         self.active_wallets.borrow().get(pubkey).copied().unwrap_or(0) > 0
+    }
+
+    fn update_cache(&self, ws: &WebSocket, conn_state: ConnectionState) {
+        let mut conns = self.connections.borrow_mut();
+        if let Some(pos) = conns.iter().position(|(w, _)| {
+            let w_js: &JsValue = w.as_ref();
+            let target_js: &JsValue = ws.as_ref();
+            w_js == target_js
+        }) {
+            conns[pos].1 = conn_state;
+        } else {
+            conns.push((ws.clone(), conn_state));
+        }
+    }
+
+    fn remove_from_cache(&self, ws: &WebSocket) {
+        let mut conns = self.connections.borrow_mut();
+        if let Some(pos) = conns.iter().position(|(w, _)| {
+            let w_js: &JsValue = w.as_ref();
+            let target_js: &JsValue = ws.as_ref();
+            w_js == target_js
+        }) {
+            conns.swap_remove(pos);
+        }
     }
 
     fn update_wallet_index(wallets: &mut HashMap<String, usize>, subscriptions: &HashMap<String, Vec<Filter>>, increment: bool) {
@@ -205,6 +282,7 @@ mod tests {
     #[test]
     fn test_router_wallet_online() {
         let router = Router {
+            connections: RefCell::new(Vec::new()),
             active_wallets: RefCell::new(HashMap::new()),
         };
         
