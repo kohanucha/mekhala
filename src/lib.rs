@@ -5,15 +5,26 @@ use worker::*;
 use lru::LruCache;
 use std::num::NonZeroUsize;
 
+mod domain;
 mod relay;
-mod utils;
+mod platform;
+mod enforcement;
 mod nwc_client;
 mod lnurl;
-mod nwc_relay;
+mod pipeline;
+mod router;
+mod protocol;
+mod auth;
+mod connection;
 
-use relay::{ClientMessage, RelayMessage, Filter, Event, Limits};
-use utils::{create_cors_response, constant_time_eq};
-use nwc_relay::RelayHandler;
+use domain::{Filter, Event, Limits};
+use relay::{ClientMessage, RelayMessage};
+use platform::Platform;
+use enforcement::Enforcement;
+use pipeline::EventPipeline;
+use router::Router;
+use auth::Authenticator;
+use connection::Connection;
 
 /// State associated with a single WebSocket connection
 #[derive(Serialize, Deserialize, Clone)]
@@ -35,9 +46,9 @@ impl Default for ConnectionState {
 
 #[event(fetch)]
 pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
-    utils::set_panic_hook();
+    Platform::set_panic_hook();
 
-    let router = Router::new();
+    let router = worker::Router::new();
 
     router
         .get_async("/", handle_request)
@@ -50,20 +61,20 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
 async fn handle_request(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     if req.method() == Method::Options {
-        return create_cors_response(Response::ok("")?);
+        return Platform::create_cors_response(Response::ok("")?);
     }
 
-    let expected_secret = ctx.var("RELAY_SECRET").map(|v| v.to_string()).unwrap_or_default();
+    let auth = Authenticator::from_env(&ctx.env);
     let provided_secret = ctx.param("secret").map(|s| s.as_str()).unwrap_or_default();
 
-    if !expected_secret.is_empty() && !constant_time_eq(provided_secret, &expected_secret) {
-        return utils::apply_security_headers(Response::error("Unauthorized", 401)?);
+    if !auth.is_authorized(provided_secret) {
+        return Platform::apply_security_headers(Response::error("Unauthorized", 401)?);
     }
 
     if let Ok(Some(upgrade)) = req.headers().get("Upgrade") {
         if upgrade.to_lowercase() == "websocket" {
             let region = ctx.var("WALLET_REGION").map(|v| v.to_string()).ok();
-            let stub = utils::get_durable_stub(&ctx.env, region)?;
+            let stub = Platform::get_durable_stub(&ctx.env, region)?;
             return stub.fetch_with_request(req).await;
         }
     }
@@ -74,7 +85,7 @@ async fn handle_request(req: Request, ctx: RouteContext<()>) -> Result<Response>
 #[durable_object]
 pub struct NwcRelay {
     state: State,
-    active_wallets: RefCell<HashMap<String, usize>>,
+    router: Router,
     verification_cache: RefCell<LruCache<String, Result<(), String>>>,
     limits: Limits,
     max_connections: usize,
@@ -90,16 +101,9 @@ impl DurableObject for NwcRelay {
             max_content_length: get_var("MAX_CONTENT_LENGTH", 32768),
         };
 
-        let mut wallets = HashMap::new();
-        for ws in state.get_websockets() {
-            if let Ok(Some(conn_state)) = ws.deserialize_attachment::<ConnectionState>() {
-                Self::rebuild_wallets_from_state(&mut wallets, &conn_state);
-            }
-        }
-
         Self { 
+            router: Router::new(&state),
             state, 
-            active_wallets: RefCell::new(wallets), 
             verification_cache: RefCell::new(LruCache::new(NonZeroUsize::new(500).unwrap())),
             limits, 
             max_connections: get_var("MAX_CONNECTIONS", 100),
@@ -112,55 +116,39 @@ impl DurableObject for NwcRelay {
 
         if path.starts_with("/check/") {
             let pubkey = path.strip_prefix("/check/").unwrap_or("");
-            let is_online = self.active_wallets.borrow().get(pubkey).copied().unwrap_or(0) > 0;
-            return utils::apply_security_headers(Response::ok(if is_online { "OK" } else { "OFFLINE" })?);
+            let is_online = self.router.is_wallet_online(pubkey);
+            return Platform::apply_security_headers(Response::ok(if is_online { "OK" } else { "OFFLINE" })?);
         }
 
-        if self.state.get_websockets().len() >= self.max_connections {
-            return utils::apply_security_headers(Response::error("Too Many Requests", 429)?);
-        }
-
-        let WebSocketPair { client, server } = WebSocketPair::new()?;
-        server.serialize_attachment(&ConnectionState { limits: self.limits, ..Default::default() })?;
-        self.state.accept_web_socket(&server);
-        Response::from_websocket(client)
+        // Delegate connection acceptance to the Connection module
+        Connection::accept(&self.state, self.limits, self.max_connections)
     }
 
     async fn websocket_message(&self, ws: WebSocket, message: WebSocketIncomingMessage) -> Result<()> {
-        if let WebSocketIncomingMessage::String(text) = message {
-            // Enforcement: Message size limit (64KB)
-            if text.len() > 65536 {
-                let _ = ws.send_with_str(&RelayMessage::Notice("error: message too large".into()).to_json());
+        let client_msg = match Enforcement::parse_incoming(&message) {
+            Ok(msg) => msg,
+            Err(e) => {
+                let _ = ws.send_with_str(&RelayMessage::Notice(e).to_json());
                 return Ok(());
             }
+        };
 
-            let client_msg = match ClientMessage::from_json(&text) {
-                Ok(msg) => msg,
-                Err(e) => {
-                    let _ = ws.send_with_str(&RelayMessage::Notice(format!("error: {}", e)).to_json());
-                    return Ok(());
-                }
-            };
-            let mut conn_state: ConnectionState = ws.deserialize_attachment()?.unwrap_or_default();
-            
-            let handler = RelayHandler {
-                state: &self.state,
-                active_wallets: &self.active_wallets,
-                verification_cache: &self.verification_cache,
-            };
+        let mut conn_state: ConnectionState = ws.deserialize_attachment()?.unwrap_or_default();
+        
+        let pipeline = EventPipeline::new(
+            &self.state,
+            &self.router,
+            &self.verification_cache,
+        );
 
-            match client_msg {
-                ClientMessage::Event(e) => handler.handle_event(&ws, &mut conn_state, e).await?,
-                ClientMessage::Req(id, f) => handler.handle_req(&ws, &mut conn_state, id, f).await?,
-                ClientMessage::Close(id) => {
-                    if let Some(filters) = conn_state.subscriptions.remove(&id) {
-                        ws.serialize_attachment(&conn_state)?;
-                        handler.update_wallet_count(&filters, false);
-                        handler.update_websocket_tags(&ws, &conn_state);
-                    }
-                }
+        match client_msg {
+            ClientMessage::Event(e) => pipeline.handle_event(&ws, &mut conn_state, e).await?,
+            ClientMessage::Req(id, f) => pipeline.handle_req(&ws, &mut conn_state, id, f).await?,
+            ClientMessage::Close(id) => {
+                self.router.unsubscribe(&self.state, &ws, Some(id), &mut conn_state)?;
             }
         }
+
         Ok(())
     }
 
@@ -174,58 +162,8 @@ impl DurableObject for NwcRelay {
 }
 
 impl NwcRelay {
-    fn rebuild_wallets_from_state(wallets: &mut HashMap<String, usize>, conn_state: &ConnectionState) {
-        for filters in conn_state.subscriptions.values() {
-            for filter in filters {
-                for pubkey in filter.pubkeys() {
-                    *wallets.entry(pubkey).or_insert(0) += 1;
-                }
-            }
-        }
-    }
-
     async fn handle_websocket_close(&self, ws: &WebSocket) -> Result<()> {
-        let conn_state: ConnectionState = ws.deserialize_attachment()?.unwrap_or_default();
-        let filters: Vec<Filter> = conn_state.subscriptions.into_values().flatten().collect();
-        
-        let handler = RelayHandler {
-            state: &self.state,
-            active_wallets: &self.active_wallets,
-            verification_cache: &self.verification_cache,
-        };
-        handler.update_wallet_count(&filters, false);
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod nwc_relay_tests {
-    use super::*;
-    use crate::relay::Filter;
-
-    #[test]
-    fn test_rebuild_wallets_from_state() {
-        let mut wallets = HashMap::new();
-        let mut conn_state = ConnectionState::default();
-        let mut filters = Vec::new();
-        filters.push(Filter {
-            authors: Some(vec!["pub1".into()]),
-            p_tags: Some(vec!["pub2".into()]),
-            ..Default::default()
-        });
-        conn_state.subscriptions.insert("sub1".into(), filters);
-        NwcRelay::rebuild_wallets_from_state(&mut wallets, &conn_state);
-        assert_eq!(wallets.get("pub1"), Some(&1));
-        assert_eq!(wallets.get("pub2"), Some(&1));
-    }
-
-    #[test]
-    fn test_rebuild_wallets_multiple_subscriptions() {
-        let mut wallets = HashMap::new();
-        let mut conn_state = ConnectionState::default();
-        conn_state.subscriptions.insert("sub1".into(), vec![Filter { p_tags: Some(vec!["pub1".into()]), ..Default::default() }]);
-        conn_state.subscriptions.insert("sub2".into(), vec![Filter { p_tags: Some(vec!["pub1".into()]), ..Default::default() }]);
-        NwcRelay::rebuild_wallets_from_state(&mut wallets, &conn_state);
-        assert_eq!(wallets.get("pub1"), Some(&2));
+        let mut conn_state: ConnectionState = ws.deserialize_attachment()?.unwrap_or_default();
+        self.router.unsubscribe(&self.state, ws, None, &mut conn_state)
     }
 }
