@@ -1,5 +1,5 @@
 use crate::domain::{Event, Filter, Limits};
-use crate::relay::{RelayMessage};
+use crate::relay::{RelayMessage, ClientMessage};
 use crate::router::Router;
 use crate::protocol::NwcProtocol;
 use crate::platform::Platform;
@@ -26,6 +26,22 @@ impl<'a> EventPipeline<'a> {
             state,
             router,
             verification_cache,
+        }
+    }
+
+    /// Unified dispatcher for incoming client messages.
+    pub async fn dispatch(
+        &self,
+        ws: &WebSocket,
+        conn_state: &mut ConnectionState,
+        msg: ClientMessage,
+    ) -> Result<()> {
+        match msg {
+            ClientMessage::Event(e) => self.handle_event(ws, conn_state, e).await,
+            ClientMessage::Req(id, f) => self.handle_req(ws, conn_state, id, f).await,
+            ClientMessage::Close(id) => {
+                self.router.unsubscribe(self.state, ws, Some(id), conn_state)
+            }
         }
     }
 

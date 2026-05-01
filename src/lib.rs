@@ -18,7 +18,6 @@ mod auth;
 mod connection;
 
 use domain::{Filter, Event, Limits};
-use relay::{ClientMessage, RelayMessage};
 use platform::Platform;
 use enforcement::Enforcement;
 use pipeline::EventPipeline;
@@ -125,32 +124,14 @@ impl DurableObject for NwcRelay {
     }
 
     async fn websocket_message(&self, ws: WebSocket, message: WebSocketIncomingMessage) -> Result<()> {
-        let client_msg = match Enforcement::parse_incoming(&message) {
-            Ok(msg) => msg,
-            Err(e) => {
-                let _ = ws.send_with_str(&RelayMessage::Notice(e).to_json());
-                return Ok(());
-            }
-        };
-
-        // Use the Router's high-leverage Speed Layer
-        let mut conn_state = self.router.get_state(&ws)?;
-        
         let pipeline = EventPipeline::new(
             &self.state,
             &self.router,
             &self.verification_cache,
         );
 
-        match client_msg {
-            ClientMessage::Event(e) => pipeline.handle_event(&ws, &mut conn_state, e).await?,
-            ClientMessage::Req(id, f) => pipeline.handle_req(&ws, &mut conn_state, id, f).await?,
-            ClientMessage::Close(id) => {
-                self.router.unsubscribe(&self.state, &ws, Some(id), &mut conn_state)?;
-            }
-        }
-
-        Ok(())
+        // Delegate full orchestration to the Enforcement Gatekeeper
+        Enforcement::handle_message(&ws, message, &self.router, &pipeline).await
     }
 
     async fn websocket_close(&self, ws: WebSocket, _: usize, _: String, _: bool) -> Result<()> {

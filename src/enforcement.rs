@@ -1,11 +1,42 @@
 use worker::*;
-use crate::relay::{ClientMessage};
+use crate::relay::{ClientMessage, RelayMessage};
+use crate::router::Router;
+use crate::pipeline::EventPipeline;
 
 /// Enforcement encapsulates raw incoming message validation and parsing.
 pub struct Enforcement;
 
 impl Enforcement {
-    /// Validates and parses an incoming WebSocket message.
+    /// Fully orchestrates an incoming WebSocket message (The Gatekeeper).
+    pub async fn handle_message(
+        ws: &WebSocket,
+        message: WebSocketIncomingMessage,
+        router: &Router,
+        pipeline: &EventPipeline<'_>,
+    ) -> Result<()> {
+        // 1. Parsing and Raw Validation
+        let client_msg = match Self::parse_incoming(&message) {
+            Ok(msg) => msg,
+            Err(e) => {
+                let _ = ws.send_with_str(&RelayMessage::Notice(e).to_json());
+                return Ok(());
+            }
+        };
+
+        // 2. Context Retrieval (Lazy Speed Layer)
+        let mut conn_state = match router.get_state(ws) {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = ws.send_with_str(&RelayMessage::Notice(format!("error: context failure: {}", e)).to_json());
+                return Ok(());
+            }
+        };
+
+        // 3. Pipeline Dispatch
+        pipeline.dispatch(ws, &mut conn_state, client_msg).await
+    }
+
+    /// Validates and parses an incoming WebSocket message into a structured Nostr message.
     pub fn parse_incoming(message: &WebSocketIncomingMessage) -> Result<ClientMessage, String> {
         if let WebSocketIncomingMessage::String(text) = message {
             // Enforcement: Message size limit (64KB)
