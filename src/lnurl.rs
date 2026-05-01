@@ -41,6 +41,37 @@ impl<'a> LNAddress<'a> {
     }
 }
 
+/// LNAddressBridge orchestrates the interaction between LNURL requests and the NWC backend.
+/// It encapsulates the Cloudflare-specific dependencies (KV, Durable Objects).
+pub struct LNAddressBridge;
+
+impl LNAddressBridge {
+    /// High-level orchestration to request an invoice from a user's wallet via NWC.
+    pub async fn request_invoice(ctx: &RouteContext<()>, username: &str, amount_msat: u64) -> Result<String> {
+        // 1. Resolve NWC URI from KV
+        let kv = ctx.env.kv("MEKHALA_NWC_KV")?;
+        let nwc_uri = kv.get(username).text().await?
+            .ok_or_else(|| Error::from("User not found"))?;
+
+        // 2. Prepare domain context (pure hashing)
+        let ln_address = LNAddress::new(username);
+        let description_hash = ln_address.get_description_hash();
+
+        // 3. Obtain Durable Object stub (Platform abstraction)
+        let region = ctx.var("WALLET_REGION").map(|v| v.to_string()).ok();
+        let stub = Platform::get_durable_stub(&ctx.env, region)?;
+
+        // 4. Dispatch cross-isolate NWC request
+        nwc_client::request_invoice(&nwc_uri, amount_msat, description_hash, stub).await
+    }
+
+    /// Checks if a user exists in the system.
+    pub async fn user_exists(ctx: &RouteContext<()>, username: &str) -> Result<bool> {
+        let kv = ctx.env.kv("MEKHALA_NWC_KV")?;
+        Ok(kv.get(username).text().await?.is_some())
+    }
+}
+
 // --- HTTP Handlers (I/O Layer) ---
 
 pub async fn handle_lnurlp(req: Request, ctx: RouteContext<()>) -> Result<Response> {
@@ -58,8 +89,7 @@ fn lnurl_error(reason: &str) -> Result<Response> {
 async fn handle_lnurlp_inner(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let username = ctx.param("username").ok_or_else(|| Error::from("Missing username"))?;
     
-    let kv = ctx.env.kv("MEKHALA_NWC_KV")?;
-    if kv.get(username).text().await?.is_none() {
+    if !LNAddressBridge::user_exists(&ctx, username).await? {
         return Err(Error::from("User not found"));
     }
 
@@ -87,12 +117,6 @@ pub async fn handle_lnurlp_callback(req: Request, ctx: RouteContext<()>) -> Resu
 async fn handle_lnurlp_callback_inner(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let username = ctx.param("username").ok_or_else(|| Error::from("Missing username"))?;
     
-    let kv = ctx.env.kv("MEKHALA_NWC_KV")?;
-    let nwc_uri = match kv.get(username).text().await? {
-        Some(uri) => uri,
-        None => return Err(Error::from("User not found")),
-    };
-    
     let url = req.url()?;
     let mut query = url.query_pairs();
     let amount_msat = query
@@ -100,13 +124,8 @@ async fn handle_lnurlp_callback_inner(req: Request, ctx: RouteContext<()>) -> Re
         .and_then(|(_, v)| v.parse::<u64>().ok())
         .ok_or_else(|| Error::from("Missing amount"))?;
 
-    let ln_address = LNAddress::new(username);
-    let description_hash = ln_address.get_description_hash();
-
-    let region = ctx.var("WALLET_REGION").map(|v| v.to_string()).ok();
-    let stub = Platform::get_durable_stub(&ctx.env, region)?;
-
-    let pr = nwc_client::request_invoice(&nwc_uri, amount_msat, description_hash, stub).await?;
+    // High-leverage delegation to the Bridge
+    let pr = LNAddressBridge::request_invoice(&ctx, username, amount_msat).await?;
     
     let resp = serde_json::json!({
         "pr": pr,
