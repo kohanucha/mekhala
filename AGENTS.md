@@ -21,7 +21,6 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 - **Modules**: relay.rs, nwc_client.rs, nwc_relay.rs, lnurl.rs, utils.rs
 
 ## Critical Dependencies
-- `lru` needs `features = ["alloc"]` for WASM (currently missing - causes build failure!)
 - `worker` 0.8.x runtime
 - `k256` for Schnorr signatures
 
@@ -39,7 +38,6 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 - Compatibility date: 2026-04-25
 
 ## Common Gotchas
-1. **lru crate**: Must add `features = ["alloc"]` to Cargo.toml
-2. **DO state**: Use `self.state.storage()`
-3. **WebSocket tags**: Use `utils::HibernationState` trait
-5. **Panic = Abort**: The project uses `panic = "abort"`. **NEVER** use `unwrap()` or `expect()`. Use `?`, `.get()` for indexing, and checked math to prevent isolate crashes.
+1. **DO state**: Use `self.state.storage()`
+2. **WebSocket tags**: Use `utils::HibernationState` trait
+3. **Panic = Abort**: The project uses `panic = "abort"`. **NEVER** use `unwrap()` or `expect()`. Use `?`, `.get()` for indexing, and checked math to prevent isolate crashes.

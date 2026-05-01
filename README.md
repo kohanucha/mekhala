@@ -1,6 +1,6 @@
 # Mekhala - เมขลา ⚡️
 
-**A super fast, private, and secure Nostr relay for your Lightning Wallet, running on Cloudflare Workers.**
+**A private, stateless Nostr relay optimized for NIP-47 (NWC) on Cloudflare Workers.**
 
 > According to legend, the phenomena of lightning and thunder is produced from the flashing of Manimekhala's crystal ball.
 
@@ -8,113 +8,67 @@
 
 ---
 
-## 🤔 What is this?
+## 📖 Overview
 
-If you use **Nostr Wallet Connect (NWC)** to connect apps (like Damus, Amethyst, or web zaps) to your Lightning node (like Alby or Umbrel), they need a "relay" to talk to each other.
+Mekhala is a specialized relay designed to act as a private communication bridge between Lightning applications (like Amethyst or Alby) and your wallet:
 
-Normally, relays store messages in a database. **Mekhala** is different. It acts like a direct, high-speed tunnel between your app and your wallet. It doesn't store anything, which means:
-
-- 🚀 **It's blazingly fast** (instant routing)
-- 🔒 **It's completely private** (your data is never saved)
-- 💰 **It's completely free** (runs comfortably within Cloudflare's free limits)
+- **Stateless Architecture:** No persistent database is used. Events are processed in-memory and routed to active subscribers instantly.
+- **Privacy-First:** Access is restricted via a secret path to ensure the relay remains for personal use only.
+- **Resource Efficient:** Built with Rust/WebAssembly to run within the constraints of the Cloudflare Workers Free Tier.
 
 ---
 
-## ⚠️ Current Limitations
+## 📦 Setup Guide
 
-### Lightning Address Compatibility
-If you use a Lightning Address provided by a third-party service (like `name@getalby.com`), that service likely expects to communicate with your wallet through their own internal relays. 
-
-If your wallet (e.g., Alby Hub) is **only** connected to this private relay, those third-party services will not be able to reach you. To ensure your Lightning Address continues to work, you should keep your wallet connected to **both** this private relay and your provider's default relay.
-
----
-
-## 📜 Supported NIPs
-- **[NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md):** Basic protocol (Event signing, ID verification, basic REQ/EVENT flow).
-- **[NIP-11](https://github.com/nostr-protocol/nips/blob/master/11.md):** Relay Information (JSON metadata for clients).
-- **[NIP-47](https://github.com/nostr-protocol/nips/blob/master/47.md):** Nostr Wallet Connect (Info, Request, Response, and Notifications).
-
----
-
-## 🔒 Security-Hardened for NWC
-
-Mekhala is pre-configured with restrictive limits optimized for personal NWC use. These limits protect your Cloudflare resources and ensure high performance:
-
-- **20 Concurrent Connections:** Perfect for one user across all their devices.
-- **10 Tags per Event:** Prevents metadata bloating.
-- **16 KB Content Limit:** Large enough for encrypted invoices and transaction history, but blocks bulky spam.
-- **Narrow Filtering:** Subscriptions are strictly enforced to specific pubkeys/IDs to prevent snooping.
-
----
-
-## 📦 1-Click Deployment (Recommended)
-
-The easiest way to get your own relay running is by using Cloudflare's built-in Git integration.
-
-1. **Fork this repository:** Click the **"Fork"** button at the top right of this GitHub page to copy it to your account.
-2. **Log in to Cloudflare:** Go to your [Cloudflare Dashboard](https://dash.cloudflare.com/).
-3. **Create the Worker:**
-   - Go to **Workers & Pages** in the left sidebar.
-   - Click **Create application** -> **Connect to Git**.
-   - Select your forked `mekhala` repository.
+1. **Fork this repository:** Create a copy of this project in your own GitHub account.
+2. **Deploy to Cloudflare:** 
+   - Log in to your [Cloudflare Dashboard](https://dash.cloudflare.com/).
+   - Navigate to **Workers & Pages** -> **Create application** -> **Connect to Git**.
+   - Select your `mekhala` repository and click **Save and Deploy**.
+3. **Set up your Secret Path:** 
+   - In your Worker dashboard, go to **Settings** -> **Variables and Secrets**.
+   - Add a new **Secret** named `RELAY_SECRET`. 
+   - Enter a long, unique string (e.g., `my-private-relay-secret-123`). This string will be used as your private access path.
    - Click **Save and Deploy**.
 
-*Cloudflare will take a few minutes to install the necessary tools and build your relay for the first time.*
+**Your Relay URL:** `wss://your-worker-name.workers.dev/your-secret-path`
 
 ---
 
-## 🔒 Securing Your Relay (Very Important!)
+## ⚠️ Project Status
 
-If you don't secure your relay, anyone on the internet can use it. To keep it private and protect your free Cloudflare limits, follow these simple steps:
+### 🚧 Lightning Address Bridge (Experimental)
+The feature to bridge Lightning Addresses (e.g., `you@domain.com`) to NWC is **currently in progress**. It requires advanced manual configuration of Cloudflare KV namespaces and is not yet recommended for general use.
 
-### 1. Generate a Secret Password
-You need a random password to protect your relay. Open your computer's terminal (or command prompt), navigate to the folder where you cloned this code, and run:
-```bash
-./scripts/generate_secret.sh
-```
-*(Copy the secret text it gives you!)*
-
-### 2. Add the Password to Cloudflare
-- In your Cloudflare Dashboard, go to **Workers & Pages** and click on your `mekhala`.
-- Go to the **Settings** tab, then click **Variables and Secrets**.
-- Click **Add**.
-- **Type:** Select **"Secret"** from the dropdown.
-- **Name:** Type exactly `RELAY_SECRET`
-- **Value:** Paste the secret you copied in Step 1.
-- Click **Deploy**.
+### External Wallet Services
+If you use third-party services like Alby, they may require connections to their own relays. It is recommended to keep your wallet connected to **both** this private relay and your provider's default relay to ensure full compatibility.
 
 ---
 
-## 🌍 Set Your Region (Optional)
+## 🔒 Security & Limits
 
-To make your relay even faster, you can tell Cloudflare to put it physically close to your location. This defaults to `apac` (Asia) in `wrangler.toml`.
-
-1. In your Cloudflare Dashboard, go to **Settings** -> **Variables and Secrets**.
-2. Under **Environment Variables**, click **Add variable**.
-3. **Name:** Type exactly `WALLET_REGION`
-4. **Value:** Type `apac` (Asia), `weur` (Europe), or `wnam` (US West).
-5. Click **Deploy**.
+Mekhala is pre-configured with restrictive limits optimized for a single user:
+- **Max Connections:** 20 (Supports multiple devices for one user).
+- **Max Content Length:** 16 KB (Fits encrypted invoices and history).
+- **Max Tags:** 10 (Restricts metadata bloating).
 
 ---
 
-## 🔗 How to Use Your Relay
+## 🛠 For Developers
 
-Now that your relay is deployed and secured, you can use it in your NWC connections!
+### Supported Protocols
+- **NIP-01:** Basic protocol (Stateless REQ/EVENT flow).
+- **NIP-11:** Relay Information (NWC capability discovery).
+- **NIP-47:** Nostr Wallet Connect (Info, Request, Response, and Notifications).
+- **LUD-06/16:** (In Progress) LN Address to NWC bridging via Cloudflare KV.
 
-Your private relay URL will look like this:
-`wss://your-domain.com/<YOUR_SECRET>`
+### Local Development
+- **Build:** `./scripts/build.sh` (Requires `worker-build` and `wasm-pack`).
+- **Dev Server:** `npx wrangler dev`.
+- **Unit Tests:** `cargo test`.
+- **Integration Tests:** `./scripts/test.sh` (Comprehensive Rust + Node.js E2E suite).
 
-*Just replace `<YOUR_SECRET>` with the password you saved in Cloudflare!*
-
----
-
-## 💻 For Developers (Advanced)
-
-If you want to build or test locally:
-- **Build:** `./scripts/build.sh`
-- **Local Dev:** `npx wrangler dev`
-- **Unit Tests:** `cargo test`
-- **Integration Tests:** `cd test && npm i && npm test`
-
-### GitHub Actions Deployment
-You can also deploy via GitHub Actions for faster build times (~30 seconds). Just add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` to your GitHub Repository Secrets and push to `main`.
+### Environment Variables
+- `RELAY_SECRET`: Path-based secret for authentication.
+- `WALLET_REGION`: (Optional) Physical location for the Durable Object (`apac`, `weur`, `wnam`).
+- `MAX_CONNECTIONS`, `MAX_FILTER_ITEMS`, `MAX_EVENT_TAGS`, `MAX_CONTENT_LENGTH`: Configurable limits in `wrangler.toml`.
