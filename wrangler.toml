@@ -4,10 +4,10 @@ compatibility_date = "2026-04-30"
 
 [vars]
 WALLET_REGION = "apac"
-MAX_CONNECTIONS = "100"
-MAX_FILTER_ITEMS = "100"
-MAX_EVENT_TAGS = "100"
-MAX_CONTENT_LENGTH = "32768"
+MAX_CONNECTIONS = "20"
+MAX_FILTER_ITEMS = "10"
+MAX_EVENT_TAGS = "10"
+MAX_CONTENT_LENGTH = "16384"
 
 [[durable_objects.bindings]]
 name = "NWC_RELAY"

@@ -36,6 +36,17 @@ If your wallet (e.g., Alby Hub) is **only** connected to this private relay, tho
 
 ---
 
+## 🔒 Security-Hardened for NWC
+
+Mekhala is pre-configured with restrictive limits optimized for personal NWC use. These limits protect your Cloudflare resources and ensure high performance:
+
+- **20 Concurrent Connections:** Perfect for one user across all their devices.
+- **10 Tags per Event:** Prevents metadata bloating.
+- **16 KB Content Limit:** Large enough for encrypted invoices and transaction history, but blocks bulky spam.
+- **Narrow Filtering:** Subscriptions are strictly enforced to specific pubkeys/IDs to prevent snooping.
+
+---
+
 ## 📦 1-Click Deployment (Recommended)
 
 The easiest way to get your own relay running is by using Cloudflare's built-in Git integration.

@@ -39,19 +39,19 @@ The relay acts as an ephemeral "routing engine" between Lightning wallet applica
 
 ## Configuration (Environment Variables)
 Mekhala is highly configurable via `wrangler.toml`:
-- `MAX_CONNECTIONS`: Max concurrent WebSockets per Durable Object (Default: 100).
-- `MAX_FILTER_ITEMS`: Max items allowed in filter arrays (ids, authors, etc.) (Default: 100).
-- `MAX_EVENT_TAGS`: Max tags allowed per event (Default: 100).
-- `MAX_CONTENT_LENGTH`: Max event content size in bytes (Default: 32768).
+- `MAX_CONNECTIONS`: Max concurrent WebSockets per Durable Object (Default: 20 - Optimized for 1 user across devices).
+- `MAX_FILTER_ITEMS`: Max items allowed in filter arrays (ids, authors, etc.) (Default: 10 - NWC filters are narrow).
+- `MAX_EVENT_TAGS`: Max tags allowed per event (Default: 10 - NWC events are functional).
+- `MAX_CONTENT_LENGTH`: Max event content size in bytes (Default: 16384 - Fits invoices and history).
 - `RELAY_SECRET`: Optional secret path for private relay mode.
 - `MEKHALA_NWC_KV`: KV namespace binding for LN Address mapping.
 
 ## Building and Running
 
 ### Key Commands
-- **Test Everything**: `./scripts/test.sh`
+- **Test Everything**: `./test.sh`
   - **MANDATORY**: Run this script after every code change. It verifies Rust unit tests, builds the WASM binary, and runs the Node.js integration suite against a local relay.
-- **Build**: `./scripts/build.sh`
+- **Build**: `./build.sh`
 - **Local Development**: `npx wrangler dev`
 - **Unit Tests**: `cargo test` (Core logic, crypto, and filters).
 - **Integration Tests**: `cd test && npm test` (Full protocol and E2E flows).
@@ -59,10 +59,12 @@ Mekhala is highly configurable via `wrangler.toml`:
 ## Development Conventions
 
 ### Coding Standards
-- **Test Before Push**: NEVER commit or push code without a successful `./scripts/test.sh` run. This ensures that the Durable Object hibernation recovery logic is verified and no regressions are introduced in the NWC flow.
+- **Test Before Push**: NEVER commit or push code without a successful `./test.sh` run. This ensures that the Durable Object hibernation recovery logic is verified and no regressions are introduced in the NWC flow.
 - **Strict NWC Enforcement**: Reject any event or subscription not matching NWC kinds (13194, 23194-23197).
+- **Security-Hardened Limits**: Use restrictive limits (20 connections, 10 tags, 16KB content) optimized for personal NWC use to reduce attack surface and DO memory pressure.
 - **Mandatory Filter Narrowing**: All `REQ` filters must include at least one criterion (`ids`, `authors`, `#p`, `#e`) to prevent broad snooping.
 - **Security First**: Use constant-time comparisons for secrets and random 16-byte IVs for NIP-04 encryption.
+
 - **Performance Focused**: Use `serde_json::to_string(&(0, ...))` for fast NIP-01 ID verification.
 - **Panic = Abort Resilience**: Since the project is compiled with `panic = "abort"`, any panic terminates the WebAssembly isolate and drops all concurrent requests. To prevent this:
   - **No `unwrap()` / `expect()`**: Exclusively use `?` or explicit `match` statements to propagate errors and return graceful HTTP 5xx responses.
