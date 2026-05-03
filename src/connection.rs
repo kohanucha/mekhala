@@ -1,8 +1,8 @@
 use worker::*;
 use crate::domain::Limits;
 use crate::ConnectionState;
-use crate::platform::Platform;
-use crate::relay::RelayMessage;
+use crate::runtime::Platform;
+use crate::messages::RelayMessage;
 
 /// Connection manages the lifecycle and handshake of new WebSocket clients.
 pub struct Connection;

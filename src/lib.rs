@@ -6,21 +6,21 @@ use lru::LruCache;
 use std::num::NonZeroUsize;
 
 mod domain;
-mod relay;
-mod platform;
-mod enforcement;
-mod nwc_client;
-mod lnurl;
-mod pipeline;
+mod messages;
+mod runtime;
+mod gatekeeper;
+mod session;
+mod bridge;
+mod engine;
 mod router;
-mod protocol;
+mod rules;
 mod auth;
 mod connection;
 
 use domain::{Filter, Event, Limits};
-use platform::Platform;
-use enforcement::Enforcement;
-use pipeline::EventPipeline;
+use runtime::Platform;
+use gatekeeper::Enforcement;
+use engine::EventPipeline;
 use router::Router;
 use auth::Authenticator;
 use connection::Connection;
@@ -51,8 +51,8 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
     router
         .get_async("/", handle_request)
-        .get_async("/.well-known/lnurlp/:username", lnurl::handle_lnurlp)
-        .get_async("/lnurlp/:username/callback", lnurl::handle_lnurlp_callback)
+        .get_async("/.well-known/lnurlp/:username", bridge::handle_lnurlp)
+        .get_async("/lnurlp/:username/callback", bridge::handle_lnurlp_callback)
         .get_async("/:secret", handle_request)
         .run(req, env)
         .await
@@ -78,7 +78,7 @@ async fn handle_request(req: Request, ctx: RouteContext<()>) -> Result<Response>
         }
     }
 
-    relay::handle_get_info()
+    messages::handle_get_info()
 }
 
 #[durable_object]

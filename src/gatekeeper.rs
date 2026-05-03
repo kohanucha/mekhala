@@ -1,7 +1,7 @@
 use worker::*;
-use crate::relay::{ClientMessage, RelayMessage};
+use crate::messages::{ClientMessage, RelayMessage};
 use crate::router::Router;
-use crate::pipeline::EventPipeline;
+use crate::engine::EventPipeline;
 use crate::connection::Connection;
 
 /// Enforcement encapsulates raw incoming message validation and parsing.

@@ -1,6 +1,6 @@
 use crate::domain::{Event, Filter};
-use crate::relay::{RelayMessage};
-use crate::platform::{HibernationState};
+use crate::messages::{RelayMessage};
+use crate::runtime::{HibernationState};
 use crate::ConnectionState;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};

@@ -1,7 +1,7 @@
 use worker::*;
 use sha2::{Sha256, Digest};
-use crate::platform::Platform;
-use crate::nwc_client;
+use crate::runtime::Platform;
+use crate::session;
 use serde_json::Value;
 
 /// Represents an LN Address (user@relay.com) and handles LUD-06/LUD-16 protocol logic.
@@ -62,7 +62,7 @@ impl LNAddressBridge {
         let stub = Platform::get_durable_stub(&ctx.env, region)?;
 
         // 4. Dispatch cross-isolate NWC request
-        nwc_client::request_invoice(&nwc_uri, amount_msat, description_hash, stub).await
+        session::request_invoice(&nwc_uri, amount_msat, description_hash, stub).await
     }
 
     /// Checks if a user exists in the system.

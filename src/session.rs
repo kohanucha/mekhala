@@ -13,8 +13,8 @@ use worker::*;
 use futures_util::StreamExt;
 use async_trait::async_trait;
 use crate::domain::{Event};
-use crate::protocol::{KIND_NWC_REQUEST, KIND_NWC_RESPONSE};
-use crate::platform::Platform;
+use crate::rules::{KIND_NWC_REQUEST, KIND_NWC_RESPONSE};
+use crate::runtime::Platform;
 
 #[derive(Debug, Clone)]
 pub struct NwcConnection {

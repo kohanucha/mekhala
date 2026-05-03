@@ -1,4 +1,5 @@
 use crate::domain::{Event, Filter, RelayError};
+use crate::runtime::Platform;
 
 /// Messages sent by the client to the relay
 #[derive(Debug)]
@@ -88,7 +89,7 @@ pub fn handle_get_info() -> Result<worker::Response, worker::Error> {
     let info = serde_json::json!({
         "supported_nips": [1, 11, 47]
     });
-    crate::platform::Platform::create_cors_response(worker::Response::from_json(&info)?)
+    Platform::create_cors_response(worker::Response::from_json(&info)?)
 }
 
 #[cfg(test)]

@@ -1,8 +1,8 @@
 use crate::domain::{Event, Filter, Limits};
-use crate::relay::{RelayMessage, ClientMessage};
+use crate::messages::{RelayMessage, ClientMessage};
 use crate::router::Router;
-use crate::protocol::NwcProtocol;
-use crate::platform::Platform;
+use crate::rules::NwcProtocol;
+use crate::runtime::Platform;
 use crate::ConnectionState;
 use lru::LruCache;
 use std::cell::RefCell;
@@ -68,7 +68,7 @@ impl<'a> EventPipeline<'a> {
         }
 
         // 3. State-dependent logic: Cache Info Events
-        if event.kind == crate::protocol::KIND_NWC_INFO {
+        if event.kind == crate::rules::KIND_NWC_INFO {
             conn_state.info_event = Some(event.clone());
             self.router.update_info_event(ws, event.clone());
             ws.serialize_attachment(conn_state)?;
@@ -142,7 +142,7 @@ impl<'a> EventPipeline<'a> {
     fn get_cached_info_events(&self, sub_id: &str, filters: &[Filter]) -> Vec<RelayMessage> {
         let is_requesting_info = filters
             .iter()
-            .any(|f| f.kinds.as_ref().map_or(false, |k| k.contains(&crate::protocol::KIND_NWC_INFO)));
+            .any(|f| f.kinds.as_ref().map_or(false, |k| k.contains(&crate::rules::KIND_NWC_INFO)));
 
         if !is_requesting_info {
             return vec![];
