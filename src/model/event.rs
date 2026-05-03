@@ -18,6 +18,27 @@ pub struct Event {
 
 impl Event {
     pub fn verify(&self, current_time: u64, limits: &Limits) -> Result<(), RelayError> {
+        // Enforce NWC-only kinds
+        match self.kind {
+            13194 | 23194 | 23195 | 23196 | 23197 => {}
+            _ => return Err(RelayError::InvalidKind),
+        }
+
+        // Enforce tags for specific NWC kinds
+        match self.kind {
+            23195 => {
+                let has_p = self.tags.iter().any(|t| t.len() >= 2 && t[0].as_str() == Some("p"));
+                let has_e = self.tags.iter().any(|t| t.len() >= 2 && t[0].as_str() == Some("e"));
+                if !has_p { return Err(RelayError::MissingTag("p".into())); }
+                if !has_e { return Err(RelayError::MissingTag("e".into())); }
+            }
+            23196 | 23197 => {
+                let has_p = self.tags.iter().any(|t| t.len() >= 2 && t[0].as_str() == Some("p"));
+                if !has_p { return Err(RelayError::MissingTag("p".into())); }
+            }
+            _ => {}
+        }
+
         if self.tags.len() > limits.max_event_tags {
             return Err(RelayError::LimitExceeded(format!("too many tags (max {})", limits.max_event_tags)));
         }

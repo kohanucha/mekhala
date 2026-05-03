@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use worker::*;
-use wasm_bindgen::JsValue;
 use crate::model::{ConnectionState, Filter, Event};
 use crate::nostr::RelayMessage;
 use crate::cloudflare::{HibernationState, Index};
@@ -35,15 +34,25 @@ impl SubscriptionManager {
     }
 
     pub fn subscribe(&self, state: &State, ws: &WebSocket, sub_id: String, filters: Vec<Filter>) -> Result<()> {
+        self.sync(state);
         let mut conns = self.connections.borrow_mut();
 
         if let Some((_, conn_state)) = conns.iter_mut().find(|(w, _)| ws_eq(w, ws)) {
             conn_state.subscriptions.insert(sub_id.clone(), filters.clone());
             Self::update_wallet_index(&mut self.active_wallets.borrow_mut(), &{
                 let mut m = std::collections::HashMap::new();
-                m.insert(sub_id, filters);
+                m.insert(sub_id.clone(), filters.clone());
                 m
             }, true);
+        }
+
+        // Send cached info events
+        for (_, other_state) in conns.iter() {
+            if let Some(info_event) = &other_state.info_event {
+                if filters.iter().any(|f| f.matches(info_event)) {
+                    let _ = ws.send_with_str(&RelayMessage::Event(sub_id.clone(), info_event.clone()).to_json());
+                }
+            }
         }
 
         drop(conns);
@@ -53,7 +62,19 @@ impl SubscriptionManager {
         Ok(())
     }
 
+    pub fn save_info_event(&self, state: &State, ws: &WebSocket, event: Event) -> Result<()> {
+        self.sync(state);
+        let mut conns = self.connections.borrow_mut();
+        if let Some((_, conn_state)) = conns.iter_mut().find(|(w, _)| ws_eq(w, ws)) {
+            conn_state.info_event = Some(event);
+            drop(conns);
+            let _ = self.update_ws_tags(state, ws);
+        }
+        Ok(())
+    }
+
     pub fn unsubscribe(&self, state: &State, ws: &WebSocket, sub_id: Option<String>) -> Result<()> {
+        self.sync(state);
         let mut conns = self.connections.borrow_mut();
 
         if let Some((_, conn_state)) = conns.iter_mut().find(|(w, _)| ws_eq(w, ws)) {
@@ -76,7 +97,8 @@ impl SubscriptionManager {
         Ok(())
     }
 
-    pub fn broadcast(&self, event: &Event) -> Result<()> {
+    pub fn broadcast(&self, state: &State, event: &Event) -> Result<()> {
+        self.sync(state);
         let index = self.pubkey_index.borrow();
         let conns = self.connections.borrow();
 
@@ -115,6 +137,44 @@ impl SubscriptionManager {
 
     pub fn is_wallet_online(&self, pubkey: &str) -> bool {
         self.active_wallets.borrow().get(pubkey).copied().unwrap_or(0) > 0
+    }
+
+    fn sync(&self, state: &State) {
+        let mut conns = self.connections.borrow_mut();
+        let mut active_wallets = self.active_wallets.borrow_mut();
+        let active_ws = state.get_websockets();
+        let mut changed = false;
+
+        // 1. Remove closed connections
+        let mut to_remove = Vec::new();
+        for (i, (w, _)) in conns.iter().enumerate() {
+            if !active_ws.iter().any(|aw| ws_eq(aw, w)) {
+                to_remove.push(i);
+            }
+        }
+        if !to_remove.is_empty() {
+            changed = true;
+            for i in to_remove.into_iter().rev() {
+                let (_, state) = conns.remove(i);
+                Self::update_wallet_index(&mut active_wallets, &state.subscriptions, false);
+            }
+        }
+
+        // 2. Add new connections
+        for aw in active_ws {
+            if !conns.iter().any(|(w, _)| ws_eq(w, &aw)) {
+                changed = true;
+                let conn_state = aw.deserialize_attachment::<ConnectionState>().ok().flatten().unwrap_or_default();
+                Self::update_wallet_index(&mut active_wallets, &conn_state.subscriptions, true);
+                conns.push((aw, conn_state));
+            }
+        }
+
+        if changed {
+            drop(conns);
+            drop(active_wallets);
+            self.rebuild_index();
+        }
     }
 
     fn rebuild_index(&self) {
@@ -158,7 +218,5 @@ impl SubscriptionManager {
 }
 
 fn ws_eq(a: &WebSocket, b: &WebSocket) -> bool {
-    let a_js: &JsValue = a.as_ref();
-    let b_js: &JsValue = b.as_ref();
-    a_js == b_js
+    js_sys::Object::is(a.as_ref(), b.as_ref())
 }

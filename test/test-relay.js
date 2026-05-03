@@ -157,6 +157,7 @@ async function testRelay() {
     let eoseReceived = false;
     let sigRejected = false;
     let kind3Rejected = false;
+    let routingTested = false;
 
     ws.on("message", (data) => {
       const msg = JSON.parse(data.toString());
@@ -173,7 +174,7 @@ async function testRelay() {
       }
 
       if (msg[0] === "OK") {
-        if (msg[1] === eventKind3.id && msg[2] === false) {
+        if (eventKind3 && msg[1] === eventKind3.id && msg[2] === false) {
           kind3Rejected = true;
           console.log("✅ Restricted kind rejection passed.");
         }
@@ -187,14 +188,17 @@ async function testRelay() {
       }
 
       // Check if all initial tests finished
-      if (eoseReceived && sigRejected && kind3Rejected) {
+      if (eoseReceived && sigRejected && kind3Rejected && !routingTested) {
+        routingTested = true;
         // Now test routing
         testRouting(ws, sk, pk).then(resolve).catch(reject);
       }
     });
 
     ws.on("error", reject);
-    setTimeout(() => reject(new Error("Timeout")), 5000);
+    setTimeout(() => {
+      if (!routingTested) reject(new Error("Timeout"));
+    }, 5000);
   });
 }
 
@@ -213,16 +217,18 @@ async function testRouting(ws, sk, pk) {
   ws.send(JSON.stringify(["EVENT", event]));
 
   return new Promise((resolve) => {
-    ws.on("message", (data) => {
+    const handler = (data) => {
       const msg = JSON.parse(data.toString());
       if (msg[0] === "EVENT" && msg[1] === "sub-1") {
         if (msg[2].id === event.id) {
           console.log("✅ Event routing passed.");
+          ws.off("message", handler);
           ws.close();
           resolve();
         }
       }
-    });
+    };
+    ws.on("message", handler);
   });
 }
 

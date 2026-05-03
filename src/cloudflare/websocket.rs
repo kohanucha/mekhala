@@ -43,7 +43,7 @@ impl DurableObject for Websocket {
             let arr: Vec<serde_json::Value> = match serde_json::from_str(&text) {
                 Ok(a) => a,
                 Err(e) => {
-                    ws.send_with_str(&RelayMessage::Notice(format!("parse error: {}", e)).to_json())?;
+                    ws.send_with_str(&RelayMessage::Notice(format!("parse failed: {}", e)).to_json())?;
                     return Ok(());
                 }
             };
@@ -53,7 +53,7 @@ impl DurableObject for Websocket {
             }
 
             match arr[0].as_str() {
-                Some("EVENT") if arr.len() >= 3 => self.handle_event(&ws, &arr),
+                Some("EVENT") if arr.len() >= 2 => self.handle_event(&ws, &arr),
                 Some("REQ") if arr.len() >= 3 => self.handle_req(&ws, &arr),
                 Some("CLOSE") if arr.len() >= 2 => self.handle_close(&ws, &arr[1]),
                 _ => Ok(()),
@@ -75,7 +75,7 @@ impl DurableObject for Websocket {
 
 impl Websocket {
     fn handle_event(&self, ws: &WebSocket, arr: &[serde_json::Value]) -> Result<()> {
-        let event: crate::model::Event = serde_json::from_value(arr[2].clone())
+        let event: crate::model::Event = serde_json::from_value(arr[1].clone())
             .map_err(|e| Error::from(e.to_string()))?;
 
         let now = now();
@@ -88,15 +88,24 @@ impl Websocket {
 
         ws.send_with_str(&RelayMessage::Ok(event.id.clone(), true, "".into()).to_json())?;
 
-        self.manager.broadcast(&event)?;
+        if event.kind == 13194 {
+            self.manager.save_info_event(&self.state, ws, event.clone())?;
+        }
+
+        self.manager.broadcast(&self.state, &event)?;
 
         Ok(())
     }
 
     fn handle_req(&self, ws: &WebSocket, arr: &[serde_json::Value]) -> Result<()> {
         let sub_id = arr[1].as_str().unwrap_or("");
-        let filters: Vec<crate::model::Filter> = serde_json::from_value(arr[2].clone())
-            .map_err(|e| Error::from(e.to_string()))?;
+        
+        let mut filters = Vec::new();
+        for value in &arr[2..] {
+            let filter: crate::model::Filter = serde_json::from_value(value.clone())
+                .map_err(|e| Error::from(e.to_string()))?;
+            filters.push(filter);
+        }
 
         if filters.iter().any(|f| !f.is_valid(&Limits::default())) {
             ws.send_with_str(&RelayMessage::Closed(sub_id.to_string(), "filter too broad".to_string()).to_json())?;

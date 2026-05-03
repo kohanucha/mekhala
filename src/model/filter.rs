@@ -66,6 +66,11 @@ impl Filter {
     }
 
     pub fn is_valid(&self, limits: &Limits) -> bool {
+        // Enforce narrowing (must have at least one of: ids, authors, #p, #e)
+        if self.ids.is_none() && self.authors.is_none() && self.p_tags.is_none() && self.e_tags.is_none() {
+            return false;
+        }
+
         if let Some(ids) = &self.ids {
             if ids.len() > limits.max_filter_items {
                 return false;
@@ -241,8 +246,19 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_is_valid_empty() {
+    fn test_filter_is_valid_requires_narrowing() {
         let filter = Filter::default();
+        let limits = Limits::default();
+        assert!(!filter.is_valid(&limits));
+    }
+
+    #[test]
+    fn test_filter_is_valid_with_narrowing() {
+        let filter = Filter {
+            kinds: Some(vec![13194]),
+            authors: Some(vec!["author1".into()]),
+            ..Default::default()
+        };
         let limits = Limits::default();
         assert!(filter.is_valid(&limits));
     }
