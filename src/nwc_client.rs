@@ -11,6 +11,7 @@ use rand::RngCore;
 use sha2::{Sha256, Digest};
 use worker::*;
 use futures_util::StreamExt;
+use async_trait::async_trait;
 use crate::domain::{Event};
 use crate::protocol::{KIND_NWC_REQUEST, KIND_NWC_RESPONSE};
 use crate::platform::Platform;
@@ -96,9 +97,63 @@ impl NwcSession {
             sig,
         })
     }
+
+    /// Deepened protocol orchestration: performs a full NWC request-response cycle.
+    pub async fn call<T: Transport>(&self, transport: &mut T, request_payload: &Value) -> Result<Value> {
+        // 1. Encrypt and wrap the payload into a Nostr EVENT
+        let encrypted_content = self.encrypt(request_payload)?;
+        let tags = vec![vec![Value::String("p".into()), Value::String(self.wallet_pubkey.clone())]];
+        let event = self.create_event(KIND_NWC_REQUEST, encrypted_content, tags)?;
+
+        // 2. Format Nostr REQ (subscription)
+        let sub_id = hex::encode(rand::thread_rng().next_u32().to_be_bytes());
+        let req_msg = serde_json::json!(["REQ", sub_id, {
+            "kinds": [KIND_NWC_RESPONSE],
+            "#p": [self.my_pubkey],
+            "#e": [event.id],
+            "since": event.created_at - 1
+        }]).to_string();
+
+        // 3. Dispatch messages via transport
+        transport.send(&req_msg).await?;
+        transport.send(&serde_json::json!(["EVENT", event]).to_string()).await?;
+
+        // 4. Wait for matching response
+        let timeout_at = Platform::now_ms() + 10000;
+        
+        while Platform::now_ms() < timeout_at {
+            let remaining = timeout_at.saturating_sub(Platform::now_ms());
+            if remaining == 0 { break; }
+
+            let msg_text = transport.receive(remaining).await?;
+            let arr: Vec<serde_json::Value> = serde_json::from_str(&msg_text).map_err(|e| Error::from(e.to_string()))?;
+            
+            if arr.len() >= 3 && arr[0] == "EVENT" && arr[1] == sub_id {
+                let resp_event: Event = serde_json::from_value(arr[2].clone()).map_err(|e| Error::from(e.to_string()))?;
+                let decrypted = self.decrypt(&resp_event.content)?;
+                let resp_json: Value = serde_json::from_str(&decrypted).map_err(|e| Error::from(e.to_string()))?;
+                
+                // Handle NWC Error responses
+                if let Some(error) = resp_json.get("error") {
+                    return Err(Error::from(format!("NWC Error: {:?}", error)));
+                }
+                
+                return Ok(resp_json);
+            }
+        }
+
+        Err(Error::from("Timeout waiting for response from wallet"))
+    }
 }
 
-/// InternalRelayClient manages high-level protocol communication with the local Durable Object.
+/// Transport abstracts the communication layer for Nostr messages.
+#[async_trait(?Send)]
+pub trait Transport {
+    async fn send(&self, msg: &str) -> Result<()>;
+    async fn receive(&mut self, timeout_ms: u64) -> Result<String>;
+}
+
+/// InternalRelayClient is the factory for internal connections.
 pub struct InternalRelayClient {
     stub: Stub,
 }
@@ -108,21 +163,16 @@ impl InternalRelayClient {
         Self { stub }
     }
 
-    /// Performs a request-response protocol call over an internal WebSocket.
-    pub async fn call(&self, session: &NwcSession, request_payload: &Value) -> Result<Value> {
-        // 1. Check if the target wallet is actually online/connected to the DO.
-        let check_req = Request::new(&format!("http://internal/check/{}", session.wallet_pubkey), Method::Get)?;
+    /// Establishes the internal connection and returns a Transport adapter.
+    pub async fn connect(&self, wallet_pubkey: &str) -> Result<InternalRelayTransport> {
+        // 1. Check if the target wallet is actually online
+        let check_req = Request::new(&format!("http://internal/check/{}", wallet_pubkey), Method::Get)?;
         let mut check_resp = self.stub.fetch_with_request(check_req).await?;
         if check_resp.text().await? != "OK" {
             return Err(Error::from("Wallet not connected"));
         }
 
-        // 2. Encrypt and wrap the payload into a Nostr EVENT
-        let encrypted_content = session.encrypt(request_payload)?;
-        let tags = vec![vec![Value::String("p".into()), Value::String(session.wallet_pubkey.clone())]];
-        let event = session.create_event(KIND_NWC_REQUEST, encrypted_content, tags)?;
-
-        // 3. Open an internal WebSocket to the local Durable Object
+        // 2. Open internal WebSocket
         let mut ws_req = Request::new("http://internal/", Method::Get)?;
         ws_req.headers_mut()?.set("Upgrade", "websocket")?;
         ws_req.headers_mut()?.set("Connection", "Upgrade")?;
@@ -131,44 +181,31 @@ impl InternalRelayClient {
         let ws = response.websocket().ok_or_else(|| Error::from("Failed to upgrade to internal WebSocket"))?;
         
         ws.accept()?;
+        
+        Ok(InternalRelayTransport { ws })
+    }
+}
 
-        // 4. Send REQ (subscription) and then the EVENT
-        let sub_id = hex::encode(rand::thread_rng().next_u32().to_be_bytes());
-        let req_msg = serde_json::json!(["REQ", sub_id, {
-            "kinds": [KIND_NWC_RESPONSE],
-            "#p": [session.my_pubkey],
-            "#e": [event.id],
-            "since": event.created_at - 1
-        }]).to_string();
+/// Cloudflare-specific adapter for the Transport seam.
+pub struct InternalRelayTransport {
+    ws: WebSocket,
+}
 
-        ws.send_with_str(&req_msg)?;
-        ws.send_with_str(&serde_json::json!(["EVENT", event]).to_string())?;
+#[async_trait(?Send)]
+impl Transport for InternalRelayTransport {
+    async fn send(&self, msg: &str) -> Result<()> {
+        self.ws.send_with_str(msg)
+    }
 
-        // 5. Await response with timeout
-        let mut event_stream = ws.events()?;
-        let timeout = Platform::now_ms() + 10000; // 10s timeout
-
-        while Platform::now_ms() < timeout {
-            if let Some(Ok(WebsocketEvent::Message(msg))) = event_stream.next().await {
-                if let Some(text) = msg.text() {
-                    let arr: Vec<serde_json::Value> = serde_json::from_str(&text).map_err(|e| Error::from(e.to_string()))?;
-                    if arr.len() >= 3 && arr[0] == "EVENT" && arr[1] == sub_id {
-                        let resp_event: Event = serde_json::from_value(arr[2].clone()).map_err(|e| Error::from(e.to_string()))?;
-                        let decrypted = session.decrypt(&resp_event.content)?;
-                        let resp_json: Value = serde_json::from_str(&decrypted).map_err(|e| Error::from(e.to_string()))?;
-                        
-                        // Handle NWC Error responses
-                        if let Some(error) = resp_json.get("error") {
-                            return Err(Error::from(format!("NWC Error: {:?}", error)));
-                        }
-                        
-                        return Ok(resp_json);
-                    }
-                }
+    async fn receive(&mut self, _timeout_ms: u64) -> Result<String> {
+        let mut stream = self.ws.events()?;
+        match stream.next().await {
+            Some(Ok(WebsocketEvent::Message(msg))) => {
+                msg.text().ok_or_else(|| Error::from("Expected text message"))
             }
+            Some(Err(e)) => Err(e),
+            _ => Err(Error::from("Connection closed")),
         }
-
-        Err(Error::from("Timeout waiting for response from wallet"))
     }
 }
 
@@ -176,6 +213,8 @@ pub async fn request_invoice(nwc_uri: &str, amount_msat: u64, description_hash: 
     let conn = NwcConnection::from_uri(nwc_uri)?;
     let session = NwcSession::new(conn)?;
     let client = InternalRelayClient::new(stub);
+
+    let mut transport = client.connect(&session.wallet_pubkey).await?;
 
     let request_json = serde_json::json!({
         "method": "make_invoice",
@@ -185,7 +224,7 @@ pub async fn request_invoice(nwc_uri: &str, amount_msat: u64, description_hash: 
         }
     });
 
-    let resp_json = client.call(&session, &request_json).await?;
+    let resp_json = session.call(&mut transport, &request_json).await?;
     
     if let Some(result) = resp_json.get("result") {
         if let Some(invoice) = result.get("invoice").and_then(|i| i.as_str()) {
@@ -275,5 +314,22 @@ mod tests {
         let event = session.create_event(KIND_NWC_REQUEST, encrypted, vec![]).unwrap();
         assert_eq!(event.pubkey, session.my_pubkey);
         assert_eq!(event.kind, KIND_NWC_REQUEST);
+    }
+
+    struct MockTransport {
+        pub responses: Vec<String>,
+    }
+
+    #[async_trait(?Send)]
+    impl Transport for MockTransport {
+        async fn send(&self, _msg: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn receive(&mut self, _timeout_ms: u64) -> Result<String> {
+            if self.responses.is_empty() {
+                return Err(Error::from("No responses"));
+            }
+            Ok(self.responses.remove(0))
+        }
     }
 }
