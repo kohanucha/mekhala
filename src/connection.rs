@@ -2,6 +2,7 @@ use worker::*;
 use crate::domain::Limits;
 use crate::ConnectionState;
 use crate::platform::Platform;
+use crate::relay::RelayMessage;
 
 /// Connection manages the lifecycle and handshake of new WebSocket clients.
 pub struct Connection;
@@ -33,5 +34,17 @@ impl Connection {
 
         // 5. Return the client-side WebSocket response with security headers
         Response::from_websocket(client)
+    }
+
+    /// High-leverage dispatcher for sending multiple structured Nostr messages.
+    pub fn send_messages(ws: &WebSocket, messages: Vec<RelayMessage>) {
+        for msg in messages {
+            let _ = ws.send_with_str(&msg.to_json());
+        }
+    }
+
+    /// Sends a single message to a WebSocket.
+    pub fn send_message(ws: &WebSocket, message: RelayMessage) {
+        let _ = ws.send_with_str(&message.to_json());
     }
 }

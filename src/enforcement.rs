@@ -2,6 +2,7 @@ use worker::*;
 use crate::relay::{ClientMessage, RelayMessage};
 use crate::router::Router;
 use crate::pipeline::EventPipeline;
+use crate::connection::Connection;
 
 /// Enforcement encapsulates raw incoming message validation and parsing.
 pub struct Enforcement;
@@ -18,7 +19,7 @@ impl Enforcement {
         let client_msg = match Self::parse_incoming(&message) {
             Ok(msg) => msg,
             Err(e) => {
-                let _ = ws.send_with_str(&RelayMessage::Notice(e).to_json());
+                Connection::send_message(ws, RelayMessage::Notice(e));
                 return Ok(());
             }
         };
@@ -27,13 +28,18 @@ impl Enforcement {
         let mut conn_state = match router.get_state(ws) {
             Ok(s) => s,
             Err(e) => {
-                let _ = ws.send_with_str(&RelayMessage::Notice(format!("error: context failure: {}", e)).to_json());
+                Connection::send_message(ws, RelayMessage::Notice(format!("error: context failure: {}", e)));
                 return Ok(());
             }
         };
 
-        // 3. Pipeline Dispatch
-        pipeline.dispatch(ws, &mut conn_state, client_msg).await
+        // 3. Pipeline Dispatch (intercepting responses)
+        let responses = pipeline.dispatch(ws, &mut conn_state, client_msg).await?;
+
+        // 4. Response Dispatching (The Interceptor/Dispatcher)
+        Connection::send_messages(ws, responses);
+
+        Ok(())
     }
 
     /// Validates and parses an incoming WebSocket message into a structured Nostr message.
