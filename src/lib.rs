@@ -67,7 +67,7 @@ async fn handle_request(req: Request, ctx: RouteContext<()>) -> Result<Response>
     let provided_secret = ctx.param("secret").map(|s| s.as_str()).unwrap_or_default();
 
     if !auth.is_authorized(provided_secret) {
-        return Platform::apply_security_headers(Response::error("Unauthorized", 401)?);
+        return Platform::apply_security_headers(Response::error("Not Found", 404)?);
     }
 
     if let Ok(Some(upgrade)) = req.headers().get("Upgrade") {
