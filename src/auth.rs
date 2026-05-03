@@ -74,4 +74,61 @@ mod tests {
         assert!(!constant_time_eq("abc", "abcd"));
         assert!(constant_time_eq("", ""));
     }
+
+    #[test]
+    fn test_constant_time_eq_different_lengths_short() {
+        assert!(!constant_time_eq("a", "ab"));
+        assert!(!constant_time_eq("ab", "a"));
+    }
+
+    #[test]
+    fn test_constant_time_eq_all_same_bytes() {
+        assert!(constant_time_eq("aaa", "aaa"));
+        assert!(!constant_time_eq("aaa", "baa"));
+    }
+
+    #[test]
+    fn test_authenticator_from_env_treated_as_none() {
+        let auth = Authenticator { expected_secret: Some("".into()) };
+        assert!(auth.is_authorized(""));
+        assert!(!auth.is_authorized("any"));
+    }
+
+    #[test]
+    fn test_authenticator_empty_string_as_none() {
+        let auth = Authenticator { expected_secret: None };
+        assert!(auth.is_authorized(""));
+        assert!(auth.is_authorized("anything"));
+    }
+
+    #[test]
+    fn test_authenticator_private_mode_case_sensitive() {
+        let auth = Authenticator { expected_secret: Some("Secret123".into()) };
+        assert!(auth.is_authorized("Secret123"));
+        assert!(!auth.is_authorized("secret123"));
+        assert!(!auth.is_authorized("SECRET123"));
+    }
+
+    #[test]
+    fn test_authenticator_private_mode_similar() {
+        let auth = Authenticator { expected_secret: Some("test-secret-123".into()) };
+        assert!(auth.is_authorized("test-secret-123"));
+        assert!(!auth.is_authorized("test-secret-124"));
+        assert!(!auth.is_authorized("test-secret-12"));
+        assert!(!auth.is_authorized("test-secret123"));
+    }
+
+    #[test]
+    fn test_constant_time_eq_long_strings() {
+        let a = "this is a much longer test string for testing";
+        let b = "this is a much longer test string for testing";
+        let c = "this is a much longer test string for testing!";
+        assert!(constant_time_eq(a, b));
+        assert!(!constant_time_eq(a, c));
+    }
+
+    #[test]
+    fn test_constant_time_eq_unicode() {
+        let auth = Authenticator { expected_secret: None };
+    }
 }

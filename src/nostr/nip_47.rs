@@ -10,19 +10,21 @@ use url::Url;
 use rand::RngCore;
 use sha2::{Sha256, Digest};
 use worker::*;
-use futures_util::StreamExt;
-use async_trait::async_trait;
-use crate::domain::{Event};
-use crate::rules::{KIND_NWC_REQUEST, KIND_NWC_RESPONSE};
-use crate::runtime::Platform;
+use crate::model::Event;
+use crate::util::now;
+use crate::util::now_ms;
+use crate::nostr::Transport;
+
+pub const KIND_NWC_REQUEST: u64 = 23194;
+pub const KIND_NWC_RESPONSE: u64 = 23195;
 
 #[derive(Debug, Clone)]
-pub struct NwcConnection {
+pub struct ConnectionDetails {
     pub wallet_pubkey: String,
     pub secret: String,
 }
 
-impl NwcConnection {
+impl ConnectionDetails {
     pub fn from_uri(uri: &str) -> Result<Self> {
         let url = Url::parse(uri).map_err(|e| Error::from(e.to_string()))?;
         if url.scheme() != "nostr+walletconnect" {
@@ -41,15 +43,15 @@ impl NwcConnection {
     }
 }
 
-pub struct NwcSession {
+pub struct Session {
     pub wallet_pubkey: String,
     shared_secret: Vec<u8>,
     signing_key: SigningKey,
     pub my_pubkey: String,
 }
 
-impl NwcSession {
-    pub fn new(conn: NwcConnection) -> Result<Self> {
+impl Session {
+    pub fn new(conn: ConnectionDetails) -> Result<Self> {
         let shared_secret = get_shared_secret(&conn.secret, &conn.wallet_pubkey)?;
         
         let sk_bytes = hex::decode(&conn.secret).map_err(|e| Error::from(e.to_string()))?;
@@ -74,7 +76,7 @@ impl NwcSession {
     }
 
     pub fn create_event(&self, kind: u64, content: String, tags: Vec<Vec<Value>>) -> Result<Event> {
-        let created_at = Platform::now();
+        let created_at = now();
         
         let serialized = serde_json::to_string(&(0, &self.my_pubkey, created_at, kind, &tags, &content))
             .map_err(|e| Error::from(e.to_string()))?;
@@ -98,14 +100,11 @@ impl NwcSession {
         })
     }
 
-    /// Deepened protocol orchestration: performs a full NWC request-response cycle.
     pub async fn call<T: Transport>(&self, transport: &mut T, request_payload: &Value) -> Result<Value> {
-        // 1. Encrypt and wrap the payload into a Nostr EVENT
         let encrypted_content = self.encrypt(request_payload)?;
         let tags = vec![vec![Value::String("p".into()), Value::String(self.wallet_pubkey.clone())]];
         let event = self.create_event(KIND_NWC_REQUEST, encrypted_content, tags)?;
 
-        // 2. Format Nostr REQ (subscription)
         let sub_id = hex::encode(rand::thread_rng().next_u32().to_be_bytes());
         let req_msg = serde_json::json!(["REQ", sub_id, {
             "kinds": [KIND_NWC_RESPONSE],
@@ -114,26 +113,23 @@ impl NwcSession {
             "since": event.created_at - 1
         }]).to_string();
 
-        // 3. Dispatch messages via transport
         transport.send(&req_msg).await?;
         transport.send(&serde_json::json!(["EVENT", event]).to_string()).await?;
 
-        // 4. Wait for matching response
-        let timeout_at = Platform::now_ms() + 10000;
+let timeout_at = now_ms() + 10000;
         
-        while Platform::now_ms() < timeout_at {
-            let remaining = timeout_at.saturating_sub(Platform::now_ms());
+        while now_ms() < timeout_at {
+            let remaining = timeout_at.saturating_sub(now_ms());
             if remaining == 0 { break; }
 
             let msg_text = transport.receive(remaining).await?;
             let arr: Vec<serde_json::Value> = serde_json::from_str(&msg_text).map_err(|e| Error::from(e.to_string()))?;
             
-            if arr.len() >= 3 && arr[0] == "EVENT" && arr[1] == sub_id {
+            if arr.len() >= 3 && arr[0].as_str() == Some("EVENT") && arr[1].as_str() == Some(&sub_id) {
                 let resp_event: Event = serde_json::from_value(arr[2].clone()).map_err(|e| Error::from(e.to_string()))?;
                 let decrypted = self.decrypt(&resp_event.content)?;
                 let resp_json: Value = serde_json::from_str(&decrypted).map_err(|e| Error::from(e.to_string()))?;
                 
-                // Handle NWC Error responses
                 if let Some(error) = resp_json.get("error") {
                     return Err(Error::from(format!("NWC Error: {:?}", error)));
                 }
@@ -144,95 +140,6 @@ impl NwcSession {
 
         Err(Error::from("Timeout waiting for response from wallet"))
     }
-}
-
-/// Transport abstracts the communication layer for Nostr messages.
-#[async_trait(?Send)]
-pub trait Transport {
-    async fn send(&self, msg: &str) -> Result<()>;
-    async fn receive(&mut self, timeout_ms: u64) -> Result<String>;
-}
-
-/// InternalRelayClient is the factory for internal connections.
-pub struct InternalRelayClient {
-    stub: Stub,
-}
-
-impl InternalRelayClient {
-    pub fn new(stub: Stub) -> Self {
-        Self { stub }
-    }
-
-    /// Establishes the internal connection and returns a Transport adapter.
-    pub async fn connect(&self, wallet_pubkey: &str) -> Result<InternalRelayTransport> {
-        // 1. Check if the target wallet is actually online
-        let check_req = Request::new(&format!("http://internal/check/{}", wallet_pubkey), Method::Get)?;
-        let mut check_resp = self.stub.fetch_with_request(check_req).await?;
-        if check_resp.text().await? != "OK" {
-            return Err(Error::from("Wallet not connected"));
-        }
-
-        // 2. Open internal WebSocket
-        let mut ws_req = Request::new("http://internal/", Method::Get)?;
-        ws_req.headers_mut()?.set("Upgrade", "websocket")?;
-        ws_req.headers_mut()?.set("Connection", "Upgrade")?;
-
-        let response = self.stub.fetch_with_request(ws_req).await?;
-        let ws = response.websocket().ok_or_else(|| Error::from("Failed to upgrade to internal WebSocket"))?;
-        
-        ws.accept()?;
-        
-        Ok(InternalRelayTransport { ws })
-    }
-}
-
-/// Cloudflare-specific adapter for the Transport seam.
-pub struct InternalRelayTransport {
-    ws: WebSocket,
-}
-
-#[async_trait(?Send)]
-impl Transport for InternalRelayTransport {
-    async fn send(&self, msg: &str) -> Result<()> {
-        self.ws.send_with_str(msg)
-    }
-
-    async fn receive(&mut self, _timeout_ms: u64) -> Result<String> {
-        let mut stream = self.ws.events()?;
-        match stream.next().await {
-            Some(Ok(WebsocketEvent::Message(msg))) => {
-                msg.text().ok_or_else(|| Error::from("Expected text message"))
-            }
-            Some(Err(e)) => Err(e),
-            _ => Err(Error::from("Connection closed")),
-        }
-    }
-}
-
-pub async fn request_invoice(nwc_uri: &str, amount_msat: u64, description_hash: String, stub: Stub) -> Result<String> {
-    let conn = NwcConnection::from_uri(nwc_uri)?;
-    let session = NwcSession::new(conn)?;
-    let client = InternalRelayClient::new(stub);
-
-    let mut transport = client.connect(&session.wallet_pubkey).await?;
-
-    let request_json = serde_json::json!({
-        "method": "make_invoice",
-        "params": {
-            "amount": amount_msat,
-            "description_hash": description_hash,
-        }
-    });
-
-    let resp_json = session.call(&mut transport, &request_json).await?;
-    
-    if let Some(result) = resp_json.get("result") {
-        if let Some(invoice) = result.get("invoice").and_then(|i| i.as_str()) {
-            return Ok(invoice.to_string());
-        }
-    }
-
-    Err(Error::from("Malformed response: missing invoice result"))
 }
 
 fn get_shared_secret(secret_key_hex: &str, public_key_hex: &str) -> Result<Vec<u8>> {
@@ -287,6 +194,34 @@ fn decrypt_nip04(shared_secret: &[u8], encrypted_content: &str) -> Result<String
     String::from_utf8(pt.to_vec()).map_err(|e| Error::from(e.to_string()))
 }
 
+pub async fn request_invoice(nwc_uri: &str, amount_msat: u64, description_hash: String, stub: Stub) -> Result<String> {
+    use super::nip_11::InternalRelayClient;
+
+    let conn = ConnectionDetails::from_uri(nwc_uri)?;
+    let session = Session::new(conn)?;
+    let client = InternalRelayClient::new(stub);
+
+    let mut transport = client.connect(&session.wallet_pubkey).await?;
+
+    let request_json = serde_json::json!({
+        "method": "make_invoice",
+        "params": {
+            "amount": amount_msat,
+            "description_hash": description_hash,
+        }
+    });
+
+    let resp_json = session.call(&mut transport, &request_json).await?;
+    
+    if let Some(result) = resp_json.get("result") {
+        if let Some(invoice) = result.get("invoice").and_then(|i| i.as_str()) {
+            return Ok(invoice.to_string());
+        }
+    }
+
+    Err(Error::from("Malformed response: missing invoice result"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,7 +229,7 @@ mod tests {
     #[test]
     fn test_nwc_connection_from_uri() {
         let uri = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
-        let conn = NwcConnection::from_uri(uri).unwrap();
+        let conn = ConnectionDetails::from_uri(uri).unwrap();
         assert_eq!(conn.wallet_pubkey, "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f");
         assert_eq!(conn.secret, "0101010101010101010101010101010101010101010101010101010101010101");
     }
@@ -302,8 +237,8 @@ mod tests {
     #[test]
     fn test_nwc_session_roundtrip() {
         let uri = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
-        let conn = NwcConnection::from_uri(uri).unwrap();
-        let session = NwcSession::new(conn).unwrap();
+        let conn = ConnectionDetails::from_uri(uri).unwrap();
+        let session = Session::new(conn).unwrap();
         
         let payload = serde_json::json!({"test": "data"});
         let encrypted = session.encrypt(&payload).unwrap();
@@ -316,20 +251,66 @@ mod tests {
         assert_eq!(event.kind, KIND_NWC_REQUEST);
     }
 
-    struct MockTransport {
-        pub responses: Vec<String>,
+    #[test]
+    #[should_panic(expected = "Invalid scheme")]
+    fn test_connection_invalid_scheme() {
+        let uri = "http://invalid.example.com?secret=0101010101010101010101010101010101010101010101010101010101010101";
+        let _ = ConnectionDetails::from_uri(uri).unwrap();
     }
 
-    #[async_trait(?Send)]
-    impl Transport for MockTransport {
-        async fn send(&self, _msg: &str) -> Result<()> {
-            Ok(())
-        }
-        async fn receive(&mut self, _timeout_ms: u64) -> Result<String> {
-            if self.responses.is_empty() {
-                return Err(Error::from("No responses"));
-            }
-            Ok(self.responses.remove(0))
-        }
+    #[test]
+    fn test_connection_missing_pubkey_returns_error() {
+        let uri = "nostr+walletconnect://?secret=0101010101010101010101010101010101010101010101010101010101010101";
+        let result = ConnectionDetails::from_uri(uri);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_connection_missing_secret_returns_error() {
+        let uri = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f";
+        let result = ConnectionDetails::from_uri(uri);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_session_encrypt_deterministic() {
+        let uri = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
+        let conn = ConnectionDetails::from_uri(uri).unwrap();
+        let session = Session::new(conn).unwrap();
+        
+        let payload = serde_json::json!({"same": "data"});
+        let encrypted1 = session.encrypt(&payload).unwrap();
+        let encrypted2 = session.encrypt(&payload).unwrap();
+        assert_ne!(encrypted1, encrypted2);
+    }
+
+    #[test]
+    fn test_session_created_has_required_fields() {
+        let uri = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
+        let conn = ConnectionDetails::from_uri(uri).unwrap();
+        let session = Session::new(conn).unwrap();
+        
+        assert!(!session.my_pubkey.is_empty());
+    }
+
+    #[test]
+    fn test_event_creation_has_signature() {
+        let uri = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
+        let conn = ConnectionDetails::from_uri(uri).unwrap();
+        let session = Session::new(conn).unwrap();
+        
+        let payload = serde_json::json!({"test": "data"});
+        let encrypted = session.encrypt(&payload).unwrap();
+        let event = session.create_event(KIND_NWC_REQUEST, encrypted, vec![]).unwrap();
+        
+        assert!(!event.id.is_empty());
+        assert!(!event.sig.is_empty());
+        assert_eq!(event.kind, KIND_NWC_REQUEST);
+    }
+
+    #[test]
+    fn test_kind_constants() {
+        assert_eq!(KIND_NWC_REQUEST, 23194);
+        assert_eq!(KIND_NWC_RESPONSE, 23195);
     }
 }
