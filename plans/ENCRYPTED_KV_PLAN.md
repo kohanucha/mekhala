@@ -29,9 +29,9 @@ Implement a "Zero-Touch" asymmetric encryption system where the relay manages it
 - Implement `decrypt_nip44` using the NIP-44 v2 specification.
 - This function will be used by the Durable Object when processing LN Address requests.
 
-### 4. Integration in LN Address Flow (`src/lnurl.rs` & `src/lib.rs`)
+### 4. Integration in LN Address Flow (`src/lnaddress/` & `src/lib.rs`)
 - Update the flow:
-    1. `handle_lnurlp_callback` fetches the encrypted URI from KV.
+    1. `handle_lnaddress_callback` fetches the encrypted URI from KV.
     2. It sends this blob to the Durable Object.
     3. The Durable Object decrypts it using its internal private key.
     4. The payment request is processed.

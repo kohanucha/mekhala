@@ -1,7 +1,7 @@
 use worker::*;
 use crate::cloudflare::{apply_security_headers, create_cors_response, get_durable_stub};
 use crate::auth::Authenticator;
-use crate::lnurl::{handle_lnurlp, handle_lnurlp_callback};
+use crate::lnaddress::{handle_lnaddress, handle_lnaddress_callback};
 use crate::nostr;
 
 pub struct Server;
@@ -12,8 +12,8 @@ impl Server {
 
         router
             .get_async("/", Self::handle_request)
-            .get_async("/.well-known/lnurlp/:username", handle_lnurlp)
-            .get_async("/lnurlp/:username/callback", handle_lnurlp_callback)
+            .get_async("/.well-known/lnurlp/:username", handle_lnaddress)
+            .get_async("/lnaddress/:username/callback", handle_lnaddress_callback)
             .get_async("/:secret", Self::handle_request)
             .run(req, env)
             .await

@@ -18,7 +18,7 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 
 ## Architecture
 - **Durable Object**: `NwcRelay` (lib.rs:75)
-- **Modules**: relay.rs, nwc_client.rs, nwc_relay.rs, lnurl.rs, utils.rs
+- **Modules**: auth.rs, lib.rs, server.rs, cloudflare/, lnaddress/, model/, nostr/, util/
 
 ## Critical Dependencies
 - `worker` 0.8.x runtime

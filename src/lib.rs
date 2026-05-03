@@ -5,7 +5,7 @@ mod auth;
 mod server;
 mod cloudflare;
 mod nostr;
-mod lnurl;
+mod lnaddress;
 mod util;
 
 use server::Server;

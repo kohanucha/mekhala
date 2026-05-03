@@ -23,10 +23,13 @@ The relay acts as an ephemeral "routing engine" between Lightning wallet applica
 - `.github/workflows/`: CI/CD pipelines.
 - `src/`: Core Rust source code.
     - `lib.rs`: Worker entry point and Durable Object implementation.
-    - `relay.rs`: Core Nostr relay logic, filters, and security limits.
-    - `nwc_client.rs`: NIP-47 client implementation for LN Address flows.
-    - `lnurl.rs`: LUD-06/LUD-16 (LN Address) to NWC bridging logic.
-    - `utils.rs`: Shared utility functions (CORS, Constant-time EQ, etc.).
+    - `server.rs`: Main router and HTTP handlers.
+    - `auth.rs`: Authentication logic.
+    - `cloudflare/`: Cloudflare-specific logic (DO, Hibernation, WebSocket).
+    - `lnaddress/`: LN Address to NWC bridging logic.
+    - `model/`: Domain models (Event, Filter, Limits, etc.).
+    - `nostr/`: Nostr protocol implementation (NIPs).
+    - `util/`: Shared utility functions.
 - `test/`: Integration tests.
     - `setup-kv.js`: Utility to seed KV for testing LN Addresses.
     - `test-relay.js`: Comprehensive integration tests using `nostr-tools`.

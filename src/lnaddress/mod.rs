@@ -2,7 +2,7 @@ pub mod lnaddress;
 pub mod bridge;
 pub mod handler;
 
-pub use handler::{handle_lnurlp, handle_lnurlp_callback};
+pub use handler::{handle_lnaddress, handle_lnaddress_callback};
 
 #[cfg(test)]
 mod tests {

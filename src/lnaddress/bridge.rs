@@ -1,7 +1,7 @@
 use worker::*;
 use crate::cloudflare::get_durable_stub;
 use crate::nostr::request_invoice;
-use crate::lnurl::lnaddress::LNAddress;
+use crate::lnaddress::lnaddress::LNAddress;
 
 pub struct Bridge;
 

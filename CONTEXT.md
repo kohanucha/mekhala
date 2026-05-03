@@ -17,7 +17,7 @@ A Cloudflare Workers feature where Durable Objects can release memory while keep
 The data attached to a WebSocket connection, including active subscriptions and security limits. This state is serialized and restored during hibernation/wake-up.
 
 ### LN Address Bridging
-Mekhala provides an LNURL-pay bridge, allowing users to pay to an LN Address (e.g., `user@relay.com`) which then triggers an NWC request to the user's wallet.
+Mekhala provides an LN Address bridge, allowing users to pay to an LN Address (e.g., `user@relay.com`) which then triggers an NWC request to the user's wallet.
 
 ## Domain Language
 

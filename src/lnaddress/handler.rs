@@ -1,21 +1,21 @@
 use worker::*;
 use crate::cloudflare::create_cors_response;
-use crate::lnurl::bridge::Bridge;
-use crate::lnurl::lnaddress::LNAddress;
+use crate::lnaddress::bridge::Bridge;
+use crate::lnaddress::lnaddress::LNAddress;
 
-pub async fn handle_lnurlp(req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    match handle_lnurlp_inner(req, ctx).await {
+pub async fn handle_lnaddress(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    match handle_lnaddress_inner(req, ctx).await {
         Ok(resp) => Ok(resp),
-        Err(e) => lnurl_error(&e.to_string()),
+        Err(e) => lnaddress_error(&e.to_string()),
     }
 }
 
-fn lnurl_error(reason: &str) -> Result<Response> {
+fn lnaddress_error(reason: &str) -> Result<Response> {
     let error_body = serde_json::json!({ "status": "ERROR", "reason": reason });
     create_cors_response(Response::from_json(&error_body)?.with_status(200))
 }
 
-async fn handle_lnurlp_inner(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+async fn handle_lnaddress_inner(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let username = ctx.param("username").ok_or_else(|| Error::from("Missing username"))?;
     
     if !Bridge::user_exists(&ctx, username).await? {
@@ -30,20 +30,20 @@ async fn handle_lnurlp_inner(req: Request, ctx: RouteContext<()>) -> Result<Resp
     let port = url.port().map(|p| format!(":{}", p)).unwrap_or_default();
     let protocol = if is_local { "http" } else { "https" };
     
-    let callback_url = format!("{}://{}{}/lnurlp/{}/callback", protocol, host, port, username);
+    let callback_url = format!("{}://{}{}/lnaddress/{}/callback", protocol, host, port, username);
     let info = ln_address.get_info(&callback_url);
 
     create_cors_response(Response::from_json(&info)?)
 }
 
-pub async fn handle_lnurlp_callback(req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    match handle_lnurlp_callback_inner(req, ctx).await {
+pub async fn handle_lnaddress_callback(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    match handle_lnaddress_callback_inner(req, ctx).await {
         Ok(resp) => Ok(resp),
-        Err(e) => lnurl_error(&e.to_string()),
+        Err(e) => lnaddress_error(&e.to_string()),
     }
 }
 
-async fn handle_lnurlp_callback_inner(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+async fn handle_lnaddress_callback_inner(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let username = ctx.param("username").ok_or_else(|| Error::from("Missing username"))?;
     
     let url = req.url()?;
