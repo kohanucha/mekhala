@@ -1,6 +1,6 @@
 import { WebSocket } from "ws";
 import * as nostr from "nostr-tools";
-import { nip04 } from "nostr-tools";
+import { nip04, nip44 } from "nostr-tools";
 import {
   finalizeEvent,
   generateSecretKey,
@@ -911,6 +911,123 @@ async function testLnAddressOffline() {
   throw new Error(`Expected 200 error, but got: ${callbackResp.status}`);
 }
 
+async function testNip44AndFallback() {
+  console.log("\n--- Testing NIP-44 Discovery & NIP-04 Fallback ---");
+
+  const walletSk = generateSecretKey();
+  const walletPk = getPublicKey(walletSk);
+  const nwcSecret = hex(generateSecretKey());
+  const nwcUri = `nostr+walletconnect://${walletPk}?relay=${encodeURIComponent(RELAY_URL)}&secret=${nwcSecret}`;
+
+  // Helper to respond to make_invoice
+  const handleMakeInvoice = async (walletWs, event, encryptionMethod) => {
+    let decrypted;
+    if (encryptionMethod === "nip44") {
+      const convKey = nip44.getConversationKey(walletSk, event.pubkey);
+      decrypted = nip44.decrypt(event.content, convKey);
+    } else {
+      decrypted = await nip04.decrypt(walletSk, event.pubkey, event.content);
+    }
+
+    const req = JSON.parse(decrypted);
+    if (req.method === "make_invoice") {
+      const resp = JSON.stringify({ result: { invoice: `invoice_${encryptionMethod}` } });
+      let encryptedResp;
+      if (encryptionMethod === "nip44") {
+        const convKey = nip44.getConversationKey(walletSk, event.pubkey);
+        encryptedResp = nip44.encrypt(resp, convKey);
+      } else {
+        encryptedResp = await nip04.encrypt(walletSk, event.pubkey, resp);
+      }
+
+      const resEvent = finalizeEvent({
+        kind: 23195,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [["p", event.pubkey], ["e", event.id]],
+        content: encryptedResp
+      }, walletSk);
+      walletWs.send(JSON.stringify(["EVENT", resEvent]));
+    }
+  };
+
+  // 1. Test NIP-04 Fallback (No 13194 event)
+  console.log("Step 1: Testing NIP-04 fallback (no Info event)...");
+  const walletWs1 = new WebSocket(RELAY_URL);
+  await new Promise((resolve, reject) => {
+    walletWs1.on("open", () => {
+      walletWs1.send(JSON.stringify(["REQ", "w1", { kinds: [23194], "#p": [walletPk] }]));
+    });
+    walletWs1.on("message", async (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg[0] === "EOSE") resolve();
+      if (msg[0] === "EVENT" && msg[1] === "w1") {
+        await handleMakeInvoice(walletWs1, msg[2], "nip04");
+      }
+    });
+    setTimeout(() => reject(new Error("Wallet 1 timeout")), 5000);
+  });
+
+  // Trigger discovery/call via LN Address callback
+  // We'll mock the KV fetch in the relay by using a temp user
+  const tempUser = `user_fallback_${Date.now()}`;
+  await setupTempKV(tempUser, nwcUri);
+
+  const callbackUrl = `${HTTP_URL.replace(/\/$/, "")}/lnaddress/${tempUser}/callback?amount=21000`;
+  const resp1 = await fetch(callbackUrl);
+  const data1 = await resp1.json();
+  if (data1.pr === "invoice_nip04") {
+    console.log("✅ NIP-04 fallback successful.");
+  } else {
+    throw new Error(`Expected NIP-04 invoice, got: ${JSON.stringify(data1)}`);
+  }
+  walletWs1.close();
+
+  // 2. Test NIP-44 Discovery
+  console.log("Step 2: Testing NIP-44 discovery...");
+  const walletWs2 = new WebSocket(RELAY_URL);
+  await new Promise((resolve, reject) => {
+    walletWs2.on("open", () => {
+      // Publish Info Event with NIP-44 support
+      const infoEvent = finalizeEvent({
+        kind: 13194,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [["encryption", "nip44_v2"]],
+        content: "pay_invoice make_invoice"
+      }, walletSk);
+      walletWs2.send(JSON.stringify(["EVENT", infoEvent]));
+      walletWs2.send(JSON.stringify(["REQ", "w2", { kinds: [23194, 13194], "#p": [walletPk] }, { kinds: [13194], authors: [walletPk] }]));
+    });
+    walletWs2.on("message", async (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg[0] === "EOSE") resolve();
+      if (msg[0] === "EVENT" && msg[1] === "w2") {
+        if (msg[2].kind === 23194) {
+          await handleMakeInvoice(walletWs2, msg[2], "nip44");
+        }
+      }
+    });
+    setTimeout(() => reject(new Error("Wallet 2 timeout")), 5000);
+  });
+
+  const resp2 = await fetch(callbackUrl);
+  const data2 = await resp2.json();
+  if (data2.pr === "invoice_nip44") {
+    console.log("✅ NIP-44 discovery successful.");
+  } else {
+    throw new Error(`Expected NIP-44 invoice, got: ${JSON.stringify(data2)}`);
+  }
+  walletWs2.close();
+}
+
+async function setupTempKV(username, nwcUri) {
+  const { execSync } = await import("child_process");
+  execSync(`npx wrangler kv key put --binding MEKHALA_NWC_KV --local --config ../wrangler.toml "${username}" "${nwcUri}"`);
+}
+
+function hex(bytes) {
+  return Buffer.from(bytes).toString("hex");
+}
+
 async function runAll() {
   try {
     await testAuth();
@@ -925,6 +1042,7 @@ async function runAll() {
     await testEdgeCases();
     await testLnAddressFlow();
     await testLnAddressOffline();
+    await testNip44AndFallback();
     console.log("\nAll tests passed successfully! 🚀");
     process.exit(0);
   } catch (err) {

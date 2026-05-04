@@ -1,14 +1,8 @@
 use crate::nostr::Event;
 use crate::util::now;
 use crate::util::now_ms;
-use aes::Aes256;
 use async_trait::async_trait;
-use base64::{engine::general_purpose, Engine as _};
-use block_padding::Pkcs7;
-use cbc::{Decryptor, Encryptor};
-use cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use k256::schnorr::{signature::hazmat::PrehashSigner, SigningKey};
-use k256::{PublicKey as K256PublicKey, SecretKey as K256SecretKey};
 use rand::RngCore;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -17,6 +11,12 @@ use worker::{Error, Result};
 
 pub const KIND_NWC_REQUEST: u64 = 23194;
 pub const KIND_NWC_RESPONSE: u64 = 23195;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncryptionMethod {
+    Nip04,
+    Nip44,
+}
 
 #[async_trait(?Send)]
 pub trait Transport: Send + Sync {
@@ -60,11 +60,12 @@ pub struct Session {
     shared_secret: Vec<u8>,
     signing_key: SigningKey,
     pub my_pubkey: String,
+    pub encryption_method: EncryptionMethod,
 }
 
 impl Session {
     pub fn new(conn: ConnectionDetails) -> Result<Self> {
-        let shared_secret = get_shared_secret(&conn.secret, &conn.wallet_pubkey)?;
+        let shared_secret = crate::nostr::get_shared_secret(&conn.secret, &conn.wallet_pubkey)?;
 
         let sk_bytes = hex::decode(&conn.secret).map_err(|e| Error::from(e.to_string()))?;
         let sk_bytes_arr: [u8; 32] = sk_bytes
@@ -79,15 +80,22 @@ impl Session {
             shared_secret,
             signing_key,
             my_pubkey,
+            encryption_method: EncryptionMethod::Nip04, // Default to NIP-04
         })
     }
 
     pub fn encrypt(&self, payload: &Value) -> Result<String> {
-        encrypt_nip04(&self.shared_secret, &payload.to_string())
+        match self.encryption_method {
+            EncryptionMethod::Nip04 => crate::nostr::nip_04::encrypt_nip04(&self.shared_secret, &payload.to_string()),
+            EncryptionMethod::Nip44 => crate::nostr::nip_44::encrypt_nip44(&self.shared_secret, &payload.to_string()),
+        }
     }
 
     pub fn decrypt(&self, encrypted: &str) -> Result<String> {
-        decrypt_nip04(&self.shared_secret, encrypted)
+        match self.encryption_method {
+            EncryptionMethod::Nip04 => crate::nostr::nip_04::decrypt_nip04(&self.shared_secret, encrypted),
+            EncryptionMethod::Nip44 => crate::nostr::nip_44::decrypt_nip44(&self.shared_secret, encrypted),
+        }
     }
 
     pub fn create_event(&self, kind: u64, content: String, tags: Vec<Vec<Value>>) -> Result<Event> {
@@ -179,64 +187,6 @@ impl Session {
     }
 }
 
-fn get_shared_secret(secret_key_hex: &str, public_key_hex: &str) -> Result<Vec<u8>> {
-    let secret_key_bytes = hex::decode(secret_key_hex).map_err(|e| Error::from(e.to_string()))?;
-    let sk =
-        K256SecretKey::from_slice(&secret_key_bytes).map_err(|e| Error::from(e.to_string()))?;
-
-    let public_key_bytes = hex::decode(public_key_hex).map_err(|e| Error::from(e.to_string()))?;
-    let mut full_pk_bytes = [0u8; 33];
-    full_pk_bytes[0] = 0x02;
-    full_pk_bytes[1..].copy_from_slice(&public_key_bytes);
-
-    let pk =
-        K256PublicKey::from_sec1_bytes(&full_pk_bytes).map_err(|e| Error::from(e.to_string()))?;
-
-    let shared = k256::ecdh::diffie_hellman(sk.to_nonzero_scalar(), pk.as_affine());
-    Ok(shared.raw_secret_bytes().to_vec())
-}
-
-fn encrypt_nip04(shared_secret: &[u8], plaintext: &str) -> Result<String> {
-    let mut iv = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut iv);
-
-    let pt_bytes = plaintext.as_bytes();
-    let mut buffer = vec![0u8; pt_bytes.len() + 16];
-    buffer[..pt_bytes.len()].copy_from_slice(pt_bytes);
-
-    let pos = pt_bytes.len();
-    let ct = Encryptor::<Aes256>::new_from_slices(shared_secret, &iv)
-        .map_err(|e| Error::from(e.to_string()))?
-        .encrypt_padded_mut::<Pkcs7>(&mut buffer, pos)
-        .map_err(|e| Error::from(e.to_string()))?;
-
-    let iv_b64 = general_purpose::STANDARD.encode(iv);
-    let ct_b64 = general_purpose::STANDARD.encode(ct);
-
-    Ok(format!("{}?iv={}", ct_b64, iv_b64))
-}
-
-fn decrypt_nip04(shared_secret: &[u8], encrypted_content: &str) -> Result<String> {
-    let parts: Vec<&str> = encrypted_content.split("?iv=").collect();
-    if parts.len() != 2 {
-        return Err(Error::from("Invalid NIP-04 format"));
-    }
-
-    let mut ct_bytes = general_purpose::STANDARD
-        .decode(parts[0])
-        .map_err(|e| Error::from(e.to_string()))?;
-    let iv_bytes = general_purpose::STANDARD
-        .decode(parts[1])
-        .map_err(|e| Error::from(e.to_string()))?;
-
-    let pt = Decryptor::<Aes256>::new_from_slices(shared_secret, &iv_bytes)
-        .map_err(|e| Error::from(e.to_string()))?
-        .decrypt_padded_mut::<Pkcs7>(&mut ct_bytes)
-        .map_err(|e| Error::from(e.to_string()))?;
-
-    String::from_utf8(pt.to_vec()).map_err(|e| Error::from(e.to_string()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,6 +222,20 @@ mod tests {
             .unwrap();
         assert_eq!(event.pubkey, session.my_pubkey);
         assert_eq!(event.kind, KIND_NWC_REQUEST);
+    }
+
+    #[test]
+    fn test_nwc_session_nip44_roundtrip() {
+        let uri = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
+        let conn = ConnectionDetails::from_uri(uri).unwrap();
+        let mut session = Session::new(conn).unwrap();
+        session.encryption_method = EncryptionMethod::Nip44;
+
+        let payload = serde_json::json!({"test": "nip44 data"});
+        let encrypted = session.encrypt(&payload).unwrap();
+        let decrypted = session.decrypt(&encrypted).unwrap();
+        let decrypted_json: Value = serde_json::from_str(&decrypted).unwrap();
+        assert_eq!(payload, decrypted_json);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use worker::*;
 use crate::cloudflare::{create_cors_response, get_nwc_uri, connect_internal};
 use crate::lnaddress::lnaddress::LNAddress;
-use crate::nostr::nip_47::{ConnectionDetails, Session};
+use crate::nostr::nip_47::{ConnectionDetails, Session, EncryptionMethod, Transport};
 
 pub async fn handle_lnaddress(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     match handle_lnaddress_inner(req, ctx).await {
@@ -75,9 +75,40 @@ async fn request_invoice_internal(
     description_hash: String,
 ) -> Result<String> {
     let conn = ConnectionDetails::from_uri(nwc_uri)?;
-    let session = Session::new(conn)?;
+    let mut session = Session::new(conn)?;
     
     let mut transport = connect_internal(env, &session.wallet_pubkey).await?;
+
+    // Discover encryption method via Kind 13194 Info Event
+    let sub_id = "discovery";
+    let req_msg = serde_json::json!(["REQ", sub_id, {
+        "kinds": [13194],
+        "authors": [session.wallet_pubkey],
+        "limit": 1
+    }]).to_string();
+
+    transport.send(&req_msg).await?;
+    
+    // Wait for the info event or timeout (short 2s timeout for discovery)
+    let discovery_res: Result<String> = transport.receive(2000).await;
+    if let Ok(msg_text) = discovery_res {
+        if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&msg_text) {
+            if arr.len() >= 3 && arr[0] == "EVENT" {
+                if let Some(tags) = arr[2].get("tags").and_then(|t| t.as_array()) {
+                    for tag in tags {
+                        if tag.get(0).and_then(|v| v.as_str()) == Some("encryption") {
+                            if tag.get(1).and_then(|v| v.as_str()) == Some("nip44_v2") {
+                                session.encryption_method = EncryptionMethod::Nip44;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Close discovery subscription
+    let _ = transport.send(&serde_json::json!(["CLOSE", sub_id]).to_string()).await;
 
     let request_json = serde_json::json!({
         "method": "make_invoice",
