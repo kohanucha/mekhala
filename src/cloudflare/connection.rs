@@ -1,5 +1,5 @@
 use worker::*;
-use crate::cloudflare::ConnectionState;
+use crate::nostr::state::ConnectionState;
 use crate::cloudflare::apply_security_headers;
 
 pub fn accept_connection(state: &State, max_connections: usize) -> Result<Response> {

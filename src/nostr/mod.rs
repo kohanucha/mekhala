@@ -3,6 +3,8 @@ pub mod nip_04;
 pub mod nip_11;
 pub mod nip_44;
 pub mod nip_47;
+pub mod engine;
+pub mod state;
 pub mod event;
 pub mod filter;
 pub mod limits;
