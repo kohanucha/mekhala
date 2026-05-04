@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use crate::model::event::Event;
-use crate::model::limits::Limits;
+use crate::nostr::Event;
+use crate::limits::Limits;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Filter {
@@ -114,7 +114,7 @@ impl Filter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Event;
+    use crate::nostr::Event;
 
     fn make_event(id: &str, pubkey: &str, kind: u64, tags: Vec<Vec<serde_json::Value>>, created_at: u64) -> Event {
         Event {

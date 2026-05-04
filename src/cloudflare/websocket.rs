@@ -1,5 +1,5 @@
 use worker::*;
-use crate::model::Limits;
+use crate::limits::Limits;
 use crate::cloudflare::{accept_connection, SubscriptionManager};
 use crate::util::now;
 use crate::nostr::RelayMessage;
@@ -75,7 +75,7 @@ impl DurableObject for Websocket {
 
 impl Websocket {
     fn handle_event(&self, ws: &WebSocket, arr: &[serde_json::Value]) -> Result<()> {
-        let event: crate::model::Event = serde_json::from_value(arr[1].clone())
+        let event: crate::nostr::Event = serde_json::from_value(arr[1].clone())
             .map_err(|e| Error::from(e.to_string()))?;
 
         let now = now();
@@ -102,7 +102,7 @@ impl Websocket {
         
         let mut filters = Vec::new();
         for value in &arr[2..] {
-            let filter: crate::model::Filter = serde_json::from_value(value.clone())
+            let filter: crate::nostr::Filter = serde_json::from_value(value.clone())
                 .map_err(|e| Error::from(e.to_string()))?;
             filters.push(filter);
         }

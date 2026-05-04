@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
-use crate::model::filter::Filter;
-use crate::model::event::Event;
-use crate::model::limits::Limits;
+use crate::nostr::Filter;
+use crate::nostr::Event;
+use crate::limits::Limits;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ConnectionState {

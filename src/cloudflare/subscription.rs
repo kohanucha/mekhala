@@ -1,7 +1,8 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use worker::*;
-use crate::model::{ConnectionState, Filter, Event};
+use crate::cloudflare::ConnectionState;
+use crate::nostr::{Filter, Event};
 use crate::nostr::RelayMessage;
 use crate::cloudflare::{HibernationState, Index};
 

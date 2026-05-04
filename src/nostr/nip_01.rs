@@ -1,7 +1,7 @@
 #[derive(Debug, Clone)]
 pub enum RelayMessage {
     Ok(String, bool, String),
-    Event(String, crate::model::Event),
+    Event(String, crate::nostr::Event),
     Eose(String),
     Notice(String),
     Closed(String, String),
@@ -41,7 +41,7 @@ mod tests {
 
     #[test]
     fn test_relay_message_event_serialization() {
-        let event = crate::model::Event {
+        let event = crate::nostr::Event {
             id: "test_id".into(),
             pubkey: "test_pubkey".into(),
             created_at: 1234567890,

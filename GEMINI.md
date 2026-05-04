@@ -25,10 +25,11 @@ The relay acts as an ephemeral "routing engine" between Lightning wallet applica
     - `lib.rs`: Worker entry point and Durable Object implementation.
     - `server.rs`: Main router and HTTP handlers.
     - `auth.rs`: Authentication logic.
-    - `cloudflare/`: Cloudflare-specific logic (DO, Hibernation, WebSocket).
+    - `limits.rs`: Global configuration and protocol limits.
+    - `error.rs`: Global error definitions.
+    - `cloudflare/`: Cloudflare-specific logic (DO, Hibernation, WebSocket, ConnectionState).
     - `lnaddress/`: LN Address to NWC bridging logic.
-    - `model/`: Domain models (Event, Filter, Limits, etc.).
-    - `nostr/`: Nostr protocol implementation (NIPs).
+    - `nostr/`: Nostr protocol implementation (NIPs, Event, Filter).
     - `util/`: Shared utility functions.
 - `test/`: Integration tests.
     - `setup-kv.js`: Utility to seed KV for testing LN Addresses.
@@ -76,6 +77,6 @@ Mekhala is highly configurable via `wrangler.toml`:
   - **Short-Lived State**: Flush critical state to storage frequently to avoid losing data if an isolate crashes.
 
 ### Testing Practices
-- **100% Coverage**: Core business logic in `relay.rs` and `nwc_client.rs` must have full unit test coverage.
+- **100% Coverage**: Core business logic in `nostr/event.rs` and `nostr/nip_47.rs` must have full unit test coverage.
 - **Integration**: Every new feature or protocol restriction must be verified with `test-relay.js`.
 - **Reproducibility**: Bug fixes must include a failing test case in `cargo test` or `test-relay.js` before the fix is applied.

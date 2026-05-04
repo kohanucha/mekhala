@@ -2,8 +2,8 @@ use k256::schnorr::signature::hazmat::PrehashVerifier;
 use k256::schnorr::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use crate::model::error::RelayError;
-use crate::model::limits::Limits;
+use crate::error::RelayError;
+use crate::limits::Limits;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Event {

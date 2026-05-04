@@ -7,6 +7,7 @@ pub mod hibernation;
 pub mod durable_object;
 pub mod kv;
 pub mod internal_client;
+pub mod connection_state;
 
 pub use websocket::Websocket;
 pub use connection::accept_connection;
@@ -17,3 +18,4 @@ pub use hibernation::HibernationState;
 pub use durable_object::get_durable_stub;
 pub use kv::*;
 pub use internal_client::*;
+pub use connection_state::ConnectionState;

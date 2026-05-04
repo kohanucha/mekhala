@@ -12,7 +12,7 @@ impl Index {
         }
     }
 
-    pub fn rebuild(&mut self, connections: &[(WebSocket, crate::model::ConnectionState)]) {
+    pub fn rebuild(&mut self, connections: &[(WebSocket, crate::cloudflare::ConnectionState)]) {
         let mut index = HashMap::new();
 
         for (conn_idx, (_, state)) in connections.iter().enumerate() {
@@ -38,7 +38,8 @@ impl Index {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ConnectionState, Filter};
+    use crate::cloudflare::ConnectionState;
+    use crate::nostr::Filter;
     use std::collections::HashMap;
 
     #[test]

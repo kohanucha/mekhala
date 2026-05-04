@@ -1,4 +1,4 @@
-use crate::model::Event;
+use crate::nostr::Event;
 use crate::util::now;
 use crate::util::now_ms;
 use aes::Aes256;
