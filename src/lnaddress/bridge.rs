@@ -1,5 +1,5 @@
 use worker::*;
-use crate::cloudflare::{get_durable_stub, get_nwc_uri, InternalRelayClient};
+use crate::cloudflare::{get_nwc_uri, connect_internal};
 use crate::lnaddress::lnaddress::LNAddress;
 use crate::nostr::nip_47::{ConnectionDetails, Session};
 
@@ -13,9 +13,7 @@ impl Bridge {
         let ln_address = LNAddress::new(username);
         let description_hash = ln_address.get_description_hash();
 
-        let stub = get_durable_stub(&ctx.env)?;
-
-        request_invoice_internal(&nwc_uri, amount_msat, description_hash, stub).await
+        request_invoice_internal(&ctx.env, &nwc_uri, amount_msat, description_hash).await
     }
 
     pub async fn user_exists(ctx: &RouteContext<()>, username: &str) -> Result<bool> {
@@ -24,16 +22,15 @@ impl Bridge {
 }
 
 async fn request_invoice_internal(
+    env: &Env,
     nwc_uri: &str,
     amount_msat: u64,
     description_hash: String,
-    stub: Stub,
 ) -> Result<String> {
     let conn = ConnectionDetails::from_uri(nwc_uri)?;
     let session = Session::new(conn)?;
-    let client = InternalRelayClient::new(stub);
-
-    let mut transport = client.connect(&session.wallet_pubkey).await?;
+    
+    let mut transport = connect_internal(env, &session.wallet_pubkey).await?;
 
     let request_json = serde_json::json!({
         "method": "make_invoice",
