@@ -13,7 +13,7 @@ use rand::RngCore;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use url::Url;
-use worker::{Error, Result, Request, Env, Response};
+use worker::{Error, Result};
 
 pub const KIND_NWC_REQUEST: u64 = 23194;
 pub const KIND_NWC_RESPONSE: u64 = 23195;
@@ -235,15 +235,6 @@ fn decrypt_nip04(shared_secret: &[u8], encrypted_content: &str) -> Result<String
         .map_err(|e| Error::from(e.to_string()))?;
 
     String::from_utf8(pt.to_vec()).map_err(|e| Error::from(e.to_string()))
-}
-
-pub async fn handle_nwc_websocket_upgrade(
-    req: Request,
-    env: &Env,
-) -> Result<Response> {
-    use crate::cloudflare::get_durable_stub;
-    let stub = get_durable_stub(env)?;
-    stub.fetch_with_request(req).await
 }
 
 #[cfg(test)]

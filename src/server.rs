@@ -33,7 +33,7 @@ impl Server {
 
         if let Ok(Some(upgrade)) = req.headers().get("Upgrade") {
             if upgrade.to_lowercase() == "websocket" {
-                return nostr::handle_nwc_websocket_upgrade(req, &ctx.env).await;
+                return crate::cloudflare::websocket::connect(req, &ctx.env).await;
             }
         }
 

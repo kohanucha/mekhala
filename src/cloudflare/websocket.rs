@@ -128,3 +128,7 @@ impl Websocket {
         self.manager.unsubscribe(&self.state, ws, None)
     }
 }
+
+pub async fn connect(req: Request, env: &Env) -> Result<Response> {
+    crate::cloudflare::get_durable_stub(env)?.fetch_with_request(req).await
+}
