@@ -1,48 +1,36 @@
 use std::collections::{HashMap, HashSet};
 use super::state::ConnectionState;
-use super::{Filter, Event, RelayMessage};
-use crate::util::engine::{Engine, EngineAction, ConnectionInterests};
+use super::{Filter, Event, RelayMessage, ClientMessage};
+use super::wallet_registry::WalletRegistry;
+use crate::util::engine::{Engine, EngineAction};
 use crate::util::transport::SyncTransport;
 use crate::util::now;
 use serde_json::Value;
 
 pub struct NostrEngine {
     connections: HashMap<u32, ConnectionState>,
-    index: HashMap<String, Vec<(u32, String)>>,
+    registry: WalletRegistry,
 }
 
 impl NostrEngine {
     pub fn new() -> Self {
         Self {
             connections: HashMap::new(),
-            index: HashMap::new(),
+            registry: WalletRegistry::new(),
         }
     }
 
     pub fn add_connection(&mut self, id: u32, state: ConnectionState) {
+        let subscriptions = state.subscriptions.clone();
         self.connections.insert(id, state);
-        self.rebuild_index();
+        for (sub_id, filters) in subscriptions {
+            self.registry.add_subscription(id, sub_id, filters);
+        }
     }
 
     pub fn remove_connection(&mut self, id: u32) {
         self.connections.remove(&id);
-        self.rebuild_index();
-    }
-
-    fn rebuild_index(&mut self) {
-        let mut new_index: HashMap<String, Vec<(u32, String)>> = HashMap::new();
-        for (id, state) in &self.connections {
-            for (sub_id, filters) in &state.subscriptions {
-                for filter in filters {
-                    for pk in filter.pubkeys() {
-                        new_index.entry(pk)
-                            .or_default()
-                            .push((*id, sub_id.clone()));
-                    }
-                }
-            }
-        }
-        self.index = new_index;
+        self.registry.remove_connection(id);
     }
 
     fn handle_nostr_event(&mut self, transport: &dyn SyncTransport, id: u32, event: Event) -> EngineAction {
@@ -53,40 +41,19 @@ impl NostrEngine {
 
         transport.send(id, &RelayMessage::Ok(event.id.clone(), true, "".into()).to_json());
 
-        let mut action = EngineAction::None;
+        let mut needs_commit = false;
         if event.kind == 13194 {
             if let Some(conn_state) = self.connections.get_mut(&id) {
                 conn_state.info_event = Some(event.clone());
-                action = EngineAction::Commit;
+                needs_commit = true;
             }
         }
 
-        let mut seen = HashSet::new();
-        let mut check_pk = |pk: &str| {
-            if let Some(subs) = self.index.get(pk) {
-                for (target_id, sub_id) in subs {
-                    if seen.insert((*target_id, sub_id.clone())) {
-                        if let Some(conn_state) = self.connections.get(target_id) {
-                            if let Some(filters) = conn_state.subscriptions.get(sub_id) {
-                                if filters.iter().any(|f| f.matches(&event)) {
-                                    transport.send(*target_id, &RelayMessage::Event(sub_id.clone(), event.clone()).to_json());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        };
-
-        check_pk(&event.pubkey);
-        for tag in &event.tags {
-            if tag.len() >= 2 && tag[0].as_str() == Some("p") {
-                if let Some(pk) = tag[1].as_str() {
-                    check_pk(pk);
-                }
-            }
+        for (target_id, sub_id) in self.registry.match_event(&event) {
+            transport.send(target_id, &RelayMessage::Event(sub_id, event.clone()).to_json());
         }
-        action
+        
+        if needs_commit { self.commit_state(id) } else { EngineAction::None }
     }
 
     fn handle_nostr_req(&mut self, transport: &dyn SyncTransport, id: u32, sub_id: String, filters: Vec<Filter>) -> EngineAction {
@@ -98,6 +65,7 @@ impl NostrEngine {
         let mut messages = Vec::new();
         if let Some(conn_state) = self.connections.get_mut(&id) {
             conn_state.subscriptions.insert(sub_id.clone(), filters.clone());
+            self.registry.add_subscription(id, sub_id.clone(), filters.clone());
             
             for other_state in self.connections.values() {
                 if let Some(info_event) = &other_state.info_event {
@@ -114,17 +82,62 @@ impl NostrEngine {
 
         transport.send(id, &RelayMessage::Eose(sub_id).to_json());
 
-        self.rebuild_index();
-        EngineAction::Commit
+        self.commit_state(id)
     }
 
     fn handle_nostr_close(&mut self, _transport: &dyn SyncTransport, id: u32, sub_id: String) -> EngineAction {
         if let Some(conn_state) = self.connections.get_mut(&id) {
             conn_state.subscriptions.remove(&sub_id);
+            self.registry.remove_subscription(id, sub_id);
         }
 
-        self.rebuild_index();
-        EngineAction::Commit
+        self.commit_state(id)
+    }
+
+    fn commit_state(&self, id: u32) -> EngineAction {
+        let conn_state = match self.connections.get(&id) {
+            Some(s) => s,
+            None => return EngineAction::None,
+        };
+
+        let snapshot = match serde_json::to_vec(conn_state) {
+            Ok(s) => s,
+            Err(_) => return EngineAction::None,
+        };
+
+        let mut pubkeys = HashSet::new();
+        for filters in conn_state.subscriptions.values() {
+            for filter in filters {
+                for pk in filter.pubkeys() {
+                    pubkeys.insert(pk);
+                }
+            }
+        }
+
+        let mut tags: Vec<String> = pubkeys.into_iter().take(10).collect();
+        if let Some(info_event) = &conn_state.info_event {
+            tags.push("cap:ready".into());
+            let mut supports_nip44 = false;
+            let mut supports_nip04 = false;
+            let mut has_encryption_tag = false;
+
+            for tag in &info_event.tags {
+                if tag.len() >= 2 && tag[0].as_str() == Some("encryption") {
+                    has_encryption_tag = true;
+                    if let Some(schemes) = tag[1].as_str() {
+                        for scheme in schemes.split_whitespace() {
+                            if scheme == "nip44_v2" { supports_nip44 = true; }
+                            else if scheme == "nip04" { supports_nip04 = true; }
+                        }
+                    }
+                }
+            }
+
+            if supports_nip44 { tags.push("cap:nip44".into()); }
+            if supports_nip04 || !has_encryption_tag { tags.push("cap:nip04".into()); }
+        }
+
+        EngineAction::Commit { snapshot, tags }
     }
 
     pub fn get_wallet_info(&self, pubkey: &str) -> Value {
@@ -191,44 +204,20 @@ impl Engine for NostrEngine {
             let mut conn_state = ConnectionState::default();
             conn_state.id = id;
             self.add_connection(id, conn_state);
-            EngineAction::Commit
+            self.commit_state(id)
         }
     }
 
     fn on_message(&mut self, transport: &dyn SyncTransport, id: u32, message: &str) -> EngineAction {
-        let arr: Vec<serde_json::Value> = match serde_json::from_str(message) {
-            Ok(a) => a,
+        match ClientMessage::from_json(message) {
+            Ok(ClientMessage::Event(event)) => self.handle_nostr_event(transport, id, event),
+            Ok(ClientMessage::Req(sub_id, filters)) => self.handle_nostr_req(transport, id, sub_id, filters),
+            Ok(ClientMessage::Close(sub_id)) => self.handle_nostr_close(transport, id, sub_id),
             Err(e) => {
                 transport.send(id, &RelayMessage::Notice(format!("parse failed: {}", e)).to_json());
-                return EngineAction::None;
+                EngineAction::None
             }
-        };
-
-        if arr.is_empty() { return EngineAction::None; }
-
-        match arr[0].as_str() {
-            Some("EVENT") if arr.len() >= 2 => {
-                if let Ok(event) = serde_json::from_value::<Event>(arr[1].clone()) {
-                    return self.handle_nostr_event(transport, id, event);
-                }
-            }
-            Some("REQ") if arr.len() >= 3 => {
-                let sub_id = arr[1].as_str().unwrap_or("").to_string();
-                let mut filters = Vec::new();
-                for value in &arr[2..] {
-                    if let Ok(filter) = serde_json::from_value::<Filter>(value.clone()) {
-                        filters.push(filter);
-                    }
-                }
-                return self.handle_nostr_req(transport, id, sub_id, filters);
-            }
-            Some("CLOSE") if arr.len() >= 2 => {
-                let sub_id = arr[1].as_str().unwrap_or("").to_string();
-                return self.handle_nostr_close(transport, id, sub_id);
-            }
-            _ => {}
         }
-        EngineAction::None
     }
 
     fn on_disconnect(&mut self, _transport: &dyn SyncTransport, id: u32) -> EngineAction {
@@ -252,51 +241,6 @@ impl Engine for NostrEngine {
         None
     }
 
-    fn get_interests(&self, id: u32) -> Option<ConnectionInterests> {
-        let conn_state = self.connections.get(&id)?;
-        let mut pubkeys = HashSet::new();
-        for filters in conn_state.subscriptions.values() {
-            for filter in filters {
-                for pk in filter.pubkeys() {
-                    pubkeys.insert(pk);
-                }
-            }
-        }
-
-        let mut capabilities = Vec::new();
-        if let Some(info_event) = &conn_state.info_event {
-            capabilities.push("ready".into());
-            let mut supports_nip44 = false;
-            let mut supports_nip04 = false;
-            let mut has_encryption_tag = false;
-
-            for tag in &info_event.tags {
-                if tag.len() >= 2 && tag[0].as_str() == Some("encryption") {
-                    has_encryption_tag = true;
-                    if let Some(schemes) = tag[1].as_str() {
-                        for scheme in schemes.split_whitespace() {
-                            if scheme == "nip44_v2" { supports_nip44 = true; }
-                            else if scheme == "nip04" { supports_nip04 = true; }
-                        }
-                    }
-                }
-            }
-
-            if supports_nip44 { capabilities.push("nip44".into()); }
-            if supports_nip04 || !has_encryption_tag { capabilities.push("nip04".into()); }
-        }
-
-        Some(ConnectionInterests {
-            pubkeys: pubkeys.into_iter().take(10).collect(),
-            capabilities,
-        })
-    }
-
-    fn get_snapshot(&self, id: u32) -> Option<Vec<u8>> {
-        let conn_state = self.connections.get(&id)?;
-        serde_json::to_vec(conn_state).ok()
-    }
-
     fn initial_state(&self) -> Vec<u8> {
         serde_json::to_vec(&ConnectionState::default()).unwrap_or_default()
     }
@@ -306,7 +250,7 @@ impl Engine for NostrEngine {
     }
 
     fn get_connection_id(&self, pubkey: &str) -> Option<u32> {
-        self.index.get(pubkey).and_then(|subs| subs.first().map(|(id, _)| *id))
+        self.registry.get_connection_id(pubkey)
     }
 }
 
@@ -331,12 +275,13 @@ mod tests {
         let req = r#"["REQ", "sub1", {"authors": ["pk1"]}]"#;
         let action = engine.on_message(&transport, 1, req);
         
-        assert_eq!(action, EngineAction::Commit);
-        
-        // Verify interests
-        let interests = engine.get_interests(1).unwrap();
-        assert!(interests.pubkeys.contains(&"pk1".to_string()));
-        assert!(!interests.capabilities.contains(&"ready".to_string()));
+        if let EngineAction::Commit { snapshot, tags } = action {
+            assert!(tags.contains(&"pk1".to_string()));
+            assert!(!tags.contains(&"cap:ready".to_string()));
+            assert!(!snapshot.is_empty());
+        } else {
+            panic!("Expected Commit action");
+        }
     }
 
     #[test]
@@ -359,11 +304,6 @@ mod tests {
             }
         ]).to_string();
 
-        // Note: handle_nostr_event will fail verification because of dummy ID/Sig, 
-        // but it should still return the correct Action if we mock verify or if we just test the return type.
-        // Actually, handle_nostr_event calls event.verify() which will fail.
-        // Let's use a real-ish looking but still failing event and just check it doesn't panic.
-        
         let action = engine.on_message(&transport, 1, &event_json);
         // It returns None because verification failed
         assert_eq!(action, EngineAction::None);
@@ -376,15 +316,24 @@ mod tests {
         engine.on_connect(&transport, 1, None);
         
         let req = r#"["REQ", "sub1", {"authors": ["pk1"]}]"#;
-        engine.on_message(&transport, 1, req);
+        let action = engine.on_message(&transport, 1, req);
         
-        let snapshot = engine.get_snapshot(1).unwrap();
+        let snapshot = if let EngineAction::Commit { snapshot, .. } = action {
+            snapshot
+        } else {
+            panic!("Expected Commit");
+        };
         
         let mut engine2 = NostrEngine::new();
-        let action = engine2.on_connect(&transport, 1, Some(snapshot));
+        // Restore connection 1 with snapshot
+        let action2 = engine2.on_connect(&transport, 1, Some(snapshot));
+        assert_eq!(action2, EngineAction::None);
         
-        assert_eq!(action, EngineAction::None);
-        let interests = engine2.get_interests(1).unwrap();
-        assert!(interests.pubkeys.contains(&"pk1".to_string()));
+        // Verify state is restored (e.g., via commit_state)
+        if let EngineAction::Commit { tags, .. } = engine2.commit_state(1) {
+            assert!(tags.contains(&"pk1".to_string()));
+        } else {
+            panic!("Expected Commit on restored state");
+        }
     }
 }

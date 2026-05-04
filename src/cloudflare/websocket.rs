@@ -74,8 +74,11 @@ impl DurableObject for Websocket {
             
             let action = engine.on_message(self, id, &text);
             
-            if action == EngineAction::Commit {
-                self.sync_connection_state(id);
+            if let EngineAction::Commit { snapshot, tags } = action {
+                let mut full_blob = id.to_le_bytes().to_vec();
+                full_blob.extend(snapshot);
+                let _ = ws.serialize_attachment(&full_blob);
+                let _ = self.state.set_tags(&ws, tags);
             }
             Ok(())
         } else {
@@ -181,29 +184,6 @@ impl Websocket {
         id_map.iter().find(|(w, _)| ws_eq(w, ws)).map(|(_, id)| *id)
     }
 
-    fn sync_connection_state(&self, id: u32) {
-        let engine = unsafe { &*self.engine.get() };
-        let id_map = unsafe { &*self.id_map.get() };
-        
-        if let Some((ws, _)) = id_map.iter().find(|(_, i)| *i == id) {
-            // 1. Persistence (Push snapshot to WebSocket attachment)
-            if let Some(snapshot) = engine.get_snapshot(id) {
-                let mut full_blob = id.to_le_bytes().to_vec();
-                full_blob.extend(snapshot);
-                let _ = ws.serialize_attachment(&full_blob);
-            }
-
-            // 2. Hibernation Tags (Map interests to platform-specific tags)
-            if let Some(interests) = engine.get_interests(id) {
-                let mut tags = interests.pubkeys;
-                for cap in interests.capabilities {
-                    tags.push(format!("cap:{}", cap));
-                }
-                let _ = self.state.set_tags(ws, tags);
-            }
-        }
-    }
-
     fn accept_new_connection(&self) -> Result<Response> {
         let engine = unsafe { &mut *self.engine.get() };
         let resp = accept_connection(&self.state, 100, engine.initial_state())?;
@@ -218,10 +198,13 @@ impl Websocket {
             let new_id = max_id + 1;
             
             let action = engine.on_connect(self, new_id, None);
-            id_map.push((new_ws, new_id));
+            id_map.push((new_ws.clone(), new_id));
 
-            if action == EngineAction::Commit {
-                self.sync_connection_state(new_id);
+            if let EngineAction::Commit { snapshot, tags } = action {
+                let mut full_blob = new_id.to_le_bytes().to_vec();
+                full_blob.extend(snapshot);
+                let _ = new_ws.serialize_attachment(&full_blob);
+                let _ = self.state.set_tags(&new_ws, tags);
             }
         }
 
@@ -234,8 +217,11 @@ impl Websocket {
             let id_map = unsafe { &mut *self.id_map.get() };
             let action = engine.on_disconnect(self, id);
             
-            if action == EngineAction::Commit {
-                self.sync_connection_state(id);
+            if let EngineAction::Commit { snapshot, tags } = action {
+                let mut full_blob = id.to_le_bytes().to_vec();
+                full_blob.extend(snapshot);
+                let _ = ws.serialize_attachment(&full_blob);
+                let _ = self.state.set_tags(ws, tags);
             }
             
             id_map.retain(|(_, i)| *i != id);

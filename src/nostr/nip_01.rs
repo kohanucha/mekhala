@@ -1,3 +1,44 @@
+use crate::nostr::{Event, Filter};
+
+#[derive(Debug, Clone)]
+pub enum ClientMessage {
+    Event(Event),
+    Req(String, Vec<Filter>),
+    Close(String),
+}
+
+impl ClientMessage {
+    pub fn from_json(text: &str) -> Result<Self, String> {
+        let arr: Vec<serde_json::Value> = serde_json::from_str(text).map_err(|e| e.to_string())?;
+
+        if arr.is_empty() {
+            return Err("empty message".to_string());
+        }
+
+        match arr[0].as_str() {
+            Some("EVENT") if arr.len() >= 2 => {
+                let event: Event = serde_json::from_value(arr[1].clone()).map_err(|e| e.to_string())?;
+                Ok(Self::Event(event))
+            }
+            Some("REQ") if arr.len() >= 3 => {
+                let sub_id = arr[1].as_str().ok_or("invalid sub_id")?.to_string();
+                let mut filters = Vec::new();
+                for value in &arr[2..] {
+                    let filter: Filter = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+                    filters.push(filter);
+                }
+                Ok(Self::Req(sub_id, filters))
+            }
+            Some("CLOSE") if arr.len() >= 2 => {
+                let sub_id = arr[1].as_str().ok_or("invalid sub_id")?.to_string();
+                Ok(Self::Close(sub_id))
+            }
+            Some(v) => Err(format!("unknown message type: {}", v)),
+            None => Err("missing message type".to_string()),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum RelayMessage {
     Ok(String, bool, String),
@@ -22,6 +63,33 @@ impl RelayMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_client_message_parsing() {
+        let event_json = r#"["EVENT",{"id":"id","pubkey":"pk","created_at":1000,"kind":1,"tags":[],"content":"hi","sig":"sig"}]"#;
+        let msg = ClientMessage::from_json(event_json).unwrap();
+        match msg {
+            ClientMessage::Event(e) => assert_eq!(e.content, "hi"),
+            _ => panic!("Expected Event"),
+        }
+
+        let req_json = r#"["REQ","sub1",{"authors":["pk1"]}]"#;
+        let msg = ClientMessage::from_json(req_json).unwrap();
+        match msg {
+            ClientMessage::Req(id, filters) => {
+                assert_eq!(id, "sub1");
+                assert_eq!(filters.len(), 1);
+            }
+            _ => panic!("Expected Req"),
+        }
+
+        let close_json = r#"["CLOSE","sub1"]"#;
+        let msg = ClientMessage::from_json(close_json).unwrap();
+        match msg {
+            ClientMessage::Close(id) => assert_eq!(id, "sub1"),
+            _ => panic!("Expected Close"),
+        }
+    }
 
     #[test]
     fn test_relay_message_serialization() {
