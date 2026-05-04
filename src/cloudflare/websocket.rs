@@ -1,8 +1,8 @@
 use std::cell::UnsafeCell;
 use worker::*;
 use crate::cloudflare::{accept_connection, HibernationState};
-use crate::nostr::engine::NostrEngine;
-use crate::util::engine::{Engine, GenericTransport, EngineAction};
+use crate::util::engine::{Engine, EngineAction};
+use crate::util::transport::SyncTransport;
 use crate::cloudflare::apply_security_headers;
 
 #[durable_object]
@@ -17,7 +17,7 @@ pub struct Websocket {
 
 impl DurableObject for Websocket {
     fn new(state: State, _env: Env) -> Self {
-        let mut engine: Box<dyn Engine> = Box::new(NostrEngine::new());
+        let mut engine = crate::nostr::create_engine();
         let mut id_map = Vec::new();
 
         for ws in state.get_websockets() {
@@ -52,14 +52,14 @@ impl DurableObject for Websocket {
     }
 
     async fn websocket_message(&self, ws: WebSocket, message: WebSocketIncomingMessage) -> Result<()> {
+        let engine = unsafe { &mut *self.engine.get() };
         if let WebSocketIncomingMessage::String(text) = message {
             if text.len() > 65536 {
-                let _ = ws.send_with_str(&crate::nostr::RelayMessage::Notice("message too large".to_string()).to_json());
+                let _ = ws.send_with_str(&engine.error_message("message too large"));
                 return Ok(());
             }
             let id = self.get_id(&ws).ok_or_else(|| Error::from("Connection not found"))?;
             
-            let engine = unsafe { &mut *self.engine.get() };
             let action = engine.on_message(self, id, &text);
             
             if action == EngineAction::Commit {
@@ -67,7 +67,7 @@ impl DurableObject for Websocket {
             }
             Ok(())
         } else {
-            let _ = ws.send_with_str(&crate::nostr::RelayMessage::Notice("binary not supported".to_string()).to_json());
+            let _ = ws.send_with_str(&engine.error_message("binary not supported"));
             Ok(())
         }
     }
@@ -82,11 +82,11 @@ impl DurableObject for Websocket {
 }
 
 struct NoopTransport;
-impl GenericTransport for NoopTransport {
+impl SyncTransport for NoopTransport {
     fn send(&self, _: u32, _: &str) {}
 }
 
-impl GenericTransport for Websocket {
+impl SyncTransport for Websocket {
     fn send(&self, id: u32, message: &str) {
         let id_map = unsafe { &*self.id_map.get() };
         if let Some((ws, _)) = id_map.iter().find(|(_, i)| *i == id) {
@@ -125,11 +125,11 @@ impl Websocket {
     }
 
     fn accept_new_connection(&self) -> Result<Response> {
-        let resp = accept_connection(&self.state, 100)?;
+        let engine = unsafe { &mut *self.engine.get() };
+        let resp = accept_connection(&self.state, 100, engine.initial_state())?;
         
         let active_ws = self.state.get_websockets();
         let id_map = unsafe { &mut *self.id_map.get() };
-        let engine = unsafe { &mut *self.engine.get() };
         
         // Match the NEWEST websocket that isn't in our id_map yet.
         // During accept_connection, the new WS is added to the end of state.get_websockets().

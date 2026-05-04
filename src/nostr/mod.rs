@@ -17,6 +17,13 @@ pub use filter::Filter;
 pub use limits::Limits;
 pub use error::RelayError;
 
+use crate::util::engine::Engine;
+use crate::nostr::engine::NostrEngine;
+
+pub fn create_engine() -> Box<dyn Engine> {
+    Box::new(NostrEngine::new())
+}
+
 use k256::{PublicKey as K256PublicKey, SecretKey as K256SecretKey};
 use worker::{Error, Result};
 

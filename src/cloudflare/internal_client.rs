@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use worker::*;
-use crate::nostr::nip_47::Transport;
+use crate::util::transport::AsyncTransport;
 use crate::cloudflare::get_durable_stub;
 
 pub async fn info_internal(env: &Env, wallet_pubkey: &str) -> Result<serde_json::Value> {
@@ -46,7 +46,7 @@ pub struct WebSocketTransport {
 }
 
 #[async_trait(?Send)]
-impl Transport for WebSocketTransport {
+impl AsyncTransport for WebSocketTransport {
     async fn send(&self, msg: &str) -> Result<()> {
         self.ws.send_with_str(msg)
     }

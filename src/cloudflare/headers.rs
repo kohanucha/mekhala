@@ -13,7 +13,6 @@ pub fn create_cors_response(response: Response) -> Result<Response> {
     headers.set("Access-Control-Allow-Origin", "*")?;
     headers.set("Access-Control-Allow-Methods", "GET, OPTIONS")?;
     headers.set("Access-Control-Allow-Headers", "*")?;
-    headers.set("Content-Type", "application/nostr+json")?;
-    
+
     apply_security_headers(response.with_headers(headers))
 }

@@ -1,7 +1,7 @@
+use crate::util::transport::AsyncTransport;
 use crate::nostr::Event;
 use crate::util::now;
 use crate::util::now_ms;
-use async_trait::async_trait;
 use k256::schnorr::{signature::hazmat::PrehashSigner, SigningKey};
 use rand::RngCore;
 use serde_json::Value;
@@ -16,12 +16,6 @@ pub const KIND_NWC_RESPONSE: u64 = 23195;
 pub enum EncryptionMethod {
     Nip04,
     Nip44,
-}
-
-#[async_trait(?Send)]
-pub trait Transport: Send + Sync {
-    async fn send(&self, msg: &str) -> Result<()>;
-    async fn receive(&mut self, timeout_ms: u64) -> Result<String>;
 }
 
 #[derive(Debug, Clone)]
@@ -127,7 +121,7 @@ impl Session {
         })
     }
 
-    pub async fn call<T: Transport>(
+    pub async fn call<T: AsyncTransport>(
         &self,
         transport: &mut T,
         request_payload: &Value,
@@ -309,8 +303,8 @@ mod tests {
 
     #[test]
     fn test_transport_trait_exists() {
-        fn _check_send<T: Transport>() {}
-        fn _check_receive<T: Transport + ?Sized>() {}
+        fn _check_send<T: AsyncTransport>() {}
+        fn _check_receive<T: AsyncTransport + ?Sized>() {}
     }
 
     #[test]
@@ -320,6 +314,6 @@ mod tests {
 
     #[test]
     fn test_websocket_transport_implements_transport() {
-        fn _assert_impls_trait<T: Transport>() {}
+        fn _assert_impls_trait<T: AsyncTransport>() {}
     }
 }

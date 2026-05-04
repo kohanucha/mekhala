@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use super::state::ConnectionState;
 use super::{Filter, Event, RelayMessage};
-use crate::util::engine::{Engine, GenericTransport, EngineAction, ConnectionInterests};
+use crate::util::engine::{Engine, EngineAction, ConnectionInterests};
+use crate::util::transport::SyncTransport;
 use crate::util::now;
 use serde_json::Value;
 
@@ -44,7 +45,7 @@ impl NostrEngine {
         self.index = new_index;
     }
 
-    fn handle_nostr_event(&mut self, transport: &dyn GenericTransport, id: u32, event: Event) -> EngineAction {
+    fn handle_nostr_event(&mut self, transport: &dyn SyncTransport, id: u32, event: Event) -> EngineAction {
         if let Err(e) = event.verify(now()) {
             transport.send(id, &RelayMessage::Ok(event.id, false, e.to_string()).to_json());
             return EngineAction::None;
@@ -88,7 +89,7 @@ impl NostrEngine {
         action
     }
 
-    fn handle_nostr_req(&mut self, transport: &dyn GenericTransport, id: u32, sub_id: String, filters: Vec<Filter>) -> EngineAction {
+    fn handle_nostr_req(&mut self, transport: &dyn SyncTransport, id: u32, sub_id: String, filters: Vec<Filter>) -> EngineAction {
         if filters.iter().any(|f| !f.is_valid()) {
             transport.send(id, &RelayMessage::Closed(sub_id, "filter too broad".to_string()).to_json());
             return EngineAction::None;
@@ -117,7 +118,7 @@ impl NostrEngine {
         EngineAction::Commit
     }
 
-    fn handle_nostr_close(&mut self, _transport: &dyn GenericTransport, id: u32, sub_id: String) -> EngineAction {
+    fn handle_nostr_close(&mut self, _transport: &dyn SyncTransport, id: u32, sub_id: String) -> EngineAction {
         if let Some(conn_state) = self.connections.get_mut(&id) {
             conn_state.subscriptions.remove(&sub_id);
         }
@@ -178,7 +179,7 @@ impl NostrEngine {
 }
 
 impl Engine for NostrEngine {
-    fn on_connect(&mut self, _transport: &dyn GenericTransport, id: u32, state: Option<Vec<u8>>) -> EngineAction {
+    fn on_connect(&mut self, _transport: &dyn SyncTransport, id: u32, state: Option<Vec<u8>>) -> EngineAction {
         if let Some(blob) = state {
             if let Ok(conn_state) = serde_json::from_slice::<ConnectionState>(&blob) {
                 self.add_connection(id, conn_state);
@@ -194,7 +195,7 @@ impl Engine for NostrEngine {
         }
     }
 
-    fn on_message(&mut self, transport: &dyn GenericTransport, id: u32, message: &str) -> EngineAction {
+    fn on_message(&mut self, transport: &dyn SyncTransport, id: u32, message: &str) -> EngineAction {
         let arr: Vec<serde_json::Value> = match serde_json::from_str(message) {
             Ok(a) => a,
             Err(e) => {
@@ -230,7 +231,7 @@ impl Engine for NostrEngine {
         EngineAction::None
     }
 
-    fn on_disconnect(&mut self, _transport: &dyn GenericTransport, id: u32) -> EngineAction {
+    fn on_disconnect(&mut self, _transport: &dyn SyncTransport, id: u32) -> EngineAction {
         self.remove_connection(id);
         EngineAction::None
     }
@@ -295,6 +296,14 @@ impl Engine for NostrEngine {
         let conn_state = self.connections.get(&id)?;
         serde_json::to_vec(conn_state).ok()
     }
+
+    fn initial_state(&self) -> Vec<u8> {
+        serde_json::to_vec(&ConnectionState::default()).unwrap_or_default()
+    }
+
+    fn error_message(&self, msg: &str) -> String {
+        RelayMessage::Notice(msg.to_string()).to_json()
+    }
 }
 
 #[cfg(test)]
@@ -302,7 +311,7 @@ mod tests {
     use super::*;
 
     struct MockTransport;
-    impl GenericTransport for MockTransport {
+    impl SyncTransport for MockTransport {
         fn send(&self, _id: u32, _message: &str) {}
     }
 
