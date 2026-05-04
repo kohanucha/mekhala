@@ -51,7 +51,7 @@ Mekhala is highly configurable via `wrangler.toml`:
 ## Building and Running
 
 ### Key Commands
-- **Test Everything**: `./test.sh`
+- **Test Everything**: `./scripts/test.sh`
   - **MANDATORY**: Run this script after every code change. It verifies Rust unit tests, builds the WASM binary, and runs the Node.js integration suite against a local relay.
 - **Build**: `./build.sh`
 - **Local Development**: `npx wrangler dev`
@@ -61,7 +61,7 @@ Mekhala is highly configurable via `wrangler.toml`:
 ## Development Conventions
 
 ### Coding Standards
-- **Test Before Push**: NEVER commit or push code without a successful `./test.sh` run. This ensures that the Durable Object hibernation recovery logic is verified and no regressions are introduced in the NWC flow.
+- **Test Before Push**: NEVER commit or push code without a successful `./scripts/test.sh` run. This ensures that the Durable Object hibernation recovery logic is verified and no regressions are introduced in the NWC flow.
 - **Strict NWC Enforcement**: Reject any event or subscription not matching NWC kinds (13194, 23194-23197).
 - **Security-Hardened Limits**: Use restrictive limits (20 connections, 10 tags, 16KB content) optimized for personal NWC use to reduce attack surface and DO memory pressure.
 - **Mandatory Filter Narrowing**: All `REQ` filters must include at least one criterion (`ids`, `authors`, `#p`, `#e`) to prevent broad snooping.

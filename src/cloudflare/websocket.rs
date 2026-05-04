@@ -2,7 +2,7 @@ use std::cell::UnsafeCell;
 use worker::*;
 use crate::cloudflare::{accept_connection, HibernationState};
 use crate::nostr::engine::NostrEngine;
-use crate::util::engine::{Engine, GenericTransport};
+use crate::util::engine::{Engine, GenericTransport, EngineAction};
 use crate::cloudflare::apply_security_headers;
 
 #[durable_object]
@@ -25,6 +25,7 @@ impl DurableObject for Websocket {
                 if blob.len() >= 4 {
                     let id = u32::from_le_bytes(blob[0..4].try_into().unwrap_or([0; 4]));
                     let engine_state = blob[4..].to_vec();
+                    // Restoration connect - usually doesn't need commit as state is already in attachment
                     engine.on_connect(&NoopTransport, id, Some(engine_state));
                     id_map.push((ws, id));
                 }
@@ -59,7 +60,11 @@ impl DurableObject for Websocket {
             let id = self.get_id(&ws).ok_or_else(|| Error::from("Connection not found"))?;
             
             let engine = unsafe { &mut *self.engine.get() };
-            engine.on_message(self, id, &text);
+            let action = engine.on_message(self, id, &text);
+            
+            if action == EngineAction::Commit {
+                self.sync_connection_state(id);
+            }
             Ok(())
         } else {
             let _ = ws.send_with_str(&crate::nostr::RelayMessage::Notice("binary not supported".to_string()).to_json());
@@ -79,8 +84,6 @@ impl DurableObject for Websocket {
 struct NoopTransport;
 impl GenericTransport for NoopTransport {
     fn send(&self, _: u32, _: &str) {}
-    fn persist(&self, _: u32, _: Vec<u8>) {}
-    fn set_tags(&self, _: u32, _: Vec<String>) {}
 }
 
 impl GenericTransport for Websocket {
@@ -90,28 +93,35 @@ impl GenericTransport for Websocket {
             let _ = ws.send_with_str(message);
         }
     }
-
-    fn persist(&self, id: u32, snapshot: Vec<u8>) {
-        let id_map = unsafe { &*self.id_map.get() };
-        if let Some((ws, _)) = id_map.iter().find(|(_, i)| *i == id) {
-            let mut full_blob = id.to_le_bytes().to_vec();
-            full_blob.extend(snapshot);
-            let _ = ws.serialize_attachment(&full_blob);
-        }
-    }
-
-    fn set_tags(&self, id: u32, tags: Vec<String>) {
-        let id_map = unsafe { &*self.id_map.get() };
-        if let Some((ws, _)) = id_map.iter().find(|(_, i)| *i == id) {
-            self.state.set_tags(ws, tags);
-        }
-    }
 }
 
 impl Websocket {
     fn get_id(&self, ws: &WebSocket) -> Option<u32> {
         let id_map = unsafe { &*self.id_map.get() };
         id_map.iter().find(|(w, _)| ws_eq(w, ws)).map(|(_, id)| *id)
+    }
+
+    fn sync_connection_state(&self, id: u32) {
+        let engine = unsafe { &*self.engine.get() };
+        let id_map = unsafe { &*self.id_map.get() };
+        
+        if let Some((ws, _)) = id_map.iter().find(|(_, i)| *i == id) {
+            // 1. Persistence (Push snapshot to WebSocket attachment)
+            if let Some(snapshot) = engine.get_snapshot(id) {
+                let mut full_blob = id.to_le_bytes().to_vec();
+                full_blob.extend(snapshot);
+                let _ = ws.serialize_attachment(&full_blob);
+            }
+
+            // 2. Hibernation Tags (Map interests to platform-specific tags)
+            if let Some(interests) = engine.get_interests(id) {
+                let mut tags = interests.pubkeys;
+                for cap in interests.capabilities {
+                    tags.push(format!("cap:{}", cap));
+                }
+                let _ = self.state.set_tags(ws, tags);
+            }
+        }
     }
 
     fn accept_new_connection(&self) -> Result<Response> {
@@ -127,8 +137,12 @@ impl Websocket {
             let max_id = id_map.iter().map(|(_, id)| *id).max().unwrap_or(0);
             let new_id = max_id + 1;
             
-            engine.on_connect(self, new_id, None);
+            let action = engine.on_connect(self, new_id, None);
             id_map.push((new_ws, new_id));
+
+            if action == EngineAction::Commit {
+                self.sync_connection_state(new_id);
+            }
         }
 
         Ok(resp)
@@ -138,7 +152,12 @@ impl Websocket {
         if let Some(id) = self.get_id(ws) {
             let engine = unsafe { &mut *self.engine.get() };
             let id_map = unsafe { &mut *self.id_map.get() };
-            engine.on_disconnect(self, id);
+            let action = engine.on_disconnect(self, id);
+            
+            if action == EngineAction::Commit {
+                self.sync_connection_state(id);
+            }
+            
             id_map.retain(|(_, i)| *i != id);
         }
         Ok(())
