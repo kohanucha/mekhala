@@ -1,6 +1,6 @@
 use worker::*;
 use crate::nostr::nip_47::{ConnectionDetails, Session, EncryptionMethod};
-use crate::cloudflare::{info_internal, connect_internal};
+use crate::cloudflare::info_internal;
 use serde_json::Value;
 
 pub struct WalletConnector {
@@ -46,10 +46,7 @@ impl WalletConnector {
             "nip04"
         };
 
-        // 3. Connect to internal relay
-        let mut transport = connect_internal(&self.env, &session.wallet_pubkey).await?;
-
-        // 4. Create request with mandatory encryption tag
+        // 3. Create request with mandatory encryption tag
         let request_payload = serde_json::json!({
             "method": "make_invoice",
             "params": {
@@ -63,8 +60,8 @@ impl WalletConnector {
             vec![Value::String("encryption".into()), Value::String(chosen_scheme.into())],
         ];
 
-        // 5. Call NWC
-        let resp_json = session.call(&mut transport, &request_payload, Some(extra_tags)).await?;
+        // 4. Dispatch NWC via synchronous internal HTTP
+        let resp_json = session.dispatch(&self.env, &request_payload, Some(extra_tags)).await?;
 
         if let Some(result) = resp_json.get("result") {
             if let Some(invoice) = result.get("invoice").and_then(|i| i.as_str()) {

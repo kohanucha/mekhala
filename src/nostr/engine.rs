@@ -304,6 +304,10 @@ impl Engine for NostrEngine {
     fn error_message(&self, msg: &str) -> String {
         RelayMessage::Notice(msg.to_string()).to_json()
     }
+
+    fn get_connection_id(&self, pubkey: &str) -> Option<u32> {
+        self.index.get(pubkey).and_then(|subs| subs.first().map(|(id, _)| *id))
+    }
 }
 
 #[cfg(test)]

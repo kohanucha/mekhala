@@ -1,9 +1,6 @@
-use crate::util::transport::AsyncTransport;
 use crate::nostr::Event;
 use crate::util::now;
-use crate::util::now_ms;
 use k256::schnorr::{signature::hazmat::PrehashSigner, SigningKey};
-use rand::RngCore;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use url::Url;
@@ -121,9 +118,9 @@ impl Session {
         })
     }
 
-    pub async fn call<T: AsyncTransport>(
+    pub async fn dispatch(
         &self,
-        transport: &mut T,
+        env: &worker::Env,
         request_payload: &Value,
         extra_tags: Option<Vec<Vec<Value>>>,
     ) -> Result<Value> {
@@ -136,52 +133,27 @@ impl Session {
             tags.extend(extra);
         }
         let event = self.create_event(KIND_NWC_REQUEST, encrypted_content, tags)?;
+        
+        let msg_text = crate::cloudflare::dispatch_internal(env, &self.wallet_pubkey, &serde_json::to_value(event)?).await?;
+        
+        let arr: Vec<serde_json::Value> =
+            serde_json::from_str(&msg_text).map_err(|e| Error::from(e.to_string()))?;
 
-        let sub_id = hex::encode(rand::thread_rng().next_u32().to_be_bytes());
-        let req_msg = serde_json::json!(["REQ", sub_id, {
-            "kinds": [KIND_NWC_RESPONSE],
-            "#p": [self.my_pubkey],
-            "#e": [event.id],
-            "since": event.created_at - 1
-        }])
-        .to_string();
+        if arr.len() >= 3 && arr[0].as_str() == Some("EVENT") {
+            let resp_event: Event = serde_json::from_value(arr[2].clone())
+                .map_err(|e| Error::from(e.to_string()))?;
+            let decrypted = self.decrypt(&resp_event.content)?;
+            let resp_json: Value =
+                serde_json::from_str(&decrypted).map_err(|e| Error::from(e.to_string()))?;
 
-        transport.send(&req_msg).await?;
-        transport
-            .send(&serde_json::json!(["EVENT", event]).to_string())
-            .await?;
-
-        let timeout_at = now_ms() + 10000;
-
-        while now_ms() < timeout_at {
-            let remaining = timeout_at.saturating_sub(now_ms());
-            if remaining == 0 {
-                break;
+            if let Some(error) = resp_json.get("error") {
+                return Err(Error::from(format!("NWC Error: {:?}", error)));
             }
 
-            let msg_text = transport.receive(remaining).await?;
-            let arr: Vec<serde_json::Value> =
-                serde_json::from_str(&msg_text).map_err(|e| Error::from(e.to_string()))?;
-
-            if arr.len() >= 3
-                && arr[0].as_str() == Some("EVENT")
-                && arr[1].as_str() == Some(&sub_id)
-            {
-                let resp_event: Event = serde_json::from_value(arr[2].clone())
-                    .map_err(|e| Error::from(e.to_string()))?;
-                let decrypted = self.decrypt(&resp_event.content)?;
-                let resp_json: Value =
-                    serde_json::from_str(&decrypted).map_err(|e| Error::from(e.to_string()))?;
-
-                if let Some(error) = resp_json.get("error") {
-                    return Err(Error::from(format!("NWC Error: {:?}", error)));
-                }
-
-                return Ok(resp_json);
-            }
+            return Ok(resp_json);
         }
 
-        Err(Error::from("Timeout waiting for response from wallet"))
+        Err(Error::from("Malformed response from dispatch"))
     }
 }
 
@@ -299,21 +271,5 @@ mod tests {
     fn test_kind_constants() {
         assert_eq!(KIND_NWC_REQUEST, 23194);
         assert_eq!(KIND_NWC_RESPONSE, 23195);
-    }
-
-    #[test]
-    fn test_transport_trait_exists() {
-        fn _check_send<T: AsyncTransport>() {}
-        fn _check_receive<T: AsyncTransport + ?Sized>() {}
-    }
-
-    #[test]
-    fn test_internal_relay_client_has_new() {
-        fn _has_new<T: std::any::Any>() {}
-    }
-
-    #[test]
-    fn test_websocket_transport_implements_transport() {
-        fn _assert_impls_trait<T: AsyncTransport>() {}
     }
 }

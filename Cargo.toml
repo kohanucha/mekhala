@@ -31,6 +31,7 @@ wasm-bindgen = "0.2"
 hkdf = "0.12"
 chacha20 = "0.9"
 hmac = "0.12"
+futures = { version = "0.3.32", features = ["thread-pool"] }
 
 [profile.release]
 opt-level = "s"

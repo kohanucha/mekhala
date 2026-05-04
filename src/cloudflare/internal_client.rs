@@ -1,7 +1,4 @@
-use async_trait::async_trait;
-use futures_util::StreamExt;
 use worker::*;
-use crate::util::transport::AsyncTransport;
 use crate::cloudflare::get_durable_stub;
 
 pub async fn info_internal(env: &Env, wallet_pubkey: &str) -> Result<serde_json::Value> {
@@ -14,51 +11,28 @@ pub async fn info_internal(env: &Env, wallet_pubkey: &str) -> Result<serde_json:
     resp.json().await
 }
 
-pub async fn connect_internal(env: &Env, wallet_pubkey: &str) -> Result<WebSocketTransport> {
+pub async fn dispatch_internal(env: &Env, wallet_pubkey: &str, payload: &serde_json::Value) -> Result<String> {
     let stub = get_durable_stub(env)?;
-    
-    let check_req = Request::new(
-        &format!("http://internal/check/{}", wallet_pubkey),
-        Method::Get,
+    let mut req = Request::new(
+        &format!("http://internal/internal/dispatch/{}", wallet_pubkey),
+        Method::Post,
     )?;
-    let mut check_resp = stub.fetch_with_request(check_req).await?;
-    let check_text: String = check_resp.json().await?;
-    if check_text != "OK" {
-        return Err(Error::from("Wallet not connected"));
-    }
-
-    let mut ws_req = Request::new("http://internal/", Method::Get)?;
-    ws_req.headers_mut()?.set("Upgrade", "websocket")?;
-    ws_req.headers_mut()?.set("Connection", "Upgrade")?;
-
-    let response = stub.fetch_with_request(ws_req).await?;
-    let ws = response
-        .websocket()
-        .ok_or_else(|| Error::from("Failed to upgrade to WebSocket"))?;
-
-    ws.accept()?;
-
-    Ok(WebSocketTransport { ws })
-}
-
-pub struct WebSocketTransport {
-    ws: WebSocket,
-}
-
-#[async_trait(?Send)]
-impl AsyncTransport for WebSocketTransport {
-    async fn send(&self, msg: &str) -> Result<()> {
-        self.ws.send_with_str(msg)
-    }
-
-    async fn receive(&mut self, _timeout_ms: u64) -> Result<String> {
-        let mut stream = self.ws.events()?;
-        match stream.next().await {
-            Some(Ok(WebsocketEvent::Message(msg))) => msg
-                .text()
-                .ok_or_else(|| Error::from("Expected text message")),
-            Some(Err(e)) => Err(e),
-            _ => Err(Error::from("Connection closed")),
+    req.headers_mut()?.set("Content-Type", "application/json")?;
+    
+    let body = serde_json::to_string(payload)?;
+    let req = Request::new_with_init(
+        &format!("http://internal/internal/dispatch/{}", wallet_pubkey),
+        &RequestInit {
+            method: Method::Post,
+            body: Some(wasm_bindgen::JsValue::from_str(&body)),
+            ..Default::default()
         }
+    )?;
+
+    let mut resp = stub.fetch_with_request(req).await?;
+    if resp.status_code() != 200 {
+        let err_text = resp.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(Error::from(format!("Internal dispatch failed ({}): {}", resp.status_code(), err_text)));
     }
+    resp.text().await
 }

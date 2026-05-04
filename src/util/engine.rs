@@ -20,4 +20,5 @@ pub trait Engine {
     fn get_snapshot(&self, id: u32) -> Option<Vec<u8>>;
     fn initial_state(&self) -> Vec<u8>;
     fn error_message(&self, msg: &str) -> String;
+    fn get_connection_id(&self, pubkey: &str) -> Option<u32>;
 }

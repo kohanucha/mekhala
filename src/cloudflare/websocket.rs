@@ -1,4 +1,9 @@
 use std::cell::UnsafeCell;
+use std::collections::HashMap;
+use futures::channel::oneshot;
+use futures_util::future::{select, Either};
+use futures_util::{pin_mut, FutureExt};
+use serde_json::Value;
 use worker::*;
 use crate::cloudflare::{accept_connection, HibernationState};
 use crate::util::engine::{Engine, EngineAction};
@@ -13,6 +18,7 @@ pub struct Websocket {
     // and our callbacks don't perform re-entrant mutations on the engine.
     engine: UnsafeCell<Box<dyn Engine>>,
     id_map: UnsafeCell<Vec<(WebSocket, u32)>>,
+    dispatch_channels: UnsafeCell<HashMap<String, oneshot::Sender<String>>>,
 }
 
 impl DurableObject for Websocket {
@@ -36,12 +42,18 @@ impl DurableObject for Websocket {
             state,
             engine: UnsafeCell::new(engine),
             id_map: UnsafeCell::new(id_map),
+            dispatch_channels: UnsafeCell::new(HashMap::new()),
         }
     }
 
     async fn fetch(&self, req: Request) -> Result<Response> {
         let url = req.url()?;
         let path = url.path();
+
+        if path.starts_with("/internal/dispatch/") && req.method() == Method::Post {
+            let pubkey = path.strip_prefix("/internal/dispatch/").unwrap_or("");
+            return self.handle_dispatch(pubkey, req).await;
+        }
 
         let engine = unsafe { &*self.engine.get() };
         if let Some(info) = engine.get_info(path) {
@@ -88,6 +100,21 @@ impl SyncTransport for NoopTransport {
 
 impl SyncTransport for Websocket {
     fn send(&self, id: u32, message: &str) {
+        // Intercept for internal dispatch channels
+        if let Ok(Value::Array(arr)) = serde_json::from_str::<Value>(message) {
+            if arr.len() >= 2 {
+                let msg_type = arr[0].as_str().unwrap_or("");
+                let sub_id = arr[1].as_str().unwrap_or("");
+                
+                if !sub_id.is_empty() && (msg_type == "EVENT" || msg_type == "CLOSED") {
+                    let dispatch_channels = unsafe { &mut *self.dispatch_channels.get() };
+                    if let Some(sender) = dispatch_channels.remove(sub_id) {
+                        let _ = sender.send(message.to_string());
+                    }
+                }
+            }
+        }
+
         let id_map = unsafe { &*self.id_map.get() };
         if let Some((ws, _)) = id_map.iter().find(|(_, i)| *i == id) {
             let _ = ws.send_with_str(message);
@@ -96,6 +123,59 @@ impl SyncTransport for Websocket {
 }
 
 impl Websocket {
+    async fn handle_dispatch(&self, pubkey: &str, mut req: Request) -> Result<Response> {
+        let body_text = req.text().await?;
+        let event: crate::nostr::Event = serde_json::from_str(&body_text)
+            .map_err(|e| Error::from(format!("Invalid NWC Event: {}", e)))?;
+        
+        let engine = unsafe { &mut *self.engine.get() };
+        let id = engine.get_connection_id(pubkey)
+            .ok_or_else(|| Error::from("Wallet not connected"))?;
+
+        let (tx, rx) = oneshot::channel();
+        let sub_id = format!("disp_{}_{}", pubkey.get(..8).unwrap_or(pubkey), worker::js_sys::Math::random().to_string().get(2..10).unwrap_or(""));
+        
+        {
+            let dispatch_channels = unsafe { &mut *self.dispatch_channels.get() };
+            dispatch_channels.insert(sub_id.clone(), tx);
+        }
+
+        // 1. Inject REQ to listen for response
+        let req_msg = serde_json::json!([
+            "REQ",
+            sub_id,
+            {
+                "kinds": [crate::nostr::nip_47::KIND_NWC_RESPONSE],
+                "#p": [event.pubkey], // Index under bridge pubkey to ensure engine matches
+                "#e": [event.id]
+            }
+        ]).to_string();
+        engine.on_message(self, id, &req_msg);
+
+        // 2. Inject EVENT (the request)
+        let event_msg = serde_json::json!(["EVENT", event]).to_string();
+        engine.on_message(self, id, &event_msg);
+
+        // Wait for response with timeout
+        let rx_fuse = rx.fuse();
+        let delay = Delay::from(std::time::Duration::from_secs(10)).fuse();
+        
+        pin_mut!(rx_fuse, delay);
+
+        match select(rx_fuse, delay).await {
+            Either::Left((Ok(response), _)) => {
+                apply_security_headers(Response::ok(response)?)
+            }
+            _ => {
+                {
+                    let dispatch_channels = unsafe { &mut *self.dispatch_channels.get() };
+                    dispatch_channels.remove(&sub_id);
+                }
+                apply_security_headers(Response::error("Dispatch timeout", 504)?)
+            }
+        }
+    }
+
     fn get_id(&self, ws: &WebSocket) -> Option<u32> {
         let id_map = unsafe { &*self.id_map.get() };
         id_map.iter().find(|(w, _)| ws_eq(w, ws)).map(|(_, id)| *id)
