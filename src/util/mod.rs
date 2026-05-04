@@ -12,6 +12,8 @@ pub fn now_ms() -> u64 {
     }
 }
 
+pub mod engine;
+
 pub fn now() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
