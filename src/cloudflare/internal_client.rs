@@ -22,7 +22,8 @@ pub async fn connect_internal(env: &Env, wallet_pubkey: &str) -> Result<WebSocke
         Method::Get,
     )?;
     let mut check_resp = stub.fetch_with_request(check_req).await?;
-    if check_resp.text().await? != "OK" {
+    let check_text: String = check_resp.json().await?;
+    if check_text != "OK" {
         return Err(Error::from("Wallet not connected"));
     }
 

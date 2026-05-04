@@ -23,8 +23,9 @@ impl DurableObject for Websocket {
         for ws in state.get_websockets() {
             if let Ok(Some(blob)) = ws.deserialize_attachment::<Vec<u8>>() {
                 if blob.len() >= 4 {
-                    let id = u32::from_le_bytes(blob[0..4].try_into().unwrap_or([0;4]));
-                    engine.on_connect(&NoopTransport, id, Some(blob));
+                    let id = u32::from_le_bytes(blob[0..4].try_into().unwrap_or([0; 4]));
+                    let engine_state = blob[4..].to_vec();
+                    engine.on_connect(&NoopTransport, id, Some(engine_state));
                     id_map.push((ws, id));
                 }
             }
@@ -93,7 +94,9 @@ impl GenericTransport for Websocket {
     fn persist(&self, id: u32, snapshot: Vec<u8>) {
         let id_map = unsafe { &*self.id_map.get() };
         if let Some((ws, _)) = id_map.iter().find(|(_, i)| *i == id) {
-            let _ = ws.serialize_attachment(&snapshot);
+            let mut full_blob = id.to_le_bytes().to_vec();
+            full_blob.extend(snapshot);
+            let _ = ws.serialize_attachment(&full_blob);
         }
     }
 
