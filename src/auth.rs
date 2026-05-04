@@ -129,6 +129,6 @@ mod tests {
 
     #[test]
     fn test_constant_time_eq_unicode() {
-        let auth = Authenticator { expected_secret: None };
+        let _auth = Authenticator { expected_secret: None };
     }
 }

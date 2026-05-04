@@ -140,6 +140,60 @@ impl SubscriptionManager {
         self.active_wallets.borrow().get(pubkey).copied().unwrap_or(0) > 0
     }
 
+    pub fn get_wallet_info(&self, pubkey: &str) -> serde_json::Value {
+        let conns = self.connections.borrow();
+
+        let mut online = false;
+        let mut ready = false;
+        let mut encryption = HashSet::new();
+
+        for (_, conn_state) in conns.iter() {
+            // Check if any filter in this connection matches the pubkey
+            let mut matches_pubkey = false;
+            for filters in conn_state.subscriptions.values() {
+                for filter in filters {
+                    if filter.pubkeys().iter().any(|pk| pk == pubkey) {
+                        matches_pubkey = true;
+                        break;
+                    }
+                }
+                if matches_pubkey { break; }
+            }
+
+            if matches_pubkey {
+                online = true;
+                if let Some(info_event) = &conn_state.info_event {
+                    ready = true;
+
+                    let mut has_encryption_tag = false;
+                    for tag in &info_event.tags {
+                        if tag.len() >= 2 && tag[0].as_str() == Some("encryption") {
+                            has_encryption_tag = true;
+                            if let Some(schemes) = tag[1].as_str() {
+                                for scheme in schemes.split_whitespace() {
+                                    if scheme == "nip44_v2" {
+                                        encryption.insert("nip44_v2");
+                                    } else if scheme == "nip04" {
+                                        encryption.insert("nip04");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !has_encryption_tag {
+                        encryption.insert("nip04");
+                    }
+                }
+            }
+        }
+
+        serde_json::json!({
+            "online": online,
+            "ready": ready,
+            "encryption": encryption.into_iter().collect::<Vec<_>>()
+        })
+    }
+
     fn sync(&self, state: &State) {
         let mut conns = self.connections.borrow_mut();
         let mut active_wallets = self.active_wallets.borrow_mut();
@@ -203,6 +257,8 @@ impl SubscriptionManager {
         let conns = self.connections.borrow();
         if let Some((_, conn_state)) = conns.iter().find(|(w, _)| ws_eq(w, ws)) {
             let mut unique: HashSet<String> = HashSet::new();
+            
+            // Add subscription pubkeys as tags
             for filters in conn_state.subscriptions.values() {
                 for filter in filters {
                     for pk in filter.pubkeys() {
@@ -210,7 +266,42 @@ impl SubscriptionManager {
                     }
                 }
             }
-            let tags: Vec<String> = unique.into_iter().take(10).collect();
+            
+            let mut tags: Vec<String> = unique.into_iter().take(10).collect();
+
+            // Add capability tags
+            if let Some(info_event) = &conn_state.info_event {
+                tags.push("cap:ready".into());
+
+                let mut supports_nip44 = false;
+                let mut supports_nip04 = false;
+                let mut has_encryption_tag = false;
+
+                for tag in &info_event.tags {
+                    if tag.len() >= 2 && tag[0].as_str() == Some("encryption") {
+                        has_encryption_tag = true;
+                        if let Some(schemes) = tag[1].as_str() {
+                            for scheme in schemes.split_whitespace() {
+                                if scheme == "nip44_v2" {
+                                    supports_nip44 = true;
+                                } else if scheme == "nip04" {
+                                    supports_nip04 = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if supports_nip44 {
+                    tags.push("cap:nip44".into());
+                }
+                
+                // If tag is present but doesn't mention nip44, or if tag is absent, default to nip04
+                if supports_nip04 || !has_encryption_tag {
+                    tags.push("cap:nip04".into());
+                }
+            }
+
             state.set_tags(&ws, tags);
             ws.serialize_attachment(conn_state)?;
         }

@@ -4,6 +4,16 @@ use worker::*;
 use crate::nostr::nip_47::Transport;
 use crate::cloudflare::get_durable_stub;
 
+pub async fn info_internal(env: &Env, wallet_pubkey: &str) -> Result<serde_json::Value> {
+    let stub = get_durable_stub(env)?;
+    let req = Request::new(
+        &format!("http://internal/info/{}", wallet_pubkey),
+        Method::Get,
+    )?;
+    let mut resp = stub.fetch_with_request(req).await?;
+    resp.json().await
+}
+
 pub async fn connect_internal(env: &Env, wallet_pubkey: &str) -> Result<WebSocketTransport> {
     let stub = get_durable_stub(env)?;
     

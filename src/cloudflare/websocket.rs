@@ -29,6 +29,12 @@ impl DurableObject for Websocket {
             return apply_security_headers(Response::ok(if is_online { "OK" } else { "OFFLINE" })?);
         }
 
+        if path.starts_with("/info/") {
+            let pubkey = path.strip_prefix("/info/").unwrap_or("");
+            let info = self.manager.get_wallet_info(pubkey);
+            return apply_security_headers(Response::from_json(&info)?);
+        }
+
         accept_connection(&self.state, 100)
     }
 

@@ -131,12 +131,16 @@ impl Session {
         &self,
         transport: &mut T,
         request_payload: &Value,
+        extra_tags: Option<Vec<Vec<Value>>>,
     ) -> Result<Value> {
         let encrypted_content = self.encrypt(request_payload)?;
-        let tags = vec![vec![
+        let mut tags = vec![vec![
             Value::String("p".into()),
             Value::String(self.wallet_pubkey.clone()),
         ]];
+        if let Some(extra) = extra_tags {
+            tags.extend(extra);
+        }
         let event = self.create_event(KIND_NWC_REQUEST, encrypted_content, tags)?;
 
         let sub_id = hex::encode(rand::thread_rng().next_u32().to_be_bytes());

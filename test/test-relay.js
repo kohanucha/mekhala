@@ -835,6 +835,14 @@ async function testLnAddressFlow() {
 
   const walletReady = new Promise((resolve, reject) => {
     walletWs.on("open", () => {
+      // Send Info Event first
+      const infoEvent = finalizeEvent({
+        kind: 13194,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [], // Defaults to NIP-04
+        content: "make_invoice"
+      }, walletSk);
+      walletWs.send(JSON.stringify(["EVENT", infoEvent]));
       walletWs.send(JSON.stringify(["REQ", "wallet-ln-sub", { kinds: [23194], "#p": [walletPk] }]));
     });
     walletWs.on("message", async (msgData) => {
@@ -879,6 +887,7 @@ async function testLnAddressFlow() {
   if (callbackData.pr === invoice) {
     console.log("✅ LN Address flow (Well-known -> Callback -> NWC) passed!");
   } else {
+    console.error("Callback Response:", callbackData);
     throw new Error(`Invoice mismatch: expected ${invoice}, got ${callbackData.pr}`);
   }
 
@@ -950,11 +959,18 @@ async function testNip44AndFallback() {
     }
   };
 
-  // 1. Test NIP-04 Fallback (No 13194 event)
-  console.log("Step 1: Testing NIP-04 fallback (no Info event)...");
+  // 1. Test NIP-04 Fallback (Info event with no encryption tag)
+  console.log("Step 1: Testing NIP-04 fallback (Info event, no encryption tag)...");
   const walletWs1 = new WebSocket(RELAY_URL);
   await new Promise((resolve, reject) => {
     walletWs1.on("open", () => {
+      const infoEvent = finalizeEvent({
+        kind: 13194,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [], // No encryption tag -> NIP-04
+        content: "make_invoice"
+      }, walletSk);
+      walletWs1.send(JSON.stringify(["EVENT", infoEvent]));
       walletWs1.send(JSON.stringify(["REQ", "w1", { kinds: [23194], "#p": [walletPk] }]));
     });
     walletWs1.on("message", async (data) => {
