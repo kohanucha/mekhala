@@ -1,8 +1,8 @@
-use worker::*;
-use crate::cloudflare::{apply_security_headers, create_cors_response, get_durable_stub};
 use crate::auth::Authenticator;
+use crate::cloudflare::{apply_security_headers, create_cors_response};
 use crate::lnaddress::{handle_lnaddress, handle_lnaddress_callback};
 use crate::nostr;
+use worker::*;
 
 pub struct Server;
 
@@ -12,9 +12,9 @@ impl Server {
 
         router
             .get_async("/", Self::handle_request)
+            .get_async("/:secret", Self::handle_request)
             .get_async("/.well-known/lnurlp/:username", handle_lnaddress)
             .get_async("/lnaddress/:username/callback", handle_lnaddress_callback)
-            .get_async("/:secret", Self::handle_request)
             .run(req, env)
             .await
     }
@@ -33,9 +33,7 @@ impl Server {
 
         if let Ok(Some(upgrade)) = req.headers().get("Upgrade") {
             if upgrade.to_lowercase() == "websocket" {
-                let region = ctx.var("WALLET_REGION").map(|v| v.to_string()).ok();
-                let stub = get_durable_stub(&ctx.env, region)?;
-                return stub.fetch_with_request(req).await;
+                return nostr::handle_nwc_websocket_upgrade(req, &ctx.env).await;
             }
         }
 

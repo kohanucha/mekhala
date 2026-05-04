@@ -1,5 +1,3 @@
-use crate::cloudflare::create_cors_response;
-
 #[derive(Debug, Clone)]
 pub enum RelayMessage {
     Ok(String, bool, String),
@@ -19,13 +17,6 @@ impl RelayMessage {
             Self::Closed(sub_id, msg) => serde_json::json!(["CLOSED", sub_id, msg]).to_string(),
         }
     }
-}
-
-pub fn handle_get_info() -> Result<worker::Response, worker::Error> {
-    let info = serde_json::json!({
-        "supported_nips": [1, 11, 47]
-    });
-    create_cors_response(worker::Response::from_json(&info)?)
 }
 
 #[cfg(test)]
