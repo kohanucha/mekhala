@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use crate::nostr::Filter;
 use crate::nostr::Event;
-use crate::limits::Limits;
+use crate::nostr::Limits;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ConnectionState {

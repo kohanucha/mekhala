@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use crate::nostr::Event;
-use crate::limits::Limits;
+use crate::nostr::Limits;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Filter {
@@ -65,7 +65,9 @@ impl Filter {
         true
     }
 
-    pub fn is_valid(&self, limits: &Limits) -> bool {
+    pub fn is_valid(&self) -> bool {
+        let limits = Limits::default();
+        
         // Enforce narrowing (must have at least one of: ids, authors, #p, #e)
         if self.ids.is_none() && self.authors.is_none() && self.p_tags.is_none() && self.e_tags.is_none() {
             return false;
@@ -248,8 +250,7 @@ mod tests {
     #[test]
     fn test_filter_is_valid_requires_narrowing() {
         let filter = Filter::default();
-        let limits = Limits::default();
-        assert!(!filter.is_valid(&limits));
+        assert!(!filter.is_valid());
     }
 
     #[test]
@@ -259,8 +260,7 @@ mod tests {
             authors: Some(vec!["author1".into()]),
             ..Default::default()
         };
-        let limits = Limits::default();
-        assert!(filter.is_valid(&limits));
+        assert!(filter.is_valid());
     }
 
     #[test]
@@ -269,8 +269,7 @@ mod tests {
             ids: Some(vec!["id1".into(); 200]),
             ..Default::default()
         };
-        let limits = Limits::default();
-        assert!(!filter.is_valid(&limits));
+        assert!(!filter.is_valid());
     }
 
     #[test]
@@ -279,8 +278,7 @@ mod tests {
             authors: Some(vec!["author1".into(); 150]),
             ..Default::default()
         };
-        let limits = Limits::default();
-        assert!(!filter.is_valid(&limits));
+        assert!(!filter.is_valid());
     }
 
     #[test]

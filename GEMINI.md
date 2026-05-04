@@ -25,11 +25,9 @@ The relay acts as an ephemeral "routing engine" between Lightning wallet applica
     - `lib.rs`: Worker entry point and Durable Object implementation.
     - `server.rs`: Main router and HTTP handlers.
     - `auth.rs`: Authentication logic.
-    - `limits.rs`: Global configuration and protocol limits.
-    - `error.rs`: Global error definitions.
     - `cloudflare/`: Cloudflare-specific logic (DO, Hibernation, WebSocket, ConnectionState).
     - `lnaddress/`: LN Address to NWC bridging logic.
-    - `nostr/`: Nostr protocol implementation (NIPs, Event, Filter).
+    - `nostr/`: Nostr protocol implementation (NIPs, Event, Filter, Limits, RelayError).
     - `util/`: Shared utility functions.
 - `test/`: Integration tests.
     - `setup-kv.js`: Utility to seed KV for testing LN Addresses.

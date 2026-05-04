@@ -1,5 +1,4 @@
 use worker::*;
-use crate::limits::Limits;
 use crate::cloudflare::{accept_connection, SubscriptionManager};
 use crate::util::now;
 use crate::nostr::RelayMessage;
@@ -79,9 +78,8 @@ impl Websocket {
             .map_err(|e| Error::from(e.to_string()))?;
 
         let now = now();
-        let limits = Limits::default();
 
-        if let Err(e) = event.verify(now, &limits) {
+        if let Err(e) = event.verify(now) {
             ws.send_with_str(&RelayMessage::Ok(event.id, false, e.to_string()).to_json())?;
             return Ok(());
         }
@@ -107,7 +105,7 @@ impl Websocket {
             filters.push(filter);
         }
 
-        if filters.iter().any(|f| !f.is_valid(&Limits::default())) {
+        if filters.iter().any(|f| !f.is_valid()) {
             ws.send_with_str(&RelayMessage::Closed(sub_id.to_string(), "filter too broad".to_string()).to_json())?;
             return Ok(());
         }

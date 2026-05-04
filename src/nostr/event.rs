@@ -2,8 +2,8 @@ use k256::schnorr::signature::hazmat::PrehashVerifier;
 use k256::schnorr::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use crate::error::RelayError;
-use crate::limits::Limits;
+use crate::nostr::RelayError;
+use crate::nostr::Limits;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Event {
@@ -17,7 +17,9 @@ pub struct Event {
 }
 
 impl Event {
-    pub fn verify(&self, current_time: u64, limits: &Limits) -> Result<(), RelayError> {
+    pub fn verify(&self, current_time: u64) -> Result<(), RelayError> {
+        let limits = Limits::default();
+        
         // Enforce NWC-only kinds
         match self.kind {
             13194 | 23194 | 23195 | 23196 | 23197 => {}

@@ -1,16 +1,11 @@
 use worker::*;
 
-mod limits;
-mod error;
 mod auth;
 mod server;
 mod cloudflare;
 mod nostr;
 mod lnaddress;
 mod util;
-
-pub use limits::Limits;
-pub use error::RelayError;
 
 use server::Server;
 
