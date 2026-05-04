@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use super::state::ConnectionState;
+use super::ConnectionState;
 use super::{Filter, Event, RelayMessage, ClientMessage};
 use super::wallet_registry::WalletRegistry;
 use crate::util::engine::{Engine, EngineAction};

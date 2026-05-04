@@ -37,6 +37,9 @@ impl Server {
             }
         }
 
-        nostr::handle_get_info()
+        let info = nostr::get_nip_11_info();
+        let mut response = create_cors_response(Response::from_json(&info)?)?;
+        response.headers_mut().set("Content-Type", "application/nostr+json")?;
+        Ok(response)
     }
 }
