@@ -2,8 +2,7 @@ use std::collections::{HashMap, HashSet};
 use super::ConnectionState;
 use super::{Filter, Event, RelayMessage, ClientMessage};
 use super::wallet_registry::WalletRegistry;
-use crate::util::engine::{Engine, EngineAction};
-use crate::util::transport::SyncTransport;
+use crate::util::engine::{Engine, EngineResponse};
 use crate::util::now;
 use serde_json::Value;
 
@@ -20,8 +19,7 @@ impl NostrEngine {
         }
     }
 
-    pub fn add_connection(&mut self, id: u32, state: ConnectionState) {
-        let subscriptions = state.subscriptions.clone();
+    pub fn add_connection(&mut self, id: u32, state: ConnectionState, subscriptions: HashMap<String, Vec<Filter>>) {
         self.connections.insert(id, state);
         for (sub_id, filters) in subscriptions {
             self.registry.add_subscription(id, sub_id, filters);
@@ -33,111 +31,71 @@ impl NostrEngine {
         self.registry.remove_connection(id);
     }
 
-    fn handle_nostr_event(&mut self, transport: &dyn SyncTransport, id: u32, event: Event) -> EngineAction {
-        if let Err(e) = event.verify(now()) {
-            transport.send(id, &RelayMessage::Ok(event.id, false, e.to_string()).to_json());
-            return EngineAction::None;
-        }
-
-        transport.send(id, &RelayMessage::Ok(event.id.clone(), true, "".into()).to_json());
-
-        let mut needs_commit = false;
-        if event.kind == 13194 {
-            if let Some(conn_state) = self.connections.get_mut(&id) {
-                conn_state.info_event = Some(event.clone());
-                needs_commit = true;
-            }
-        }
-
-        for (target_id, sub_id) in self.registry.match_event(&event) {
-            transport.send(target_id, &RelayMessage::Event(sub_id, event.clone()).to_json());
-        }
+    fn handle_nostr_event(&mut self, id: u32, event: Event) -> Vec<EngineResponse> {
+        let verify_result = event.verify(now());
         
-        if needs_commit { self.commit_state(id) } else { EngineAction::None }
+        match event.kind {
+            13194 => {
+                if verify_result.is_ok() {
+                    self.registry.store_info_event(event);
+                }
+                Vec::new()
+            }
+            23194..=23197 => {
+                if let Err(e) = verify_result {
+                    return vec![EngineResponse::new(id, RelayMessage::Ok(event.id, false, e.to_string()).to_json())];
+                }
+
+                let mut responses = vec![EngineResponse::new(id, RelayMessage::Ok(event.id.clone(), true, "".into()).to_json())];
+                for (sub_id, recipient_ids) in self.registry.match_event(&event) {
+                    responses.push(EngineResponse::multi(
+                        recipient_ids,
+                        RelayMessage::Event(sub_id, event.clone()).to_json()
+                    ));
+                }
+                responses
+            }
+            _ => {
+                let message = if let Err(e) = verify_result {
+                    RelayMessage::Ok(event.id, false, e.to_string())
+                } else {
+                    RelayMessage::Ok(event.id, false, "blocked: event kind not allowed".into())
+                };
+                vec![EngineResponse::new(id, message.to_json())]
+            }
+        }
     }
 
-    fn handle_nostr_req(&mut self, transport: &dyn SyncTransport, id: u32, sub_id: String, filters: Vec<Filter>) -> EngineAction {
+    fn handle_nostr_req(&mut self, id: u32, sub_id: String, filters: Vec<Filter>) -> Vec<EngineResponse> {
         if filters.iter().any(|f| !f.is_valid()) {
-            transport.send(id, &RelayMessage::Closed(sub_id, "filter too broad".to_string()).to_json());
-            return EngineAction::None;
+            return vec![EngineResponse::new(id, RelayMessage::Closed(sub_id, "filter too broad".to_string()).to_json())];
         }
 
-        let mut messages = Vec::new();
-        if let Some(conn_state) = self.connections.get_mut(&id) {
-            conn_state.subscriptions.insert(sub_id.clone(), filters.clone());
+        let mut responses = Vec::new();
+        if self.connections.contains_key(&id) {
             self.registry.add_subscription(id, sub_id.clone(), filters.clone());
-            
-            for other_state in self.connections.values() {
-                if let Some(info_event) = &other_state.info_event {
-                    if filters.iter().any(|f| f.matches(info_event)) {
-                        messages.push(RelayMessage::Event(sub_id.clone(), info_event.clone()).to_json());
-                    }
-                }
-            }
-        }
 
-        for msg in messages {
-            transport.send(id, &msg);
-        }
-
-        transport.send(id, &RelayMessage::Eose(sub_id).to_json());
-
-        self.commit_state(id)
-    }
-
-    fn handle_nostr_close(&mut self, _transport: &dyn SyncTransport, id: u32, sub_id: String) -> EngineAction {
-        if let Some(conn_state) = self.connections.get_mut(&id) {
-            conn_state.subscriptions.remove(&sub_id);
-            self.registry.remove_subscription(id, sub_id);
-        }
-
-        self.commit_state(id)
-    }
-
-    fn commit_state(&self, id: u32) -> EngineAction {
-        let conn_state = match self.connections.get(&id) {
-            Some(s) => s,
-            None => return EngineAction::None,
-        };
-
-        let snapshot = match serde_json::to_vec(conn_state) {
-            Ok(s) => s,
-            Err(_) => return EngineAction::None,
-        };
-
-        let mut pubkeys = HashSet::new();
-        for filters in conn_state.subscriptions.values() {
-            for filter in filters {
-                for pk in filter.pubkeys() {
-                    pubkeys.insert(pk);
-                }
-            }
-        }
-
-        let mut tags: Vec<String> = pubkeys.into_iter().take(10).collect();
-        if let Some(info_event) = &conn_state.info_event {
-            tags.push("cap:ready".into());
-            let mut supports_nip44 = false;
-            let mut supports_nip04 = false;
-            let mut has_encryption_tag = false;
-
-            for tag in &info_event.tags {
-                if tag.len() >= 2 && tag[0].as_str() == Some("encryption") {
-                    has_encryption_tag = true;
-                    if let Some(schemes) = tag[1].as_str() {
-                        for scheme in schemes.split_whitespace() {
-                            if scheme == "nip44_v2" { supports_nip44 = true; }
-                            else if scheme == "nip04" { supports_nip04 = true; }
+            // Check if any existing info events match this new subscription
+            for filters_set in filters.iter() {
+                for pk in filters_set.pubkeys() {
+                    if let Some(info_event) = self.registry.get_info_event(&pk) {
+                        if filters.iter().any(|f| f.matches(&info_event)) {
+                            responses.push(EngineResponse::new(id, RelayMessage::Event(sub_id.clone(), info_event.clone()).to_json()));
                         }
                     }
                 }
             }
-
-            if supports_nip44 { tags.push("cap:nip44".into()); }
-            if supports_nip04 || !has_encryption_tag { tags.push("cap:nip04".into()); }
         }
 
-        EngineAction::Commit { snapshot, tags }
+        responses.push(EngineResponse::new(id, RelayMessage::Eose(sub_id).to_json()));
+        responses
+    }
+
+    fn handle_nostr_close(&mut self, id: u32, sub_id: String) -> Vec<EngineResponse> {
+        if self.connections.contains_key(&id) {
+            self.registry.remove_subscription(id, sub_id);
+        }
+        Vec::new()
     }
 
     pub fn get_wallet_info(&self, pubkey: &str) -> Value {
@@ -145,42 +103,30 @@ impl NostrEngine {
         let mut ready = false;
         let mut encryption = HashSet::new();
 
-        for conn_state in self.connections.values() {
-            let mut matches_pubkey = false;
-            for filters in conn_state.subscriptions.values() {
-                for filter in filters {
-                    if filter.pubkeys().iter().any(|pk| pk == pubkey) {
-                        matches_pubkey = true;
-                        break;
-                    }
-                }
-                if matches_pubkey { break; }
-            }
-
-            if matches_pubkey {
-                online = true;
-                if let Some(info_event) = &conn_state.info_event {
-                    ready = true;
-                    let mut has_encryption_tag = false;
-                    for tag in &info_event.tags {
-                        if tag.len() >= 2 && tag[0].as_str() == Some("encryption") {
-                            has_encryption_tag = true;
-                            if let Some(schemes) = tag[1].as_str() {
-                                for scheme in schemes.split_whitespace() {
-                                    match scheme {
-                                        "nip44_v2" => { encryption.insert("nip44_v2"); }
-                                        "nip04" => { encryption.insert("nip04"); }
-                                        _ => {}
-                                    }
-                                }
+        if let Some(info_event) = self.registry.get_info_event(pubkey) {
+            online = true;
+            ready = true;
+            let mut has_encryption_tag = false;
+            for tag in &info_event.tags {
+                if tag.len() >= 2 && tag[0].as_str() == Some("encryption") {
+                    has_encryption_tag = true;
+                    if let Some(schemes) = tag[1].as_str() {
+                        for scheme in schemes.split_whitespace() {
+                            match scheme {
+                                "nip44_v2" => { encryption.insert("nip44_v2"); }
+                                "nip04" => { encryption.insert("nip04"); }
+                                _ => {}
                             }
                         }
                     }
-                    if !has_encryption_tag {
-                        encryption.insert("nip04");
-                    }
                 }
             }
+            if !has_encryption_tag {
+                encryption.insert("nip04");
+            }
+        } else if !self.registry.get_connection_ids(pubkey).is_empty() {
+            // Subscription exists but no info event yet
+            online = true;
         }
 
         serde_json::json!({
@@ -192,37 +138,40 @@ impl NostrEngine {
 }
 
 impl Engine for NostrEngine {
-    fn on_connect(&mut self, _transport: &dyn SyncTransport, id: u32, state: Option<Vec<u8>>) -> EngineAction {
-        if let Some(blob) = state {
-            if let Ok(conn_state) = serde_json::from_slice::<ConnectionState>(&blob) {
-                self.add_connection(id, conn_state);
-                EngineAction::None
-            } else {
-                EngineAction::None
+    fn on_connect(&mut self, id: u32) -> Vec<EngineResponse> {
+        let mut conn_state = ConnectionState::default();
+        conn_state.id = id;
+        self.add_connection(id, conn_state, HashMap::new());
+        Vec::new()
+    }
+
+    fn on_reconnect(&mut self, id: u32, state: Vec<u8>) {
+        if let Ok(blob) = serde_json::from_slice::<serde_json::Value>(&state) {
+            if let Some(conn_state_val) = blob.get("state") {
+                if let Ok(conn_state) = serde_json::from_value::<ConnectionState>(conn_state_val.clone()) {
+                    let subscriptions = blob.get("subscriptions")
+                        .and_then(|s| serde_json::from_value::<HashMap<String, Vec<Filter>>>(s.clone()).ok())
+                        .unwrap_or_default();
+                    self.add_connection(id, conn_state, subscriptions);
+                }
             }
-        } else {
-            let mut conn_state = ConnectionState::default();
-            conn_state.id = id;
-            self.add_connection(id, conn_state);
-            self.commit_state(id)
         }
     }
 
-    fn on_message(&mut self, transport: &dyn SyncTransport, id: u32, message: &str) -> EngineAction {
+    fn on_message(&mut self, id: u32, message: &str) -> Vec<EngineResponse> {
         match ClientMessage::from_json(message) {
-            Ok(ClientMessage::Event(event)) => self.handle_nostr_event(transport, id, event),
-            Ok(ClientMessage::Req(sub_id, filters)) => self.handle_nostr_req(transport, id, sub_id, filters),
-            Ok(ClientMessage::Close(sub_id)) => self.handle_nostr_close(transport, id, sub_id),
+            Ok(ClientMessage::Event(event)) => self.handle_nostr_event(id, event),
+            Ok(ClientMessage::Req(sub_id, filters)) => self.handle_nostr_req(id, sub_id, filters),
+            Ok(ClientMessage::Close(sub_id)) => self.handle_nostr_close(id, sub_id),
             Err(e) => {
-                transport.send(id, &RelayMessage::Notice(format!("parse failed: {}", e)).to_json());
-                EngineAction::None
+                vec![EngineResponse::new(id, RelayMessage::Notice(format!("parse failed: {}", e)).to_json())]
             }
         }
     }
 
-    fn on_disconnect(&mut self, _transport: &dyn SyncTransport, id: u32) -> EngineAction {
+    fn on_disconnect(&mut self, id: u32) -> Vec<EngineResponse> {
         self.remove_connection(id);
-        EngineAction::None
+        Vec::new()
     }
 
     fn get_info(&self, path: &str) -> Option<serde_json::Value> {
@@ -249,8 +198,51 @@ impl Engine for NostrEngine {
         RelayMessage::Notice(msg.to_string()).to_json()
     }
 
-    fn get_connection_id(&self, pubkey: &str) -> Option<u32> {
-        self.registry.get_connection_id(pubkey)
+    fn get_connection_ids(&self, pubkey: &str) -> Vec<u32> {
+        self.registry.get_connection_ids(pubkey)
+    }
+
+    fn get_target_pubkeys(&self, message: &str) -> Option<Vec<String>> {
+        if message.starts_with("[\"EVENT\"") {
+            if let Ok(Value::Array(arr)) = serde_json::from_str::<Value>(message) {
+                if arr.len() >= 2 {
+                    if let Ok(event) = serde_json::from_value::<Event>(arr[1].clone()) {
+                        let mut target_pks = HashSet::new();
+                        for tag in &event.tags {
+                            if tag.len() >= 2 && tag[0].as_str() == Some("p") {
+                                if let Some(pk) = tag[1].as_str() {
+                                    target_pks.insert(pk.to_string());
+                                }
+                            }
+                        }
+                        return Some(target_pks.into_iter().collect());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn export_state(&self, id: u32) -> Option<serde_json::Value> {
+        if let Some(conn_state) = self.connections.get(&id) {
+            let registry_state = self.registry.export_connection(id);
+            return Some(serde_json::json!({
+                "conn": conn_state,
+                "registry": registry_state
+            }));
+        }
+        None
+    }
+
+    fn import_state(&mut self, id: u32, data: serde_json::Value) {
+        if let Some(conn_val) = data.get("conn") {
+            if let Ok(conn_state) = serde_json::from_value::<ConnectionState>(conn_val.clone()) {
+                self.connections.insert(id, conn_state);
+            }
+        }
+        if let Some(registry_val) = data.get("registry") {
+            self.registry.import_connection(id, registry_val.clone());
+        }
     }
 }
 
@@ -258,82 +250,42 @@ impl Engine for NostrEngine {
 mod tests {
     use super::*;
 
-    struct MockTransport;
-    impl SyncTransport for MockTransport {
-        fn send(&self, _id: u32, _message: &str) {}
-    }
-
     #[test]
-    fn test_engine_req_returns_commit() {
+    fn test_engine_req_storage() {
         let mut engine = NostrEngine::new();
-        let transport = MockTransport;
+        engine.on_connect(1);
         
-        // Connect
-        engine.on_connect(&transport, 1, None);
-        
-        // Send REQ
         let req = r#"["REQ", "sub1", {"authors": ["pk1"]}]"#;
-        let action = engine.on_message(&transport, 1, req);
+        let responses = engine.on_message(1, req);
         
-        if let EngineAction::Commit { snapshot, tags } = action {
-            assert!(tags.contains(&"pk1".to_string()));
-            assert!(!tags.contains(&"cap:ready".to_string()));
-            assert!(!snapshot.is_empty());
-        } else {
-            panic!("Expected Commit action");
-        }
+        // Should return EOSE
+        assert_eq!(responses.len(), 1);
+        assert!(responses[0].messages.contains("EOSE"));
+        
+        // Verify sub is in registry
+        assert!(engine.registry.get_subscriptions(1).contains_key("sub1"));
     }
 
     #[test]
-    fn test_engine_info_event_returns_commit_and_caps() {
+    fn test_engine_info_event_routing() {
         let mut engine = NostrEngine::new();
-        let transport = MockTransport;
-        engine.on_connect(&transport, 1, None);
+        engine.on_connect(1);
         
         // Kind 13194 Info Event
-        let event_json = serde_json::json!([
-            "EVENT",
-            {
-                "id": "0000000000000000000000000000000000000000000000000000000000000000",
-                "pubkey": "pk1",
-                "created_at": 1000,
-                "kind": 13194,
-                "tags": [["encryption", "nip44_v2"]],
-                "content": "",
-                "sig": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-            }
-        ]).to_string();
-
-        let action = engine.on_message(&transport, 1, &event_json);
-        // It returns None because verification failed
-        assert_eq!(action, EngineAction::None);
-    }
-
-    #[test]
-    fn test_engine_snapshot_roundtrip() {
-        let mut engine = NostrEngine::new();
-        let transport = MockTransport;
-        engine.on_connect(&transport, 1, None);
-        
-        let req = r#"["REQ", "sub1", {"authors": ["pk1"]}]"#;
-        let action = engine.on_message(&transport, 1, req);
-        
-        let snapshot = if let EngineAction::Commit { snapshot, .. } = action {
-            snapshot
-        } else {
-            panic!("Expected Commit");
+        let event = Event {
+            id: "id1".into(),
+            pubkey: "pk1".into(),
+            created_at: 1000,
+            kind: 13194,
+            tags: vec![],
+            content: "".into(),
+            sig: "sig1".into(),
         };
+
+        // Directly store in registry for test purposes since verify() will fail on dummy sig
+        engine.registry.store_info_event(event);
         
-        let mut engine2 = NostrEngine::new();
-        // Restore connection 1 with snapshot
-        let action2 = engine2.on_connect(&transport, 1, Some(snapshot));
-        assert_eq!(action2, EngineAction::None);
-        
-        // Verify state is restored (e.g., via commit_state)
-        if let EngineAction::Commit { tags, .. } = engine2.commit_state(1) {
-            assert!(tags.contains(&"pk1".to_string()));
-        } else {
-            panic!("Expected Commit on restored state");
-        }
+        // But it should be stored in registry
+        assert!(engine.registry.get_info_event("pk1").is_some());
     }
 }

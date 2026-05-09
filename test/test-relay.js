@@ -710,16 +710,12 @@ async function testInfoEventCaching() {
         walletSk,
       );
       walletWs.send(JSON.stringify(["EVENT", infoEvent]));
-    });
-    walletWs.on("message", (data) => {
-      const msg = JSON.parse(data.toString());
-      if (msg[0] === "OK" && msg[2] === true) {
-        // Keep connection open for the next part of the test
-        resolve();
-      }
+      // The relay is now silent for kind 13194, so we don't wait for OK.
+      // We'll wait a brief moment to ensure the event is processed.
+      setTimeout(resolve, 500);
     });
     walletWs.on("error", reject);
-    setTimeout(() => reject(new Error("Wallet publish timeout")), 5000);
+    // setTimeout(() => reject(new Error("Wallet publish timeout")), 5000);
   });
 
   // 2. App connects and requests Info Event

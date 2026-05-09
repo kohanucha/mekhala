@@ -1,6 +1,6 @@
 use crate::auth::Authenticator;
 use crate::cloudflare::{apply_security_headers, create_cors_response};
-use crate::lnaddress::{handle_lnaddress, handle_lnaddress_callback};
+use crate::lnaddress::handle_lnaddress;
 use crate::nostr;
 use worker::*;
 
@@ -14,7 +14,9 @@ impl Server {
             .get_async("/", Self::handle_request)
             .get_async("/:secret", Self::handle_request)
             .get_async("/.well-known/lnurlp/:username", handle_lnaddress)
-            .get_async("/lnaddress/:username/callback", handle_lnaddress_callback)
+            .get_async("/lnaddress/:username/callback", |req, ctx| async move {
+                crate::cloudflare::websocket::connect(req, &ctx.env).await
+            })
             .run(req, env)
             .await
     }

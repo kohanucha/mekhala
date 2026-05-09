@@ -1,7 +1,10 @@
 use worker::*;
 use crate::nostr::nip_47::{ConnectionDetails, Session, EncryptionMethod};
-use crate::cloudflare::info_internal;
+use crate::cloudflare::{apply_security_headers, RelayTransport};
 use serde_json::Value;
+use futures::channel::oneshot;
+use futures_util::future::{select, Either};
+use futures_util::{pin_mut, FutureExt};
 
 pub struct WalletConnector {
     env: Env,
@@ -16,12 +19,13 @@ impl WalletConnector {
         }
     }
 
-    pub async fn make_invoice(&self, amount_msat: u64, description_hash: String) -> Result<String> {
+    pub async fn make_invoice(&self, relay: &impl RelayTransport, amount_msat: u64, description_hash: String) -> Result<String> {
         let conn_details = ConnectionDetails::from_uri(&self.nwc_uri)?;
         let mut session = Session::new(conn_details)?;
 
-        // 1. Check wallet capability via internal /info
-        let info = info_internal(&self.env, &session.wallet_pubkey).await?;
+        // 1. Check wallet capability via relay get_info
+        let info = relay.get_info(&format!("/info/{}", session.wallet_pubkey)).await
+            .ok_or_else(|| Error::from("Wallet not connected"))?;
         
         let online = info.get("online").and_then(|v| v.as_bool()).unwrap_or(false);
         if !online {
@@ -60,8 +64,8 @@ impl WalletConnector {
             vec![Value::String("encryption".into()), Value::String(chosen_scheme.into())],
         ];
 
-        // 4. Dispatch NWC via synchronous internal HTTP
-        let resp_json = session.dispatch(&self.env, &request_payload, Some(extra_tags)).await?;
+        // 4. Dispatch NWC via relay
+        let resp_json = session.dispatch(relay, &request_payload, Some(extra_tags)).await?;
 
         if let Some(result) = resp_json.get("result") {
             if let Some(invoice) = result.get("invoice").and_then(|i| i.as_str()) {
@@ -70,5 +74,56 @@ impl WalletConnector {
         }
         
         Err(Error::from("Malformed response: missing invoice result"))
+    }
+}
+
+pub async fn handle_internal_dispatch(relay: &impl RelayTransport, pubkey: &str, mut req: Request) -> Result<Response> {
+    let body_text = req.text().await?;
+    let event: crate::nostr::Event = serde_json::from_str(&body_text)
+        .map_err(|e| Error::from(format!("Invalid NWC Event: {}", e)))?;
+    
+    let loaded_ids = relay.load_connections(pubkey).await?;
+
+    worker::console_log!("handle_internal_dispatch to {}: loaded IDs {:?}", pubkey, loaded_ids);
+
+    if loaded_ids.is_empty() {
+        return apply_security_headers(Response::error("Wallet not connected", 404)?);
+    }
+
+    let (tx, rx) = oneshot::channel();
+    let sub_id = format!("disp_{}_{}", pubkey.get(..8).unwrap_or(pubkey), worker::js_sys::Math::random().to_string().get(2..10).unwrap_or(""));
+    
+    relay.register_dispatch(sub_id.clone(), tx);
+
+    // 1. Inject REQ to listen for response
+    let primary_id = loaded_ids[0];
+    let req_msg = serde_json::json!([
+        "REQ",
+        sub_id,
+        {
+            "kinds": [crate::nostr::nip_47::KIND_NWC_RESPONSE],
+            "#p": [event.pubkey], 
+            "#e": [event.id]
+        }
+    ]).to_string();
+    relay.inject_message(primary_id, &req_msg)?;
+
+    // 2. Inject EVENT (the request) - engine routes to all active subscribers
+    let event_msg = serde_json::json!(["EVENT", event]).to_string();
+    relay.inject_message(primary_id, &event_msg)?;
+
+    // Wait for response with timeout
+    let rx_fuse = rx.fuse();
+    let delay = worker::Delay::from(std::time::Duration::from_secs(10)).fuse();
+    
+    pin_mut!(rx_fuse, delay);
+
+    match select(rx_fuse, delay).await {
+        Either::Left((Ok(response), _)) => {
+            apply_security_headers(Response::ok(response)?)
+        }
+        _ => {
+            apply_security_headers(Response::error("Dispatch timeout", 504)?)
+        }
     }
 }

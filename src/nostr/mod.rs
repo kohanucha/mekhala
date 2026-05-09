@@ -14,7 +14,6 @@ pub use filter::Filter;
 use crate::util::engine::Engine;
 use crate::nostr::engine::NostrEngine;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fmt;
 
 pub fn create_engine() -> Box<dyn Engine> {
@@ -47,7 +46,6 @@ impl Default for Limits {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ConnectionState {
     pub id: u32,
-    pub subscriptions: HashMap<String, Vec<Filter>>,
     pub info_event: Option<Event>,
     pub limits: Limits,
 }
@@ -56,7 +54,6 @@ impl Default for ConnectionState {
     fn default() -> Self {
         Self {
             id: 0,
-            subscriptions: HashMap::new(),
             info_event: None,
             limits: Limits::default(),
         }
@@ -141,7 +138,6 @@ mod tests {
     fn test_connection_state_default() {
         let state = ConnectionState::default();
         assert_eq!(state.id, 0);
-        assert!(state.subscriptions.is_empty());
         assert!(state.info_event.is_none());
         assert_eq!(state.limits.max_filter_items, 100);
     }

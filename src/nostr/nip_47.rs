@@ -120,7 +120,7 @@ impl Session {
 
     pub async fn dispatch(
         &self,
-        env: &worker::Env,
+        relay: &impl crate::cloudflare::RelayTransport,
         request_payload: &Value,
         extra_tags: Option<Vec<Vec<Value>>>,
     ) -> Result<Value> {
@@ -134,7 +134,7 @@ impl Session {
         }
         let event = self.create_event(KIND_NWC_REQUEST, encrypted_content, tags)?;
         
-        let msg_text = crate::cloudflare::dispatch_internal(env, &self.wallet_pubkey, &serde_json::to_value(event)?).await?;
+        let msg_text = relay.dispatch_nwc(&self.wallet_pubkey, event).await?;
         
         let arr: Vec<serde_json::Value> =
             serde_json::from_str(&msg_text).map_err(|e| Error::from(e.to_string()))?;

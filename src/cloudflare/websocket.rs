@@ -1,48 +1,32 @@
-use std::cell::UnsafeCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::cell::RefCell;
 use futures::channel::oneshot;
-use futures_util::future::{select, Either};
-use futures_util::{pin_mut, FutureExt};
+use futures_util::FutureExt;
 use serde_json::Value;
 use worker::*;
-use crate::cloudflare::{accept_connection, HibernationState};
-use crate::util::engine::{Engine, EngineAction};
-use crate::util::transport::SyncTransport;
-use crate::cloudflare::apply_security_headers;
+use wasm_bindgen::{JsValue, JsCast};
+use crate::util::engine::{Engine, EngineResponse};
+use crate::cloudflare::{apply_security_headers, HibernationState};
 
 #[durable_object]
 pub struct Websocket {
     state: State,
-    // Using UnsafeCell for the engine to allow the engine to call back into the transport (self)
-    // while the engine itself is "being called". This is safe because Durable Objects are single-threaded
-    // and our callbacks don't perform re-entrant mutations on the engine.
-    engine: UnsafeCell<Box<dyn Engine>>,
-    id_map: UnsafeCell<Vec<(WebSocket, u32)>>,
-    dispatch_channels: UnsafeCell<HashMap<String, oneshot::Sender<String>>>,
+    env: Env,
+    engine: RefCell<Box<dyn Engine>>,
+    id_map: RefCell<Vec<(WebSocket, u32)>>,
+    dispatch_channels: RefCell<HashMap<String, oneshot::Sender<String>>>,
 }
 
 impl DurableObject for Websocket {
-    fn new(state: State, _env: Env) -> Self {
-        let mut engine = crate::nostr::create_engine();
-        let mut id_map = Vec::new();
-
-        for ws in state.get_websockets() {
-            if let Ok(Some(blob)) = ws.deserialize_attachment::<Vec<u8>>() {
-                if blob.len() >= 4 {
-                    let id = u32::from_le_bytes(blob[0..4].try_into().unwrap_or([0; 4]));
-                    let engine_state = blob[4..].to_vec();
-                    // Restoration connect - usually doesn't need commit as state is already in attachment
-                    engine.on_connect(&NoopTransport, id, Some(engine_state));
-                    id_map.push((ws, id));
-                }
-            }
-        }
+    fn new(state: State, env: Env) -> Self {
+        let engine = crate::nostr::create_engine();
 
         Self {
             state,
-            engine: UnsafeCell::new(engine),
-            id_map: UnsafeCell::new(id_map),
-            dispatch_channels: UnsafeCell::new(HashMap::new()),
+            env,
+            engine: RefCell::new(engine),
+            id_map: RefCell::new(Vec::new()),
+            dispatch_channels: RefCell::new(HashMap::new()),
         }
     }
 
@@ -50,181 +34,317 @@ impl DurableObject for Websocket {
         let url = req.url()?;
         let path = url.path();
 
-        if path.starts_with("/internal/dispatch/") && req.method() == Method::Post {
-            let pubkey = path.strip_prefix("/internal/dispatch/").unwrap_or("");
-            return self.handle_dispatch(pubkey, req).await;
+        // Handle delegated LN Address callback
+        if path.starts_with("/lnaddress/") && path.ends_with("/callback") {
+            let username = path.strip_prefix("/lnaddress/").and_then(|s| s.strip_suffix("/callback")).unwrap_or("");
+            return crate::lnaddress::handle_lnaddress_callback(req, &self.env, username, self).await;
         }
 
-        let engine = unsafe { &*self.engine.get() };
-        if let Some(info) = engine.get_info(path) {
+        if path.starts_with("/internal/dispatch/") && req.method() == Method::Post {
+            let pubkey = path.strip_prefix("/internal/dispatch/").unwrap_or("");
+            return crate::lnaddress::wallet_connector::handle_internal_dispatch(self, pubkey, req).await;
+        }
+
+        if let Some(info) = self.engine.borrow().get_info(path) {
             return apply_security_headers(Response::from_json(&info)?);
         }
 
-        self.accept_new_connection()
+        self.accept_new_connection().await
     }
 
     async fn websocket_message(&self, ws: WebSocket, message: WebSocketIncomingMessage) -> Result<()> {
-        let engine = unsafe { &mut *self.engine.get() };
         if let WebSocketIncomingMessage::String(text) = message {
             if text.len() > 65536 {
-                let _ = ws.send_with_str(&engine.error_message("message too large"));
+                let _ = ws.send_with_str(&self.engine.borrow().error_message("message too large"));
                 return Ok(());
             }
-            let id = self.get_id(&ws).ok_or_else(|| Error::from("Connection not found"))?;
+            let connection_id = self.ensure_loaded(&ws).await.ok_or_else(|| Error::from("Connection not found"))?;
+
+            // Pre-flight Loading for EVENT messages to support O(1) routing
+            self.load_recipients(&text).await;
             
-            let action = engine.on_message(self, id, &text);
-            
-            if let EngineAction::Commit { snapshot, tags } = action {
-                let mut full_blob = id.to_le_bytes().to_vec();
-                full_blob.extend(snapshot);
-                let _ = ws.serialize_attachment(&full_blob);
-                let _ = self.state.set_tags(&ws, tags);
-            }
+            let responses = self.engine.borrow_mut().on_message(connection_id, &text);
+            self.process_responses(responses)?;
+
+            // Sync updated state to storage
+            self.sync_to_storage(connection_id).await;
+
             Ok(())
         } else {
-            let _ = ws.send_with_str(&engine.error_message("binary not supported"));
+            let _ = ws.send_with_str(&self.engine.borrow().error_message("binary not supported"));
             Ok(())
         }
     }
 
     async fn websocket_close(&self, ws: WebSocket, _: usize, _: String, _: bool) -> Result<()> {
-        self.handle_disconnect(&ws)
+        self.handle_disconnect(&ws).await
     }
 
     async fn websocket_error(&self, ws: WebSocket, _: Error) -> Result<()> {
-        self.handle_disconnect(&ws)
+        self.handle_disconnect(&ws).await
     }
 }
 
-struct NoopTransport;
-impl SyncTransport for NoopTransport {
-    fn send(&self, _: u32, _: &str) {}
-}
+#[async_trait::async_trait(?Send)]
+impl crate::cloudflare::RelayTransport for Websocket {
+    fn inject_message(&self, id: u32, msg: &str) -> Result<()> {
+        let responses = self.engine.borrow_mut().on_message(id, msg);
+        self.process_responses(responses)
+    }
 
-impl SyncTransport for Websocket {
-    fn send(&self, id: u32, message: &str) {
-        // Intercept for internal dispatch channels
-        if let Ok(Value::Array(arr)) = serde_json::from_str::<Value>(message) {
-            if arr.len() >= 2 {
-                let msg_type = arr[0].as_str().unwrap_or("");
-                let sub_id = arr[1].as_str().unwrap_or("");
-                
-                if !sub_id.is_empty() && (msg_type == "EVENT" || msg_type == "CLOSED") {
-                    let dispatch_channels = unsafe { &mut *self.dispatch_channels.get() };
-                    if let Some(sender) = dispatch_channels.remove(sub_id) {
-                        let _ = sender.send(message.to_string());
+    fn send_raw(&self, id: u32, msg: &str) -> Result<()> {
+        if let Some((ws, _)) = self.id_map.borrow().iter().find(|(_, i)| *i == id) {
+            let _ = ws.send_with_str(msg);
+        }
+        Ok(())
+    }
+
+    async fn load_connections(&self, pubkey: &str) -> Result<Vec<u32>> {
+        let storage = self.state.storage();
+        let key = format!("pk:{}", pubkey);
+        let ids: Vec<u32> = storage.get::<Vec<u32>>(&key).await.unwrap_or(None).unwrap_or_default();
+
+        worker::console_log!("load_connections for {}: found storage IDs {:?}", pubkey, ids);
+
+        let mut loaded_ids = Vec::new();
+        for id in &ids {
+            let tag = format!("id:{}", id);
+            let mut found_by_tag = false;
+            for ws in self.get_websockets_with_tag(&tag) {
+                if let Some(actual_id) = self.ensure_loaded(&ws).await {
+                    found_by_tag = true;
+                    if !loaded_ids.contains(&actual_id) {
+                        loaded_ids.push(actual_id);
+                    }
+                }
+            }
+            
+            if !found_by_tag {
+                for ws in self.state.get_websockets() {
+                    if let Some(actual_id) = self.ensure_loaded(&ws).await {
+                        if actual_id == *id && !loaded_ids.contains(&actual_id) {
+                            loaded_ids.push(actual_id);
+                        }
                     }
                 }
             }
         }
-
-        let id_map = unsafe { &*self.id_map.get() };
-        if let Some((ws, _)) = id_map.iter().find(|(_, i)| *i == id) {
-            let _ = ws.send_with_str(message);
-        }
+        Ok(loaded_ids)
     }
-}
 
-impl Websocket {
-    async fn handle_dispatch(&self, pubkey: &str, mut req: Request) -> Result<Response> {
-        let body_text = req.text().await?;
-        let event: crate::nostr::Event = serde_json::from_str(&body_text)
-            .map_err(|e| Error::from(format!("Invalid NWC Event: {}", e)))?;
-        
-        let engine = unsafe { &mut *self.engine.get() };
-        let id = engine.get_connection_id(pubkey)
-            .ok_or_else(|| Error::from("Wallet not connected"))?;
+    fn register_dispatch(&self, sub_id: String, sender: futures::channel::oneshot::Sender<String>) {
+        self.dispatch_channels.borrow_mut().insert(sub_id, sender);
+    }
+
+    async fn get_info(&self, path: &str) -> Option<Value> {
+        self.engine.borrow().get_info(path)
+    }
+
+    async fn dispatch_nwc(&self, target_pubkey: &str, event: crate::nostr::Event) -> Result<String> {
+        let loaded_ids = self.load_connections(target_pubkey).await?;
+
+        if loaded_ids.is_empty() {
+            return Err(Error::from("Wallet not connected"));
+        }
 
         let (tx, rx) = oneshot::channel();
-        let sub_id = format!("disp_{}_{}", pubkey.get(..8).unwrap_or(pubkey), worker::js_sys::Math::random().to_string().get(2..10).unwrap_or(""));
+        let sub_id = format!("disp_{}_{}", target_pubkey.get(..8).unwrap_or(target_pubkey), worker::js_sys::Math::random().to_string().get(2..10).unwrap_or(""));
         
-        {
-            let dispatch_channels = unsafe { &mut *self.dispatch_channels.get() };
-            dispatch_channels.insert(sub_id.clone(), tx);
-        }
+        self.register_dispatch(sub_id.clone(), tx);
 
         // 1. Inject REQ to listen for response
+        let primary_id = loaded_ids[0];
         let req_msg = serde_json::json!([
             "REQ",
             sub_id,
             {
                 "kinds": [crate::nostr::nip_47::KIND_NWC_RESPONSE],
-                "#p": [event.pubkey], // Index under bridge pubkey to ensure engine matches
+                "#p": [event.pubkey], 
                 "#e": [event.id]
             }
         ]).to_string();
-        engine.on_message(self, id, &req_msg);
+        self.inject_message(primary_id, &req_msg)?;
 
-        // 2. Inject EVENT (the request)
+        // 2. Inject EVENT (the request) - engine routes to all active subscribers
         let event_msg = serde_json::json!(["EVENT", event]).to_string();
-        engine.on_message(self, id, &event_msg);
+        self.inject_message(primary_id, &event_msg)?;
 
         // Wait for response with timeout
         let rx_fuse = rx.fuse();
-        let delay = Delay::from(std::time::Duration::from_secs(10)).fuse();
+        let delay = worker::Delay::from(std::time::Duration::from_secs(10)).fuse();
         
-        pin_mut!(rx_fuse, delay);
+        futures_util::pin_mut!(rx_fuse, delay);
 
-        match select(rx_fuse, delay).await {
-            Either::Left((Ok(response), _)) => {
-                apply_security_headers(Response::ok(response)?)
+        match futures_util::future::select(rx_fuse, delay).await {
+            futures_util::future::Either::Left((Ok(response), _)) => {
+                Ok(response)
             }
             _ => {
-                {
-                    let dispatch_channels = unsafe { &mut *self.dispatch_channels.get() };
-                    dispatch_channels.remove(&sub_id);
+                Err(Error::from("Dispatch timeout"))
+            }
+        }
+    }
+}
+
+impl Websocket {
+    fn process_responses(&self, responses: Vec<EngineResponse>) -> Result<()> {
+        for resp in responses {
+            if resp.messages.is_empty() {
+                continue;
+            }
+
+            let mut intercepted = false;
+            if let Ok(Value::Array(arr)) = serde_json::from_str::<Value>(&resp.messages) {
+                if arr.len() >= 2 {
+                    let msg_type = arr[0].as_str().unwrap_or("");
+                    let sub_id = arr[1].as_str().unwrap_or("");
+
+                    // Handle Internal Dispatch interception
+                    if !sub_id.is_empty() && (msg_type == "EVENT" || msg_type == "CLOSED") {
+                        worker::console_log!("Intercepting response for sub_id: {}", sub_id);
+                        if let Some(sender) = self.dispatch_channels.borrow_mut().remove(sub_id) {
+                            let _ = sender.send(resp.messages.clone());
+                            intercepted = true;
+                            worker::console_log!("Response sent to dispatch channel.");
+                        }
+                    }
                 }
-                apply_security_headers(Response::error("Dispatch timeout", 504)?)
+            }
+
+            if !intercepted {
+                for conn_id in resp.connection_ids {
+                    if let Some((ws, _)) = self.id_map.borrow().iter().find(|(_, i)| *i == conn_id) {
+                        let _ = ws.send_with_str(&resp.messages);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn sync_to_storage(&self, id: u32) {
+        if let Some(state) = self.engine.borrow().export_state(id) {
+            let storage = self.state.storage();
+            let key = format!("conn:{}", id);
+            let _ = storage.put(&key, state.clone()).await;
+
+            // Update pubkey index
+            if let Some(registry) = state.get("registry") {
+                if let Some(subs) = registry.get("subscriptions") {
+                    if let Ok(subs_map) = serde_json::from_value::<HashMap<String, Vec<crate::nostr::Filter>>>(subs.clone()) {
+                        let mut pks = HashSet::new();
+                        for filters in subs_map.values() {
+                            for filter in filters {
+                                for pk in filter.pubkeys() {
+                                    pks.insert(pk);
+                                }
+                            }
+                        }
+
+                        for pk in pks {
+                            let pk_key = format!("pk:{}", pk);
+                            let mut ids: Vec<u32> = storage.get::<Vec<u32>>(&pk_key).await.unwrap_or(None).unwrap_or_default();
+                            if !ids.contains(&id) {
+                                ids.push(id);
+                                let _ = storage.put(&pk_key, ids).await;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn get_websockets_with_tag(&self, tag: &str) -> Vec<WebSocket> {
+        let state_js: &JsValue = unsafe { std::mem::transmute(&self.state) };
+        let state_ext: &crate::cloudflare::hibernation::DurableObjectStateExt = state_js.unchecked_ref();
+        let js_array = state_ext.get_websockets_raw(Some(tag));
+        let mut result = Vec::new();
+        for i in 0..js_array.length() {
+            let ws_js = js_array.get(i);
+            // Convert JsValue to web_sys::WebSocket, then to worker::WebSocket
+            let web_sys_ws: worker::web_sys::WebSocket = ws_js.unchecked_into();
+            let ws: WebSocket = web_sys_ws.into();
+            result.push(ws);
+        }
+        result
+    }
+
+    async fn ensure_loaded(&self, ws: &WebSocket) -> Option<u32> {
+        if let Some(id) = self.get_id(ws) {
+            return Some(id);
+        }
+        
+        // Try to recover from tags
+        let tags = self.state.get_tags(ws);
+        let id_tag = tags.iter().find(|t| t.starts_with("id:"))?;
+        let id: u32 = id_tag.strip_prefix("id:")?.parse().ok()?;
+
+        // Hydrate from storage
+        let storage = self.state.storage();
+        let key = format!("conn:{}", id);
+        if let Ok(Some(state)) = storage.get::<serde_json::Value>(&key).await {
+            self.engine.borrow_mut().import_state(id, state);
+            self.id_map.borrow_mut().push((ws.clone(), id));
+            return Some(id);
+        }
+        None
+    }
+
+    async fn load_recipients(&self, text: &str) {
+        if let Some(target_pks) = self.engine.borrow().get_target_pubkeys(text) {
+            let storage = self.state.storage();
+            // Load recipients into engine memory
+            for pk in target_pks {
+                let key = format!("pk:{}", pk);
+                let ids: Vec<u32> = storage.get::<Vec<u32>>(&key).await.unwrap_or(None).unwrap_or_default();
+                for rid in ids {
+                    let tag = format!("id:{}", rid);
+                    for rws in self.get_websockets_with_tag(&tag) {
+                        let _ = self.ensure_loaded(&rws).await;
+                    }
+                }
             }
         }
     }
 
     fn get_id(&self, ws: &WebSocket) -> Option<u32> {
-        let id_map = unsafe { &*self.id_map.get() };
-        id_map.iter().find(|(w, _)| ws_eq(w, ws)).map(|(_, id)| *id)
+        self.id_map.borrow().iter().find(|(w, _)| ws_eq(w, ws)).map(|(_, id)| *id)
     }
 
-    fn accept_new_connection(&self) -> Result<Response> {
-        let engine = unsafe { &mut *self.engine.get() };
-        let resp = accept_connection(&self.state, 100, engine.initial_state())?;
-        
-        let active_ws = self.state.get_websockets();
-        let id_map = unsafe { &mut *self.id_map.get() };
-        
-        // Match the NEWEST websocket that isn't in our id_map yet.
-        // During accept_connection, the new WS is added to the end of state.get_websockets().
-        if let Some(new_ws) = active_ws.into_iter().find(|aw| !id_map.iter().any(|(w, _)| ws_eq(w, aw))) {
-            let max_id = id_map.iter().map(|(_, id)| *id).max().unwrap_or(0);
-            let new_id = max_id + 1;
-            
-            let action = engine.on_connect(self, new_id, None);
-            id_map.push((new_ws.clone(), new_id));
-
-            if let EngineAction::Commit { snapshot, tags } = action {
-                let mut full_blob = new_id.to_le_bytes().to_vec();
-                full_blob.extend(snapshot);
-                let _ = new_ws.serialize_attachment(&full_blob);
-                let _ = self.state.set_tags(&new_ws, tags);
-            }
+    fn generate_unique_id(&self) -> u32 {
+        let mut new_id = rand::random::<u32>();
+        while self.id_map.borrow().iter().any(|(_, id)| *id == new_id) || new_id == 0 {
+            new_id = rand::random::<u32>();
         }
-
-        Ok(resp)
+        new_id
     }
 
-    fn handle_disconnect(&self, ws: &WebSocket) -> Result<()> {
-        if let Some(id) = self.get_id(ws) {
-            let engine = unsafe { &mut *self.engine.get() };
-            let id_map = unsafe { &mut *self.id_map.get() };
-            let action = engine.on_disconnect(self, id);
+    async fn accept_new_connection(&self) -> Result<Response> {
+        let WebSocketPair { client, server } = WebSocketPair::new()?;
+        self.state.accept_web_socket(&server);
+
+        let connection_id = self.generate_unique_id();
+        let responses = self.engine.borrow_mut().on_connect(connection_id);
+        self.id_map.borrow_mut().push((server.clone(), connection_id));
+        let _ = self.state.set_tags(&server, vec![format!("id:{}", connection_id)]);
+
+        self.process_responses(responses)?;
+
+        Ok(Response::from_websocket(client)?)
+    }
+
+    async fn handle_disconnect(&self, ws: &WebSocket) -> Result<()> {
+        if let Some(id) = self.ensure_loaded(ws).await {
+            let responses = self.engine.borrow_mut().on_disconnect(id);
+            self.process_responses(responses)?;
+            self.id_map.borrow_mut().retain(|(_, i)| *i != id);
             
-            if let EngineAction::Commit { snapshot, tags } = action {
-                let mut full_blob = id.to_le_bytes().to_vec();
-                full_blob.extend(snapshot);
-                let _ = ws.serialize_attachment(&full_blob);
-                let _ = self.state.set_tags(ws, tags);
-            }
-            
-            id_map.retain(|(_, i)| *i != id);
+            // Clean up storage
+            let storage = self.state.storage();
+            let _ = storage.delete(&format!("conn:{}", id)).await;
+            // Note: cleaning up pk index is more complex (scan-intensive),
+            // but for personal relay we can let it be or implement gradual cleanup.
         }
         Ok(())
     }

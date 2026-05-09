@@ -36,16 +36,14 @@ async fn handle_lnaddress_inner(req: Request, ctx: RouteContext<()>) -> Result<R
     create_cors_response(Response::from_json(&info)?)
 }
 
-pub async fn handle_lnaddress_callback(req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    match handle_lnaddress_callback_inner(req, ctx).await {
+pub async fn handle_lnaddress_callback(req: Request, env: &Env, username: &str, relay: &impl crate::cloudflare::RelayTransport) -> Result<Response> {
+    match handle_lnaddress_callback_inner(req, env, username, relay).await {
         Ok(resp) => Ok(resp),
         Err(e) => lnaddress_error(&e.to_string()),
     }
 }
 
-async fn handle_lnaddress_callback_inner(req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    let username = ctx.param("username").ok_or_else(|| Error::from("Missing username"))?;
-    
+async fn handle_lnaddress_callback_inner(req: Request, env: &Env, username: &str, relay: &impl crate::cloudflare::RelayTransport) -> Result<Response> {
     let url = req.url()?;
     let mut query = url.query_pairs();
     let amount_msat = query
@@ -53,14 +51,14 @@ async fn handle_lnaddress_callback_inner(req: Request, ctx: RouteContext<()>) ->
         .and_then(|(_, v)| v.parse::<u64>().ok())
         .ok_or_else(|| Error::from("Missing amount"))?;
 
-    let nwc_uri = get_nwc_uri(&ctx.env, username).await?
+    let nwc_uri = get_nwc_uri(env, username).await?
         .ok_or_else(|| Error::from("User not found"))?;
 
     let ln_address = LNAddress::new(username);
     let description_hash = ln_address.get_description_hash();
 
-    let connector = WalletConnector::new(&ctx.env, &nwc_uri);
-    let pr = connector.make_invoice(amount_msat, description_hash).await?;
+    let connector = WalletConnector::new(env, &nwc_uri);
+    let pr = connector.make_invoice(relay, amount_msat, description_hash).await?;
     
     let resp = serde_json::json!({
         "pr": pr,

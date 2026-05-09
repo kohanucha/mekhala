@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use crate::nostr::Event;
 use crate::nostr::Limits;
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Filter {
     pub ids: Option<Vec<String>>,
     pub authors: Option<Vec<String>>,

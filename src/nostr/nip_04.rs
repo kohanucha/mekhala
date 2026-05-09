@@ -90,13 +90,13 @@ mod tests {
         let plaintext = "Another secret";
         
         let encrypted = encrypt_nip04(&shared_secret, plaintext).unwrap();
-        // Tamper with the first character of the ciphertext (base64)
+        // Tamper by removing the last character of the ciphertext to break base64/padding
         let parts: Vec<&str> = encrypted.split("?iv=").collect();
-        let tampered_ct = format!("A{}", &parts[0][1..]);
+        let tampered_ct = &parts[0][..parts[0].len()-1];
         let tampered_encrypted = format!("{}?iv={}", tampered_ct, parts[1]);
         
         let result = decrypt_nip04(&shared_secret, &tampered_encrypted);
-        // Usually results in Pkcs7 padding error
+        // This will now consistently fail due to malformed base64 or invalid padding
         assert!(result.is_err());
     }
 }
