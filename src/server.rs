@@ -41,7 +41,7 @@ impl Server {
         create_cors_response(Response::ok("")?)
     }
 
-    fn handle_auth(req: &Request, ctx: &RouteContext<()>) -> Result<Option<Response>> {
+    fn handle_auth(_req: &Request, ctx: &RouteContext<()>) -> Result<Option<Response>> {
         let auth = Authenticator::from_env(&ctx.env);
         let provided_secret = ctx.param("secret").map(|s| s.as_str()).unwrap_or_default();
 

@@ -1,6 +1,6 @@
 use worker::*;
 use crate::nostr::nip_47::{WalletConnectionDetails, WalletConnection, EncryptionMethod};
-use crate::common::Transport;
+use crate::common::InternalTransport;
 use serde_json::Value;
 
 pub struct WalletConnector {
@@ -14,7 +14,7 @@ impl WalletConnector {
         }
     }
 
-    pub async fn make_invoice(&self, transport: &impl Transport, amount_msat: u64, description_hash: String) -> Result<String> {
+    pub async fn make_invoice(&self, transport: &impl InternalTransport, amount_msat: u64, description_hash: String) -> Result<String> {
         let connection_details = WalletConnectionDetails::from_uri(&self.nwc_uri)?;
         let mut connection = WalletConnection::new(connection_details)?;
 
@@ -56,7 +56,7 @@ impl WalletConnector {
         ];
 
         // 4. Dispatch NWC via relay
-        let resp_json = connection.dispatch(transport, &request_payload, Some(extra_tags)).await?;
+        let resp_json = connection.send_request(transport, &request_payload, Some(extra_tags)).await?;
 
         if let Some(result) = resp_json.get("result") {
             if let Some(invoice) = result.get("invoice").and_then(|i| i.as_str()) {
@@ -64,6 +64,7 @@ impl WalletConnector {
             }
         }
         
+        worker::console_error!("make_invoice: malformed response: {:?}", resp_json);
         Err(Error::from("Malformed response: missing invoice result"))
     }
 }

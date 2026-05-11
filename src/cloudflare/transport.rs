@@ -14,7 +14,7 @@ pub struct CloudflareTransport {
     env: Env,
     engine: RefCell<NostrEngine>,
     id_map: RefCell<Vec<(WebSocket, u32)>>,
-    dispatch_channels: RefCell<HashMap<String, oneshot::Sender<String>>>,
+    internal_connections: RefCell<HashMap<u32, (Option<oneshot::Sender<String>>, Option<oneshot::Receiver<String>>)>>,
 }
 
 impl DurableObject for CloudflareTransport {
@@ -26,7 +26,7 @@ impl DurableObject for CloudflareTransport {
             env,
             engine: RefCell::new(engine),
             id_map: RefCell::new(Vec::new()),
-            dispatch_channels: RefCell::new(HashMap::new()),
+            internal_connections: RefCell::new(HashMap::new()),
         }
     }
 
@@ -55,10 +55,7 @@ impl DurableObject for CloudflareTransport {
             self.load_recipients(&text).await;
             
             let responses = self.engine.borrow_mut().on_message(connection_id, &text);
-            self.process_responses(responses)?;
-
-            // Sync updated state to storage
-            self.sync_to_storage(connection_id).await;
+            self.process_responses(responses).await?;
 
             Ok(())
         } else {
@@ -77,15 +74,13 @@ impl DurableObject for CloudflareTransport {
 }
 
 #[async_trait::async_trait(?Send)]
-impl crate::common::Transport for CloudflareTransport {
+impl crate::common::InternalTransport for CloudflareTransport {
     async fn load_connection(&self, pubkey: &str) -> Result<Option<u32>> {
         let storage = self.state.storage();
         let key = format!("pk:{}", pubkey);
         let id: Option<u32> = storage.get::<u32>(&key).await.unwrap_or(None);
 
         if let Some(id) = id {
-            worker::console_log!("load_connection for {}: found storage ID {}", pubkey, id);
-
             let tag = format!("id:{}", id);
             for ws in self.get_websockets_with_tag(&tag) {
                 if let Some(actual_id) = self.wake_up(&ws).await {
@@ -108,95 +103,98 @@ impl crate::common::Transport for CloudflareTransport {
     }
 
     async fn get_wallet_info(&self, pubkey: &str) -> Option<crate::nostr::WalletInfo> {
+        let _ = <Self as crate::common::InternalTransport>::load_connection(self, pubkey).await.ok();
         Some(self.engine.borrow().get_wallet_info(pubkey))
     }
 
-    async fn dispatch(&self, connection_id: u32, client_id: &str, messages: Vec<String>) -> Result<String> {
+    async fn create_connection(&self) -> Result<u32> {
+        let id = self.generate_unique_id().await;
         let (tx, rx) = oneshot::channel();
-        self.register_dispatch(client_id.to_string(), tx);
+        self.internal_connections.borrow_mut().insert(id, (Some(tx), Some(rx)));
+        Ok(id)
+    }
 
-        for msg in messages {
-            self.send_message(connection_id, &msg)?;
-        }
+    async fn send_message(&self, id: u32, message: String) -> Result<()> {
+        // Pre-flight Loading for EVENT messages to support O(1) routing
+        self.load_recipients(&message).await;
 
-        // Wait for response with timeout
-        let rx_fuse = rx.fuse();
+        let responses = self.engine.borrow_mut().on_message(id, &message);
+        self.process_responses(responses).await?;
+        Ok(())
+    }
+
+    async fn receive_message(&self, id: u32) -> Result<String> {
+        let rx = {
+            let mut channels = self.internal_connections.borrow_mut();
+            let entry = channels.get_mut(&id).ok_or_else(|| Error::from("Connection not found"))?;
+            entry.1.take().ok_or_else(|| Error::from("Already receiving or channel closed"))?
+        };
+
         let delay = worker::Delay::from(std::time::Duration::from_secs(10)).fuse();
-        
-        futures_util::pin_mut!(rx_fuse, delay);
+        futures_util::pin_mut!(rx, delay);
 
-        match futures_util::future::select(rx_fuse, delay).await {
-            futures_util::future::Either::Left((Ok(response), _)) => {
-                Ok(response)
-            }
-            _ => {
-                Err(Error::from("Dispatch timeout"))
-            }
+        match futures_util::future::select(rx, delay).await {
+            futures_util::future::Either::Left((Ok(response), _)) => Ok(response),
+            _ => Err(Error::from("Dispatch timeout")),
         }
+    }
+
+    async fn close_connection(&self, id: u32) -> Result<()> {
+        let responses = self.engine.borrow_mut().on_disconnect(id);
+        self.process_responses(responses).await?;
+        self.internal_connections.borrow_mut().remove(&id);
+        Ok(())
     }
 }
 
 impl CloudflareTransport {
-    fn send_message(&self, id: u32, msg: &str) -> Result<()> {
-        let responses = self.engine.borrow_mut().on_message(id, msg);
-        self.process_responses(responses)
-    }
-
-    fn register_dispatch(&self, client_id: String, sender: futures::channel::oneshot::Sender<String>) {
-        self.dispatch_channels.borrow_mut().insert(client_id, sender);
-    }
-
-    fn process_responses(&self, responses: Vec<EngineResponse>) -> Result<()> {
+    async fn process_responses(&self, responses: Vec<EngineResponse>) -> Result<()> {
         for resp in responses {
-            if resp.message.is_empty() {
-                continue;
-            }
-
-            let mut intercepted = false;
-            if let Some(client_id) = &resp.client_id {
-                worker::console_log!("Intercepting response for client_id: {}", client_id);
-                if let Some(sender) = self.dispatch_channels.borrow_mut().remove(client_id) {
-                    let _ = sender.send(resp.message.clone());
-                    intercepted = true;
-                    worker::console_log!("Response sent to dispatch channel.");
-                }
-            }
-
-            if !intercepted {
-                for conn_id in resp.connection_ids {
-                    if let Some((ws, _)) = self.id_map.borrow().iter().find(|(_, i)| *i == conn_id) {
-                        let _ = ws.send_with_str(&resp.message);
+            match resp {
+                EngineResponse::Send { connection_id, message } => {
+                    if let Some((ws, _)) = self.id_map.borrow().iter().find(|(_, i)| *i == connection_id) {
+                        let _ = ws.send_with_str(&message);
                     }
+                }
+                EngineResponse::Signal { connection_id, message } => {
+                    let mut channels = self.internal_connections.borrow_mut();
+                    if let Some(entry) = channels.get_mut(&connection_id) {
+                        if let Some(sender) = entry.0.take() {
+                            let _ = sender.send(message);
+                        }
+                    }
+                }
+                EngineResponse::StoreState { connection_id, connection_data } => {
+                    self.sync_to_storage_data(connection_id, connection_data).await;
                 }
             }
         }
         Ok(())
     }
 
-    async fn sync_to_storage(&self, connection_id: u32) {
-        if let Some(state) = self.engine.borrow().export_state(connection_id) {
-            let storage = self.state.storage();
-            let key = format!("conn:{}", connection_id);
-            let _ = storage.put(&key, state.clone()).await;
+    async fn sync_to_storage_data(&self, connection_id: u32, state: serde_json::Value) {
+        let storage = self.state.storage();
+        let key = format!("conn:{}", connection_id);
+        let _ = storage.put(&key, state.clone()).await;
 
-            // Update pubkey index
-            if let Some(registry) = state.get("registry") {
-                if let Some(subs) = registry.get("subscriptions") {
-                    if let Ok(subs_map) = serde_json::from_value::<HashMap<String, Vec<crate::nostr::Filter>>>(subs.clone()) {
-                        let mut pks = HashSet::new();
-                        for filters in subs_map.values() {
-                            for filter in filters {
-                                for pk in filter.pubkeys() {
-                                    pks.insert(pk);
-                                }
+        // Update pubkey index
+        if let Some(registry) = state.get("registry") {
+            if let Some(subs) = registry.get("subscriptions") {
+                if let Ok(subs_map) = serde_json::from_value::<HashMap<String, Vec<crate::nostr::Filter>>>(subs.clone()) {
+                    let mut pks = HashSet::new();
+                    for filters in subs_map.values() {
+                        for filter in filters {
+                            for pk in filter.pubkeys() {
+                                pks.insert(pk);
                             }
                         }
+                    }
 
-                        for pk in pks {
-                            let pk_key = format!("pk:{}", pk);
-                            // Store only the latest connection ID for this pubkey (Last-In-Wins)
-                            let _ = storage.put(&pk_key, connection_id).await;
-                        }
+                    for pk in pks {
+                        let pk_key = format!("pk:{}", pk);
+                        // Store only the latest connection ID for this pubkey (Last-In-Wins)
+                        // Note: Connection ID 0 (System) also gets indexed so bridge can route to it if needed
+                        let _ = storage.put(&pk_key, connection_id).await;
                     }
                 }
             }
@@ -259,24 +257,32 @@ impl CloudflareTransport {
         self.id_map.borrow().iter().find(|(w, _)| ws_eq(w, ws)).map(|(_, id)| *id)
     }
 
-    fn generate_unique_id(&self) -> u32 {
-        let mut new_id = rand::random::<u32>();
-        while self.id_map.borrow().iter().any(|(_, id)| *id == new_id) || new_id == 0 {
-            new_id = rand::random::<u32>();
+    async fn generate_unique_id(&self) -> u32 {
+        // Use timestamp-based counter to ensure strictly increasing IDs for "Last-In-Wins" logic.
+        // Even if the DO restarts, the timestamp will ensure we stay ahead of old IDs.
+        let storage = self.state.storage();
+        let mut counter = storage.get::<u32>("id_counter").await.ok().flatten().unwrap_or(0);
+        let now = crate::util::now() as u32;
+        
+        if counter < now {
+            counter = now;
         }
-        new_id
+        counter += 1;
+        
+        let _ = storage.put("id_counter", counter).await;
+        counter
     }
 
     async fn accept_new_connection(&self) -> Result<Response> {
         let WebSocketPair { client, server } = WebSocketPair::new()?;
         self.state.accept_web_socket(&server);
 
-        let connection_id = self.generate_unique_id();
+        let connection_id = self.generate_unique_id().await;
         let responses = self.engine.borrow_mut().on_connect(connection_id);
         self.id_map.borrow_mut().push((server.clone(), connection_id));
         let _ = self.state.set_tags(&server, vec![format!("id:{}", connection_id)]);
 
-        self.process_responses(responses)?;
+        self.process_responses(responses).await?;
 
         Ok(Response::from_websocket(client)?)
     }
@@ -284,7 +290,7 @@ impl CloudflareTransport {
     async fn handle_disconnect(&self, ws: &WebSocket) -> Result<()> {
         if let Some(id) = self.wake_up(ws).await {
             let responses = self.engine.borrow_mut().on_disconnect(id);
-            self.process_responses(responses)?;
+            self.process_responses(responses).await?;
             self.id_map.borrow_mut().retain(|(_, i)| *i != id);
             
             // Clean up storage

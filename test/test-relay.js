@@ -808,7 +808,8 @@ async function testLnAddressFlow() {
   // Use a fixed secret for deterministic test keys
   const walletSk = new Uint8Array(32).fill(1); 
   const walletPk = getPublicKey(walletSk);
-  const nwcSecret = "0101010101010101010101010101010101010101010101010101010101010101";
+  // Use a DIFFERENT secret for the bridge
+  const nwcSecret = "0303030303030303030303030303030303030303030303030303030303030303";
   
   // NWC URI pointing to this relay
   const nwcUri = `nostr+walletconnect://${walletPk}?relay=${encodeURIComponent(RELAY_URL)}&secret=${nwcSecret}`;
@@ -855,6 +856,7 @@ async function testLnAddressFlow() {
         if (req.method === "make_invoice") {
           const resp = JSON.stringify({ result: { invoice } });
           const encryptedResp = await nip04.encrypt(walletSk, event.pubkey, resp);
+          
           const resEvent = finalizeEvent({
             kind: 23195,
             created_at: Math.floor(Date.now() / 1000),
@@ -1115,51 +1117,46 @@ async function testEdgeCases() {
 
 async function testLastInWinsRouting() {
   console.log("\n--- Testing Last-In-Wins Routing (Singular Routing) ---");
-  const wallet1Ws = new WebSocket(RELAY_URL);
-  const wallet2Ws = new WebSocket(RELAY_URL);
-  const appWs = new WebSocket(RELAY_URL);
-
+  
   const walletSk = generateSecretKey();
   const walletPk = getPublicKey(walletSk);
   const appSk = generateSecretKey();
-  const appPk = getPublicKey(appSk);
+
+  // Connect sequentially to ensure ID order
+  const wallet1Ws = new WebSocket(RELAY_URL);
+  await new Promise(r => wallet1Ws.on("open", r));
+  console.log("Wallet 1 connected.");
+  wallet1Ws.send(JSON.stringify(["REQ", "w1", { kinds: [23194], "#p": [walletPk] }]));
+  await new Promise(r => wallet1Ws.on("message", (data) => {
+    if (JSON.parse(data.toString())[0] === "EOSE") r();
+  }));
+
+  const wallet2Ws = new WebSocket(RELAY_URL);
+  await new Promise(r => wallet2Ws.on("open", r));
+  console.log("Wallet 2 connected.");
+  wallet2Ws.send(JSON.stringify(["REQ", "w2", { kinds: [23194], "#p": [walletPk] }]));
+  await new Promise(r => wallet2Ws.on("message", (data) => {
+    if (JSON.parse(data.toString())[0] === "EOSE") r();
+  }));
+
+  const appWs = new WebSocket(RELAY_URL);
+  await new Promise(r => appWs.on("open", r));
 
   return new Promise((resolve, reject) => {
-    let wallet1Ready = false;
-    let wallet2Ready = false;
     let wallet1Received = false;
     let wallet2Received = false;
 
-    const checkReady = () => {
-      if (wallet1Ready && wallet2Ready) {
-        console.log("Both wallets connected. Sending request from App...");
-        const event = finalizeEvent({
-          kind: 23194,
-          created_at: Math.floor(Date.now() / 1000),
-          tags: [["p", walletPk]],
-          content: "routing-test"
-        }, appSk);
-        appWs.send(JSON.stringify(["EVENT", event]));
-      }
-    };
-
-    wallet1Ws.on("open", () => {
-      wallet1Ws.send(JSON.stringify(["REQ", "w1", { kinds: [23194], "#p": [walletPk] }]));
-    });
-
-    wallet2Ws.on("open", () => {
-      // Small delay to ensure sequence
-      setTimeout(() => {
-        wallet2Ws.send(JSON.stringify(["REQ", "w2", { kinds: [23194], "#p": [walletPk] }]));
-      }, 500);
-    });
+    console.log("Sending request from App...");
+    const event = finalizeEvent({
+      kind: 23194,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [["p", walletPk]],
+      content: "routing-test"
+    }, appSk);
+    appWs.send(JSON.stringify(["EVENT", event]));
 
     wallet1Ws.on("message", (data) => {
       const msg = JSON.parse(data.toString());
-      if (msg[0] === "EOSE") {
-        wallet1Ready = true;
-        checkReady();
-      }
       if (msg[0] === "EVENT" && msg[1] === "w1") {
         console.log("❌ Wallet 1 received request! (Should have been routed to Wallet 2)");
         wallet1Received = true;
@@ -1168,15 +1165,10 @@ async function testLastInWinsRouting() {
 
     wallet2Ws.on("message", (data) => {
       const msg = JSON.parse(data.toString());
-      if (msg[0] === "EOSE") {
-        wallet2Ready = true;
-        checkReady();
-      }
       if (msg[0] === "EVENT" && msg[1] === "w2") {
         console.log("✅ Wallet 2 received request. (Correct singular routing)");
         wallet2Received = true;
         
-        // Wait a bit more to be sure wallet 1 doesn't receive it
         setTimeout(() => {
           if (!wallet1Received && wallet2Received) {
             wallet1Ws.close();
@@ -1184,12 +1176,12 @@ async function testLastInWinsRouting() {
             appWs.close();
             resolve();
           } else {
-            reject(new Error("Singular routing failed: multiple wallets received event or correct wallet missed it."));
+            reject(new Error("Singular routing failed: wallet 1 also received the event."));
           }
         }, 1000);
       }
     });
 
-    setTimeout(() => reject(new Error("Last-In-Wins Routing test timeout")), 8000);
+    setTimeout(() => reject(new Error("Last-In-Wins Routing test timeout")), 5000);
   });
 }

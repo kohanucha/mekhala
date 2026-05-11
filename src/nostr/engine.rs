@@ -4,33 +4,29 @@ use super::wallet_registry::WalletRegistry;
 use crate::util::now;
 use serde_json::Value;
 
-#[derive(Default, Debug, PartialEq, Eq)]
-pub struct EngineResponse {
-    pub connection_ids: Vec<u32>,
-    pub message: String,
-    pub client_id: Option<String>,
+#[derive(Debug, PartialEq, Eq)]
+pub enum EngineResponse {
+    /// Deliver a Nostr message to a specific WebSocket connection.
+    Send { connection_id: u32, message: String },
+
+    /// Notify an internal waiter (like the LN Bridge) that its response has arrived.
+    Signal { connection_id: u32, message: String },
+
+    /// Persist the connection's state to storage (Crucial for Hibernation).
+    StoreState { connection_id: u32, connection_data: serde_json::Value },
 }
 
 impl EngineResponse {
-    pub fn new(connection_id: u32, message: String) -> Self {
-        Self {
-            connection_ids: vec![connection_id],
-            message,
-            client_id: None,
-        }
+    pub fn send(connection_id: u32, message: String) -> Self {
+        EngineResponse::Send { connection_id, message }
     }
 
-    pub fn multi(connection_ids: Vec<u32>, message: String) -> Self {
-        Self {
-            connection_ids,
-            message,
-            client_id: None,
-        }
+    pub fn signal(connection_id: u32, message: String) -> Self {
+        EngineResponse::Signal { connection_id, message }
     }
 
-    pub fn with_client_id(mut self, client_id: String) -> Self {
-        self.client_id = Some(client_id);
-        self
+    pub fn store_state(connection_id: u32, connection_data: serde_json::Value) -> Self {
+        EngineResponse::StoreState { connection_id, connection_data }
     }
 }
 
@@ -52,15 +48,75 @@ impl NostrEngine {
         Vec::new()
     }
 
-    pub fn on_message(&mut self, id: u32, message: &str) -> Vec<EngineResponse> {
+    pub fn on_message(&mut self, connection_id: u32, message: &str) -> Vec<EngineResponse> {
         match ClientMessage::from_json(message) {
-            Ok(ClientMessage::Event(event)) => self.handle_nostr_event(id, event),
-            Ok(ClientMessage::Req(sub_id, filters)) => self.handle_nostr_req(id, sub_id, filters),
-            Ok(ClientMessage::Close(sub_id)) => self.handle_nostr_close(id, sub_id),
+            Ok(ClientMessage::Event(event)) => self.handle_nostr_event(connection_id, event),
+            Ok(ClientMessage::Req(sub_id, filters)) => self.handle_nostr_req(connection_id, sub_id, filters),
+            Ok(ClientMessage::Close(sub_id)) => self.handle_nostr_close(connection_id, sub_id),
             Err(e) => {
-                vec![EngineResponse::new(id, RelayMessage::Notice(format!("parse failed: {}", e)).to_json())]
+                vec![EngineResponse::send(connection_id, RelayMessage::Notice(format!("parse failed: {}", e)).to_json())]
             }
         }
+    }
+
+    pub fn handle_nostr_event(&mut self, connection_id: u32, event: Event) -> Vec<EngineResponse> {
+        let is_virtual = !self.connections.contains(&connection_id);
+        
+        match event.kind {
+            13194 => {
+                if is_virtual || event.verify(now()).is_ok() {
+                    self.registry.store_info_event(event);
+                    // Store state after info event update
+                    if let Some(state) = self.export_state(connection_id) {
+                        return vec![EngineResponse::store_state(connection_id, state)];
+                    }
+                }
+                Vec::new()
+            }
+            23194..=23197 => {
+                if !is_virtual {
+                    if let Err(e) = event.verify(now()) {
+                        return vec![EngineResponse::send(connection_id, RelayMessage::Ok(event.id, false, e.to_string()).to_json())];
+                    }
+                }
+
+                self.handle_verified_event(connection_id, event)
+            }
+            _ => {
+                let verify_result = if is_virtual { Ok(()) } else { event.verify(now()) };
+                let message = if let Err(e) = verify_result {
+                    RelayMessage::Ok(event.id, false, e.to_string())
+                } else {
+                    RelayMessage::Ok(event.id, false, "blocked: event kind not allowed".into())
+                };
+                vec![EngineResponse::send(connection_id, message.to_json())]
+            }
+        }
+    }
+
+    fn handle_verified_event(&mut self, id: u32, event: Event) -> Vec<EngineResponse> {
+        let mut responses = Vec::new();
+        let ok_message = RelayMessage::Ok(event.id.clone(), true, "".into()).to_json();
+
+        if self.connections.contains(&id) {
+            responses.push(EngineResponse::send(id, ok_message));
+        }
+
+        // Normal routing via registry subscriptions
+        for (client_id, recipient_ids) in self.registry.match_event(&event) {
+            for rid in recipient_ids {
+                let message = RelayMessage::Event(client_id.clone(), event.clone()).to_json();
+                
+                if self.connections.contains(&rid) {
+                    responses.push(EngineResponse::send(rid, message));
+                } else {
+                    // Virtual/Bridge connection (Matches registry but not in active DO-managed connections)
+                    responses.push(EngineResponse::signal(rid, message));
+                }
+            }
+        }
+
+        responses
     }
 
     pub fn on_disconnect(&mut self, id: u32) -> Vec<EngineResponse> {
@@ -132,19 +188,23 @@ impl NostrEngine {
     }
 
     pub fn export_state(&self, id: u32) -> Option<serde_json::Value> {
-        if self.connections.contains(&id) {
+        if self.connections.contains(&id) || id != 0 {
             let registry_state = self.registry.export_connection(id);
-            return Some(serde_json::json!({
+            let state = serde_json::json!({
                 "active": true,
                 "registry": registry_state
-            }));
+            });
+
+            return Some(state);
         }
         None
     }
 
     pub fn import_state(&mut self, id: u32, data: serde_json::Value) {
         if data.get("active").and_then(|v| v.as_bool()).unwrap_or(false) {
-            self.connections.insert(id);
+            if id != 0 {
+                self.connections.insert(id);
+            }
         }
         if let Some(registry_val) = data.get("registry") {
             self.registry.import_connection(id, registry_val.clone());
@@ -152,59 +212,33 @@ impl NostrEngine {
     }
 
     pub fn add_connection(&mut self, id: u32, subscriptions: HashMap<String, Vec<Filter>>) {
-        self.connections.insert(id);
+        if id != 0 {
+            self.connections.insert(id);
+        }
         for (sub_id, filters) in subscriptions {
             self.registry.add_subscription(id, sub_id, filters);
         }
     }
 
     pub fn remove_connection(&mut self, id: u32) {
-        self.connections.remove(&id);
-        self.registry.remove_connection(id);
-    }
-
-    fn handle_nostr_event(&mut self, id: u32, event: Event) -> Vec<EngineResponse> {
-        let verify_result = event.verify(now());
-        
-        match event.kind {
-            13194 => {
-                if verify_result.is_ok() {
-                    self.registry.store_info_event(event);
-                }
-                Vec::new()
-            }
-            23194..=23197 => {
-                if let Err(e) = verify_result {
-                    return vec![EngineResponse::new(id, RelayMessage::Ok(event.id, false, e.to_string()).to_json())];
-                }
-
-                let mut responses = vec![EngineResponse::new(id, RelayMessage::Ok(event.id.clone(), true, "".into()).to_json())];
-                for (client_id, recipient_ids) in self.registry.match_event(&event) {
-                    responses.push(EngineResponse::multi(
-                        recipient_ids,
-                        RelayMessage::Event(client_id.clone(), event.clone()).to_json()
-                    ).with_client_id(client_id));
-                }
-                responses
-            }
-            _ => {
-                let message = if let Err(e) = verify_result {
-                    RelayMessage::Ok(event.id, false, e.to_string())
-                } else {
-                    RelayMessage::Ok(event.id, false, "blocked: event kind not allowed".into())
-                };
-                vec![EngineResponse::new(id, message.to_json())]
-            }
+        if id != 0 {
+            self.connections.remove(&id);
         }
+        self.registry.remove_connection(id);
     }
 
     fn handle_nostr_req(&mut self, id: u32, sub_id: String, filters: Vec<Filter>) -> Vec<EngineResponse> {
         if filters.iter().any(|f| !f.is_valid()) {
-            return vec![EngineResponse::new(id, RelayMessage::Closed(sub_id.clone(), "filter too broad".to_string()).to_json()).with_client_id(sub_id)];
+            let message = RelayMessage::Closed(sub_id.clone(), "filter too broad".to_string()).to_json();
+            return if self.connections.contains(&id) {
+                vec![EngineResponse::send(id, message)]
+            } else {
+                vec![EngineResponse::signal(id, message)]
+            };
         }
 
         let mut responses = Vec::new();
-        if self.connections.contains(&id) {
+        if id != 0 {
             self.registry.add_subscription(id, sub_id.clone(), filters.clone());
 
             // Check if any existing info events match this new subscription
@@ -212,20 +246,39 @@ impl NostrEngine {
                 for pk in filters_set.pubkeys() {
                     if let Some(info_event) = self.registry.get_info_event(&pk) {
                         if filters.iter().any(|f| f.matches(&info_event)) {
-                            responses.push(EngineResponse::new(id, RelayMessage::Event(sub_id.clone(), info_event.clone()).to_json()).with_client_id(sub_id.clone()));
+                            let message = RelayMessage::Event(sub_id.clone(), info_event.clone()).to_json();
+                            if self.connections.contains(&id) {
+                                responses.push(EngineResponse::send(id, message));
+                            } else {
+                                responses.push(EngineResponse::signal(id, message));
+                            }
                         }
                     }
                 }
             }
+
+            // Always store state after subscription change
+            if let Some(state) = self.export_state(id) {
+                responses.push(EngineResponse::store_state(id, state));
+            }
         }
 
-        responses.push(EngineResponse::new(id, RelayMessage::Eose(sub_id).to_json()));
+        let eose = RelayMessage::Eose(sub_id).to_json();
+        if self.connections.contains(&id) {
+            responses.push(EngineResponse::send(id, eose));
+        } else {
+            // Skip signaling EOSE to virtual connections
+        }
         responses
     }
 
     fn handle_nostr_close(&mut self, id: u32, sub_id: String) -> Vec<EngineResponse> {
-        if self.connections.contains(&id) {
+        if id != 0 {
             self.registry.remove_subscription(id, sub_id);
+            // Always store state after subscription removal
+            if let Some(state) = self.export_state(id) {
+                return vec![EngineResponse::store_state(id, state)];
+            }
         }
         Vec::new()
     }
@@ -243,9 +296,15 @@ mod tests {
         let req = r#"["REQ", "sub1", {"authors": ["pk1"]}]"#;
         let responses = engine.on_message(1, req);
         
-        // Should return EOSE
-        assert_eq!(responses.len(), 1);
-        assert!(responses[0].message.contains("EOSE"));
+        // Should return StoreState and EOSE (Send)
+        assert!(responses.iter().any(|r| matches!(r, EngineResponse::StoreState { .. })));
+        assert!(responses.iter().any(|r| {
+            if let EngineResponse::Send { message, .. } = r {
+                message.contains("EOSE")
+            } else {
+                false
+            }
+        }));
         
         // Verify sub is in registry
         assert!(engine.registry.get_subscriptions(1).contains_key("sub1"));
@@ -279,5 +338,58 @@ mod tests {
         let engine = NostrEngine::new();
         let info = engine.get_wallet_info("pk1");
         assert_eq!(info.online, false);
+    }
+
+    #[test]
+    fn test_bridge_signaling() {
+        let mut engine = NostrEngine::new();
+        engine.on_connect(1); // Wallet connection
+        engine.registry.add_subscription(1, "sub1".into(), vec![Filter {
+            p_tags: Some(vec!["wallet_pk".into()]),
+            ..Default::default()
+        }]);
+
+        // Bridge REQ
+        let bridge_req = serde_json::json!(["REQ", "sub_bridge", { "#p": ["bridge"] }]).to_string();
+        let _ = engine.on_message(10, &bridge_req);
+
+        let bridge_event_json = serde_json::json!([
+            "EVENT",
+            {
+                "id": "event1",
+                "pubkey": "bridge",
+                "created_at": now(),
+                "kind": 23194,
+                "tags": [["p", "wallet_pk"]],
+                "content": "",
+                "sig": ""
+            }
+        ]).to_string();
+
+        let responses = engine.on_message(10, &bridge_event_json);
+        
+        // Should return OK acknowledgment (but NOT signaled if it's virtual)
+        // and Send (to wallet 1 - Send)
+        assert!(!responses.iter().any(|r| matches!(r, EngineResponse::Signal { connection_id: 10, .. })));
+        assert!(responses.iter().any(|r| matches!(r, EngineResponse::Send { connection_id: 1, .. })));
+
+        // Now simulate wallet response with standard 'e' and 'p' tags
+        let wallet_response_event: Event = serde_json::from_value(serde_json::json!({
+            "id": "resp1",
+            "pubkey": "wallet_pk",
+            "created_at": now(),
+            "kind": 23194,
+            "tags": [["p", "bridge"], ["e", "event1"]],
+            "content": "",
+            "sig": "dummy_sig"
+        })).unwrap();
+
+        // Directly call handle_verified_event to bypass verify() for the unit test.
+        let responses = engine.handle_verified_event(1, wallet_response_event);
+        
+        // Should return OK acknowledgment to wallet (ID 1 - Send), 
+        // and Signal to bridge (ID 10 - Signal) because it's a ROUTED event.
+        assert!(responses.iter().any(|r| matches!(r, EngineResponse::Signal { connection_id: 10, .. })));
+        assert!(responses.iter().any(|r| matches!(r, EngineResponse::Send { connection_id: 1, .. })));
     }
 }

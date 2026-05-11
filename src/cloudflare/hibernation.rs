@@ -24,7 +24,6 @@ impl HibernationState for State {
             let state_ext: &DurableObjectStateExt = state_js.unchecked_ref();
             let tags_array = js_sys::Array::new();
             for tag in tags.into_iter().take(10) {
-                worker::console_log!("Applying tag: {}", tag);
                 tags_array.push(&JsValue::from_str(&tag));
             }
             state_ext.set_websocket_tags_raw(ws.as_ref(), tags_array);

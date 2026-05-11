@@ -86,13 +86,6 @@ impl WalletRegistry {
         for sub_id in sub_ids {
             self.remove_subscription(conn_id, sub_id);
         }
-
-        // Also remove any info events owned by this connection
-        // We need a way to track which connection owns which info event.
-        // For simplicity, let's assume one info event per connection if we want to clean up,
-        // or just let it expire if it's purely pubkey-based.
-        // But the prompt says "store in pk_index".
-        // If we want to clean up info events, we need a reverse mapping for them too.
     }
 
     pub fn store_info_event(&mut self, event: Event) {
@@ -118,14 +111,16 @@ impl WalletRegistry {
         let mut sub_to_conns = HashMap::new();
         for pk in target_pks {
             if let Some(entry) = self.pk_index.get(&pk) {
+                // Determine the LATEST connection for this pubkey globally
+                let global_latest = self.get_connection_id(&pk);
+
                 // For each pubkey, find all matching sub_keys
                 for sub_key in &entry.0 {
                     if sub_key.1.iter().any(|f| f.matches(event)) {
                         if let Some(conns) = self.subscription_index.get(sub_key) {
-                            // Find the latest connection for this SPECIFIC pubkey
+                            // route only if this connection is the global latest for this PK
                             if let Some(latest_conn) = conns.last() {
-                                // Double check: is this the latest connection for this PK across ALL its subscriptions?
-                                if self.get_connection_id(&pk) == Some(*latest_conn) {
+                                if global_latest == Some(*latest_conn) {
                                     sub_to_conns.insert(sub_key.0.clone(), vec![*latest_conn]);
                                 }
                             }
@@ -139,12 +134,19 @@ impl WalletRegistry {
 
     pub fn get_connection_id(&self, pubkey: &str) -> Option<u32> {
         if let Some(entry) = self.pk_index.get(pubkey) {
+            let mut latest = None;
             for sub_key in &entry.0 {
                 if let Some(conns) = self.subscription_index.get(sub_key) {
-                    // Return the most recent connection ID (LIFO) for this pubkey
-                    return conns.last().cloned();
+                    if let Some(&id) = conns.last() {
+                        match latest {
+                            None => latest = Some(id),
+                            Some(current) if id > current => latest = Some(id),
+                            _ => {}
+                        }
+                    }
                 }
             }
+            return latest;
         }
         None
     }
@@ -178,9 +180,13 @@ impl WalletRegistry {
 
     pub fn import_connection(&mut self, conn_id: u32, data: serde_json::Value) {
         if let Some(subs_val) = data.get("subscriptions") {
-            if let Ok(subs) = serde_json::from_value::<HashMap<String, Vec<Filter>>>(subs_val.clone()) {
-                for (sub_id, filters) in subs {
-                    self.add_subscription(conn_id, sub_id, filters);
+            match serde_json::from_value::<HashMap<String, Vec<Filter>>>(subs_val.clone()) {
+                Ok(subs) => {
+                    for (sub_id, filters) in subs {
+                        self.add_subscription(conn_id, sub_id, filters);
+                    }
+                }
+                Err(_e) => {
                 }
             }
         }
