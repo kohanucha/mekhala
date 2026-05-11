@@ -15,7 +15,7 @@ impl Server {
             .get_async("/:secret", Self::handle_request)
             .get_async("/.well-known/lnurlp/:username", handle_lnaddress)
             .get_async("/lnaddress/:username/callback", |req, ctx| async move {
-                crate::cloudflare::websocket::connect(req, &ctx.env).await
+                crate::cloudflare::transport::connect(req, &ctx.env).await
             })
             .run(req, env)
             .await
@@ -23,25 +23,50 @@ impl Server {
 
     async fn handle_request(req: Request, ctx: RouteContext<()>) -> Result<Response> {
         if req.method() == Method::Options {
-            return create_cors_response(Response::ok("")?);
+            return Self::handle_options();
         }
 
+        if let Some(auth_error) = Self::handle_auth(&req, &ctx)? {
+            return Ok(auth_error);
+        }
+
+        if Self::is_websocket_upgrade(&req) {
+            return Self::handle_upgrade(req, &ctx).await;
+        }
+
+        Self::handle_nip11()
+    }
+
+    fn handle_options() -> Result<Response> {
+        create_cors_response(Response::ok("")?)
+    }
+
+    fn handle_auth(req: &Request, ctx: &RouteContext<()>) -> Result<Option<Response>> {
         let auth = Authenticator::from_env(&ctx.env);
         let provided_secret = ctx.param("secret").map(|s| s.as_str()).unwrap_or_default();
 
         if !auth.is_authorized(provided_secret) {
-            return apply_security_headers(Response::error("Not Found", 404)?);
+            Ok(Some(apply_security_headers(Response::error("Not Found", 404)?)?))
+        } else {
+            Ok(None)
         }
+    }
 
-        if let Ok(Some(upgrade)) = req.headers().get("Upgrade") {
-            if upgrade.to_lowercase() == "websocket" {
-                return crate::cloudflare::websocket::connect(req, &ctx.env).await;
-            }
-        }
+    fn is_websocket_upgrade(req: &Request) -> bool {
+        req.headers()
+            .get("Upgrade")
+            .ok()
+            .flatten()
+            .map(|u| u.to_lowercase() == "websocket")
+            .unwrap_or(false)
+    }
 
+    async fn handle_upgrade(req: Request, ctx: &RouteContext<()>) -> Result<Response> {
+        crate::cloudflare::transport::connect(req, &ctx.env).await
+    }
+
+    fn handle_nip11() -> Result<Response> {
         let info = nostr::get_nip_11_info();
-        let mut response = create_cors_response(Response::from_json(&info)?)?;
-        response.headers_mut().set("Content-Type", "application/nostr+json")?;
-        Ok(response)
+        crate::cloudflare::transport::create_response(info, "application/nostr+json")
     }
 }

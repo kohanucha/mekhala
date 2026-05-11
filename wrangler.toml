@@ -11,7 +11,7 @@ MAX_CONTENT_LENGTH = "16384"
 
 [[durable_objects.bindings]]
 name = "NWC_RELAY"
-class_name = "Websocket"
+class_name = "CloudflareTransport"
 
 [[kv_namespaces]]
 binding = "MEKHALA_NWC_KV"
@@ -19,7 +19,7 @@ id = "MEKHALA_NWC_KV_ID"
 
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["Websocket"]
+new_sqlite_classes = ["CloudflareTransport"]
 
 [build]
 command = "./scripts/build.sh"

@@ -2,24 +2,24 @@ use std::collections::{HashMap, HashSet};
 use std::cell::RefCell;
 use futures::channel::oneshot;
 use futures_util::FutureExt;
-use serde_json::Value;
 use worker::*;
 use wasm_bindgen::{JsValue, JsCast};
-use crate::util::engine::{Engine, EngineResponse};
-use crate::cloudflare::{apply_security_headers, HibernationState};
+use crate::nostr::engine::{NostrEngine, EngineResponse};
+use crate::cloudflare::headers::create_cors_response;
+use crate::cloudflare::HibernationState;
 
 #[durable_object]
-pub struct Websocket {
+pub struct CloudflareTransport {
     state: State,
     env: Env,
-    engine: RefCell<Box<dyn Engine>>,
+    engine: RefCell<NostrEngine>,
     id_map: RefCell<Vec<(WebSocket, u32)>>,
     dispatch_channels: RefCell<HashMap<String, oneshot::Sender<String>>>,
 }
 
-impl DurableObject for Websocket {
+impl DurableObject for CloudflareTransport {
     fn new(state: State, env: Env) -> Self {
-        let engine = crate::nostr::create_engine();
+        let engine = NostrEngine::new();
 
         Self {
             state,
@@ -40,25 +40,16 @@ impl DurableObject for Websocket {
             return crate::lnaddress::handle_lnaddress_callback(req, &self.env, username, self).await;
         }
 
-        if path.starts_with("/internal/dispatch/") && req.method() == Method::Post {
-            let pubkey = path.strip_prefix("/internal/dispatch/").unwrap_or("");
-            return crate::lnaddress::wallet_connector::handle_internal_dispatch(self, pubkey, req).await;
-        }
-
-        if let Some(info) = self.engine.borrow().get_info(path) {
-            return apply_security_headers(Response::from_json(&info)?);
-        }
-
         self.accept_new_connection().await
     }
 
-    async fn websocket_message(&self, ws: WebSocket, message: WebSocketIncomingMessage) -> Result<()> {
+    async fn websocket_message(&self, websocket: WebSocket, message: WebSocketIncomingMessage) -> Result<()> {
         if let WebSocketIncomingMessage::String(text) = message {
             if text.len() > 65536 {
-                let _ = ws.send_with_str(&self.engine.borrow().error_message("message too large"));
+                let _ = websocket.send_with_str(&self.engine.borrow().error_message("message too large"));
                 return Ok(());
             }
-            let connection_id = self.ensure_loaded(&ws).await.ok_or_else(|| Error::from("Connection not found"))?;
+            let connection_id = self.wake_up(&websocket).await.ok_or_else(|| Error::from("Connection not found"))?;
 
             // Pre-flight Loading for EVENT messages to support O(1) routing
             self.load_recipients(&text).await;
@@ -71,7 +62,7 @@ impl DurableObject for Websocket {
 
             Ok(())
         } else {
-            let _ = ws.send_with_str(&self.engine.borrow().error_message("binary not supported"));
+            let _ = websocket.send_with_str(&self.engine.borrow().error_message("binary not supported"));
             Ok(())
         }
     }
@@ -86,88 +77,47 @@ impl DurableObject for Websocket {
 }
 
 #[async_trait::async_trait(?Send)]
-impl crate::cloudflare::RelayTransport for Websocket {
-    fn inject_message(&self, id: u32, msg: &str) -> Result<()> {
-        let responses = self.engine.borrow_mut().on_message(id, msg);
-        self.process_responses(responses)
-    }
-
-    fn send_raw(&self, id: u32, msg: &str) -> Result<()> {
-        if let Some((ws, _)) = self.id_map.borrow().iter().find(|(_, i)| *i == id) {
-            let _ = ws.send_with_str(msg);
-        }
-        Ok(())
-    }
-
-    async fn load_connections(&self, pubkey: &str) -> Result<Vec<u32>> {
+impl crate::common::Transport for CloudflareTransport {
+    async fn load_connection(&self, pubkey: &str) -> Result<Option<u32>> {
         let storage = self.state.storage();
         let key = format!("pk:{}", pubkey);
-        let ids: Vec<u32> = storage.get::<Vec<u32>>(&key).await.unwrap_or(None).unwrap_or_default();
+        let id: Option<u32> = storage.get::<u32>(&key).await.unwrap_or(None);
 
-        worker::console_log!("load_connections for {}: found storage IDs {:?}", pubkey, ids);
+        if let Some(id) = id {
+            worker::console_log!("load_connection for {}: found storage ID {}", pubkey, id);
 
-        let mut loaded_ids = Vec::new();
-        for id in &ids {
             let tag = format!("id:{}", id);
-            let mut found_by_tag = false;
             for ws in self.get_websockets_with_tag(&tag) {
-                if let Some(actual_id) = self.ensure_loaded(&ws).await {
-                    found_by_tag = true;
-                    if !loaded_ids.contains(&actual_id) {
-                        loaded_ids.push(actual_id);
+                if let Some(actual_id) = self.wake_up(&ws).await {
+                    if actual_id == id {
+                        return Ok(Some(id));
                     }
                 }
             }
             
-            if !found_by_tag {
-                for ws in self.state.get_websockets() {
-                    if let Some(actual_id) = self.ensure_loaded(&ws).await {
-                        if actual_id == *id && !loaded_ids.contains(&actual_id) {
-                            loaded_ids.push(actual_id);
-                        }
+            // Fallback: search all sockets if tagged one failed to wake up
+            for ws in self.state.get_websockets() {
+                if let Some(actual_id) = self.wake_up(&ws).await {
+                    if actual_id == id {
+                        return Ok(Some(id));
                     }
                 }
             }
         }
-        Ok(loaded_ids)
+        Ok(None)
     }
 
-    fn register_dispatch(&self, sub_id: String, sender: futures::channel::oneshot::Sender<String>) {
-        self.dispatch_channels.borrow_mut().insert(sub_id, sender);
+    async fn get_wallet_info(&self, pubkey: &str) -> Option<crate::nostr::WalletInfo> {
+        Some(self.engine.borrow().get_wallet_info(pubkey))
     }
 
-    async fn get_info(&self, path: &str) -> Option<Value> {
-        self.engine.borrow().get_info(path)
-    }
-
-    async fn dispatch_nwc(&self, target_pubkey: &str, event: crate::nostr::Event) -> Result<String> {
-        let loaded_ids = self.load_connections(target_pubkey).await?;
-
-        if loaded_ids.is_empty() {
-            return Err(Error::from("Wallet not connected"));
-        }
-
+    async fn dispatch(&self, connection_id: u32, client_id: &str, messages: Vec<String>) -> Result<String> {
         let (tx, rx) = oneshot::channel();
-        let sub_id = format!("disp_{}_{}", target_pubkey.get(..8).unwrap_or(target_pubkey), worker::js_sys::Math::random().to_string().get(2..10).unwrap_or(""));
-        
-        self.register_dispatch(sub_id.clone(), tx);
+        self.register_dispatch(client_id.to_string(), tx);
 
-        // 1. Inject REQ to listen for response
-        let primary_id = loaded_ids[0];
-        let req_msg = serde_json::json!([
-            "REQ",
-            sub_id,
-            {
-                "kinds": [crate::nostr::nip_47::KIND_NWC_RESPONSE],
-                "#p": [event.pubkey], 
-                "#e": [event.id]
-            }
-        ]).to_string();
-        self.inject_message(primary_id, &req_msg)?;
-
-        // 2. Inject EVENT (the request) - engine routes to all active subscribers
-        let event_msg = serde_json::json!(["EVENT", event]).to_string();
-        self.inject_message(primary_id, &event_msg)?;
+        for msg in messages {
+            self.send_message(connection_id, &msg)?;
+        }
 
         // Wait for response with timeout
         let rx_fuse = rx.fuse();
@@ -186,35 +136,36 @@ impl crate::cloudflare::RelayTransport for Websocket {
     }
 }
 
-impl Websocket {
+impl CloudflareTransport {
+    fn send_message(&self, id: u32, msg: &str) -> Result<()> {
+        let responses = self.engine.borrow_mut().on_message(id, msg);
+        self.process_responses(responses)
+    }
+
+    fn register_dispatch(&self, client_id: String, sender: futures::channel::oneshot::Sender<String>) {
+        self.dispatch_channels.borrow_mut().insert(client_id, sender);
+    }
+
     fn process_responses(&self, responses: Vec<EngineResponse>) -> Result<()> {
         for resp in responses {
-            if resp.messages.is_empty() {
+            if resp.message.is_empty() {
                 continue;
             }
 
             let mut intercepted = false;
-            if let Ok(Value::Array(arr)) = serde_json::from_str::<Value>(&resp.messages) {
-                if arr.len() >= 2 {
-                    let msg_type = arr[0].as_str().unwrap_or("");
-                    let sub_id = arr[1].as_str().unwrap_or("");
-
-                    // Handle Internal Dispatch interception
-                    if !sub_id.is_empty() && (msg_type == "EVENT" || msg_type == "CLOSED") {
-                        worker::console_log!("Intercepting response for sub_id: {}", sub_id);
-                        if let Some(sender) = self.dispatch_channels.borrow_mut().remove(sub_id) {
-                            let _ = sender.send(resp.messages.clone());
-                            intercepted = true;
-                            worker::console_log!("Response sent to dispatch channel.");
-                        }
-                    }
+            if let Some(client_id) = &resp.client_id {
+                worker::console_log!("Intercepting response for client_id: {}", client_id);
+                if let Some(sender) = self.dispatch_channels.borrow_mut().remove(client_id) {
+                    let _ = sender.send(resp.message.clone());
+                    intercepted = true;
+                    worker::console_log!("Response sent to dispatch channel.");
                 }
             }
 
             if !intercepted {
                 for conn_id in resp.connection_ids {
                     if let Some((ws, _)) = self.id_map.borrow().iter().find(|(_, i)| *i == conn_id) {
-                        let _ = ws.send_with_str(&resp.messages);
+                        let _ = ws.send_with_str(&resp.message);
                     }
                 }
             }
@@ -222,10 +173,10 @@ impl Websocket {
         Ok(())
     }
 
-    async fn sync_to_storage(&self, id: u32) {
-        if let Some(state) = self.engine.borrow().export_state(id) {
+    async fn sync_to_storage(&self, connection_id: u32) {
+        if let Some(state) = self.engine.borrow().export_state(connection_id) {
             let storage = self.state.storage();
-            let key = format!("conn:{}", id);
+            let key = format!("conn:{}", connection_id);
             let _ = storage.put(&key, state.clone()).await;
 
             // Update pubkey index
@@ -243,11 +194,8 @@ impl Websocket {
 
                         for pk in pks {
                             let pk_key = format!("pk:{}", pk);
-                            let mut ids: Vec<u32> = storage.get::<Vec<u32>>(&pk_key).await.unwrap_or(None).unwrap_or_default();
-                            if !ids.contains(&id) {
-                                ids.push(id);
-                                let _ = storage.put(&pk_key, ids).await;
-                            }
+                            // Store only the latest connection ID for this pubkey (Last-In-Wins)
+                            let _ = storage.put(&pk_key, connection_id).await;
                         }
                     }
                 }
@@ -270,7 +218,7 @@ impl Websocket {
         result
     }
 
-    async fn ensure_loaded(&self, ws: &WebSocket) -> Option<u32> {
+    async fn wake_up(&self, ws: &WebSocket) -> Option<u32> {
         if let Some(id) = self.get_id(ws) {
             return Some(id);
         }
@@ -297,11 +245,10 @@ impl Websocket {
             // Load recipients into engine memory
             for pk in target_pks {
                 let key = format!("pk:{}", pk);
-                let ids: Vec<u32> = storage.get::<Vec<u32>>(&key).await.unwrap_or(None).unwrap_or_default();
-                for rid in ids {
+                if let Ok(Some(rid)) = storage.get::<u32>(&key).await {
                     let tag = format!("id:{}", rid);
                     for rws in self.get_websockets_with_tag(&tag) {
-                        let _ = self.ensure_loaded(&rws).await;
+                        let _ = self.wake_up(&rws).await;
                     }
                 }
             }
@@ -335,7 +282,7 @@ impl Websocket {
     }
 
     async fn handle_disconnect(&self, ws: &WebSocket) -> Result<()> {
-        if let Some(id) = self.ensure_loaded(ws).await {
+        if let Some(id) = self.wake_up(ws).await {
             let responses = self.engine.borrow_mut().on_disconnect(id);
             self.process_responses(responses)?;
             self.id_map.borrow_mut().retain(|(_, i)| *i != id);
@@ -356,4 +303,10 @@ fn ws_eq(a: &WebSocket, b: &WebSocket) -> bool {
 
 pub async fn connect(req: Request, env: &Env) -> Result<Response> {
     crate::cloudflare::get_durable_stub(env)?.fetch_with_request(req).await
+}
+
+pub fn create_response(info: serde_json::Value, content_type: &str) -> Result<Response> {
+    let mut response = create_cors_response(Response::from_json(&info)?)?;
+    response.headers_mut().set("Content-Type", content_type)?;
+    Ok(response)
 }

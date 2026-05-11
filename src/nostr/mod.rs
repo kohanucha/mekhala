@@ -11,19 +11,20 @@ pub use nip_01::{RelayMessage, ClientMessage};
 pub use event::Event;
 pub use filter::Filter;
 
-use crate::util::engine::Engine;
-use crate::nostr::engine::NostrEngine;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-
-pub fn create_engine() -> Box<dyn Engine> {
-    Box::new(NostrEngine::new())
-}
 
 pub fn get_nip_11_info() -> serde_json::Value {
     serde_json::json!({
         "supported_nips": [1, 11, 47]
     })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WalletInfo {
+    pub online: bool,
+    pub ready: bool,
+    pub encryption_algorithms: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -39,23 +40,6 @@ impl Default for Limits {
             max_filter_items: 100,
             max_event_tags: 100,
             max_content_length: 32768,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct ConnectionState {
-    pub id: u32,
-    pub info_event: Option<Event>,
-    pub limits: Limits,
-}
-
-impl Default for ConnectionState {
-    fn default() -> Self {
-        Self {
-            id: 0,
-            info_event: None,
-            limits: Limits::default(),
         }
     }
 }
@@ -132,14 +116,6 @@ mod tests {
         assert_eq!(limits.max_filter_items, 100);
         assert_eq!(limits.max_event_tags, 100);
         assert_eq!(limits.max_content_length, 32768);
-    }
-
-    #[test]
-    fn test_connection_state_default() {
-        let state = ConnectionState::default();
-        assert_eq!(state.id, 0);
-        assert!(state.info_event.is_none());
-        assert_eq!(state.limits.max_filter_items, 100);
     }
 
     #[test]

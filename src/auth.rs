@@ -129,6 +129,9 @@ mod tests {
 
     #[test]
     fn test_constant_time_eq_unicode() {
-        let _auth = Authenticator { expected_secret: None };
+        assert!(constant_time_eq("🦀", "🦀"));
+        assert!(!constant_time_eq("🦀", "🐡"));
+        assert!(constant_time_eq("こんにちは", "こんにちは"));
+        assert!(!constant_time_eq("こんにちは", "こんばんは"));
     }
 }

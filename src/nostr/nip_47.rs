@@ -16,12 +16,12 @@ pub enum EncryptionMethod {
 }
 
 #[derive(Debug, Clone)]
-pub struct ConnectionDetails {
+pub struct WalletConnectionDetails {
     pub wallet_pubkey: String,
     pub secret: String,
 }
 
-impl ConnectionDetails {
+impl WalletConnectionDetails {
     pub fn from_uri(uri: &str) -> Result<Self> {
         let url = Url::parse(uri).map_err(|e| Error::from(e.to_string()))?;
         if url.scheme() != "nostr+walletconnect" {
@@ -46,7 +46,7 @@ impl ConnectionDetails {
     }
 }
 
-pub struct Session {
+pub struct WalletConnection {
     pub wallet_pubkey: String,
     shared_secret: Vec<u8>,
     signing_key: SigningKey,
@@ -54,8 +54,8 @@ pub struct Session {
     pub encryption_method: EncryptionMethod,
 }
 
-impl Session {
-    pub fn new(conn: ConnectionDetails) -> Result<Self> {
+impl WalletConnection {
+    pub fn new(conn: WalletConnectionDetails) -> Result<Self> {
         let shared_secret = crate::nostr::get_shared_secret(&conn.secret, &conn.wallet_pubkey)?;
 
         let sk_bytes = hex::decode(&conn.secret).map_err(|e| Error::from(e.to_string()))?;
@@ -120,10 +120,13 @@ impl Session {
 
     pub async fn dispatch(
         &self,
-        relay: &impl crate::cloudflare::RelayTransport,
+        transport: &impl crate::common::Transport,
         request_payload: &Value,
         extra_tags: Option<Vec<Vec<Value>>>,
     ) -> Result<Value> {
+        let connection_id = transport.load_connection(&self.wallet_pubkey).await?
+            .ok_or_else(|| Error::from("Wallet not connected"))?;
+
         let encrypted_content = self.encrypt(request_payload)?;
         let mut tags = vec![vec![
             Value::String("p".into()),
@@ -134,7 +137,21 @@ impl Session {
         }
         let event = self.create_event(KIND_NWC_REQUEST, encrypted_content, tags)?;
         
-        let msg_text = relay.dispatch_nwc(&self.wallet_pubkey, event).await?;
+        let client_id = format!("disp_{}_{}", self.wallet_pubkey.get(..8).unwrap_or(&self.wallet_pubkey), worker::js_sys::Math::random().to_string().get(2..10).unwrap_or(""));
+
+        let req_msg = serde_json::json!([
+            "REQ",
+            client_id,
+            {
+                "kinds": [KIND_NWC_RESPONSE],
+                "#p": [event.pubkey], 
+                "#e": [event.id]
+            }
+        ]).to_string();
+
+        let event_msg = serde_json::json!(["EVENT", event]).to_string();
+
+        let msg_text = transport.dispatch(connection_id, &client_id, vec![req_msg, event_msg]).await?;
         
         let arr: Vec<serde_json::Value> =
             serde_json::from_str(&msg_text).map_err(|e| Error::from(e.to_string()))?;
@@ -164,7 +181,7 @@ mod tests {
     #[test]
     fn test_nwc_connection_from_uri() {
         let uri = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
-        let conn = ConnectionDetails::from_uri(uri).unwrap();
+        let conn = WalletConnectionDetails::from_uri(uri).unwrap();
         assert_eq!(
             conn.wallet_pubkey,
             "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f"
@@ -178,8 +195,8 @@ mod tests {
     #[test]
     fn test_nwc_session_roundtrip() {
         let uri = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
-        let conn = ConnectionDetails::from_uri(uri).unwrap();
-        let session = Session::new(conn).unwrap();
+        let conn = WalletConnectionDetails::from_uri(uri).unwrap();
+        let session = WalletConnection::new(conn).unwrap();
 
         let payload = serde_json::json!({"test": "data"});
         let encrypted = session.encrypt(&payload).unwrap();
@@ -197,8 +214,8 @@ mod tests {
     #[test]
     fn test_nwc_session_nip44_roundtrip() {
         let uri = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
-        let conn = ConnectionDetails::from_uri(uri).unwrap();
-        let mut session = Session::new(conn).unwrap();
+        let conn = WalletConnectionDetails::from_uri(uri).unwrap();
+        let mut session = WalletConnection::new(conn).unwrap();
         session.encryption_method = EncryptionMethod::Nip44;
 
         let payload = serde_json::json!({"test": "nip44 data"});
@@ -212,28 +229,28 @@ mod tests {
     #[should_panic(expected = "Invalid scheme")]
     fn test_connection_invalid_scheme() {
         let uri = "http://invalid.example.com?secret=0101010101010101010101010101010101010101010101010101010101010101";
-        let _ = ConnectionDetails::from_uri(uri).unwrap();
+        let _ = WalletConnectionDetails::from_uri(uri).unwrap();
     }
 
     #[test]
     fn test_connection_missing_pubkey_returns_error() {
         let uri = "nostr+walletconnect://?secret=0101010101010101010101010101010101010101010101010101010101010101";
-        let result = ConnectionDetails::from_uri(uri);
+        let result = WalletConnectionDetails::from_uri(uri);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_connection_missing_secret_returns_error() {
         let uri = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f";
-        let result = ConnectionDetails::from_uri(uri);
+        let result = WalletConnectionDetails::from_uri(uri);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_session_encrypt_deterministic() {
         let uri = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
-        let conn = ConnectionDetails::from_uri(uri).unwrap();
-        let session = Session::new(conn).unwrap();
+        let conn = WalletConnectionDetails::from_uri(uri).unwrap();
+        let session = WalletConnection::new(conn).unwrap();
 
         let payload = serde_json::json!({"same": "data"});
         let encrypted1 = session.encrypt(&payload).unwrap();
@@ -244,8 +261,8 @@ mod tests {
     #[test]
     fn test_session_created_has_required_fields() {
         let uri = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
-        let conn = ConnectionDetails::from_uri(uri).unwrap();
-        let session = Session::new(conn).unwrap();
+        let conn = WalletConnectionDetails::from_uri(uri).unwrap();
+        let session = WalletConnection::new(conn).unwrap();
 
         assert!(!session.my_pubkey.is_empty());
     }
@@ -253,8 +270,8 @@ mod tests {
     #[test]
     fn test_event_creation_has_signature() {
         let uri = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
-        let conn = ConnectionDetails::from_uri(uri).unwrap();
-        let session = Session::new(conn).unwrap();
+        let conn = WalletConnectionDetails::from_uri(uri).unwrap();
+        let session = WalletConnection::new(conn).unwrap();
 
         let payload = serde_json::json!({"test": "data"});
         let encrypted = session.encrypt(&payload).unwrap();

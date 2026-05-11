@@ -2,6 +2,7 @@ use worker::*;
 
 mod auth;
 mod server;
+mod common;
 mod cloudflare;
 mod nostr;
 mod lnaddress;
@@ -9,7 +10,7 @@ mod util;
 
 use server::Server;
 
-pub use cloudflare::Websocket;
+pub use cloudflare::CloudflareTransport;
 
 pub fn set_panic_hook() {
     console_error_panic_hook::set_once();

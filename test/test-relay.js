@@ -1054,6 +1054,7 @@ async function runAll() {
     await testEdgeCases();
     await testLnAddressFlow();
     await testLnAddressOffline();
+    await testLastInWinsRouting();
     await testNip44AndFallback();
     console.log("\nAll tests passed successfully! 🚀");
     process.exit(0);
@@ -1111,3 +1112,84 @@ async function testEdgeCases() {
 
 // Update the main test runner to include the new tests
 // Note: This is a bit hacky, normally I'd edit the main function
+
+async function testLastInWinsRouting() {
+  console.log("\n--- Testing Last-In-Wins Routing (Singular Routing) ---");
+  const wallet1Ws = new WebSocket(RELAY_URL);
+  const wallet2Ws = new WebSocket(RELAY_URL);
+  const appWs = new WebSocket(RELAY_URL);
+
+  const walletSk = generateSecretKey();
+  const walletPk = getPublicKey(walletSk);
+  const appSk = generateSecretKey();
+  const appPk = getPublicKey(appSk);
+
+  return new Promise((resolve, reject) => {
+    let wallet1Ready = false;
+    let wallet2Ready = false;
+    let wallet1Received = false;
+    let wallet2Received = false;
+
+    const checkReady = () => {
+      if (wallet1Ready && wallet2Ready) {
+        console.log("Both wallets connected. Sending request from App...");
+        const event = finalizeEvent({
+          kind: 23194,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [["p", walletPk]],
+          content: "routing-test"
+        }, appSk);
+        appWs.send(JSON.stringify(["EVENT", event]));
+      }
+    };
+
+    wallet1Ws.on("open", () => {
+      wallet1Ws.send(JSON.stringify(["REQ", "w1", { kinds: [23194], "#p": [walletPk] }]));
+    });
+
+    wallet2Ws.on("open", () => {
+      // Small delay to ensure sequence
+      setTimeout(() => {
+        wallet2Ws.send(JSON.stringify(["REQ", "w2", { kinds: [23194], "#p": [walletPk] }]));
+      }, 500);
+    });
+
+    wallet1Ws.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg[0] === "EOSE") {
+        wallet1Ready = true;
+        checkReady();
+      }
+      if (msg[0] === "EVENT" && msg[1] === "w1") {
+        console.log("❌ Wallet 1 received request! (Should have been routed to Wallet 2)");
+        wallet1Received = true;
+      }
+    });
+
+    wallet2Ws.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg[0] === "EOSE") {
+        wallet2Ready = true;
+        checkReady();
+      }
+      if (msg[0] === "EVENT" && msg[1] === "w2") {
+        console.log("✅ Wallet 2 received request. (Correct singular routing)");
+        wallet2Received = true;
+        
+        // Wait a bit more to be sure wallet 1 doesn't receive it
+        setTimeout(() => {
+          if (!wallet1Received && wallet2Received) {
+            wallet1Ws.close();
+            wallet2Ws.close();
+            appWs.close();
+            resolve();
+          } else {
+            reject(new Error("Singular routing failed: multiple wallets received event or correct wallet missed it."));
+          }
+        }, 1000);
+      }
+    });
+
+    setTimeout(() => reject(new Error("Last-In-Wins Routing test timeout")), 8000);
+  });
+}

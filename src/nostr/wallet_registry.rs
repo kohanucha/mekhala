@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 use super::{Filter, Event};
 
 pub struct WalletRegistry {
-    // Maps (sub_id, filters) to a set of connection IDs
-    subscription_index: HashMap<(String, Vec<Filter>), HashSet<u32>>,
+    // Maps (sub_id, filters) to a set of connection IDs (ordered by insertion)
+    subscription_index: HashMap<(String, Vec<Filter>), Vec<u32>>,
     // Maps pubkey to (set of (sub_id, filters) that include this pubkey, optional info event)
     pk_index: HashMap<String, (HashSet<(String, Vec<Filter>)>, Option<Event>)>,
     // Maps connection_id to a map of sub_id to filters
@@ -34,9 +34,10 @@ impl WalletRegistry {
         }
 
         // Update subscription_index
-        self.subscription_index.entry(sub_key)
-            .or_default()
-            .insert(conn_id);
+        let conns = self.subscription_index.entry(sub_key).or_default();
+        if !conns.contains(&conn_id) {
+            conns.push(conn_id);
+        }
 
         // Update reverse_index
         self.reverse_index.entry(conn_id)
@@ -51,7 +52,7 @@ impl WalletRegistry {
                 
                 // Remove from subscription_index
                 if let Some(conns) = self.subscription_index.get_mut(&sub_key) {
-                    conns.remove(&conn_id);
+                    conns.retain(|&id| id != conn_id);
                     if conns.is_empty() {
                         self.subscription_index.remove(&sub_key);
                         
@@ -104,52 +105,48 @@ impl WalletRegistry {
     }
 
     pub fn match_event<'a>(&'a self, event: &'a Event) -> impl Iterator<Item = (String, Vec<u32>)> + 'a {
-        let mut potential_sub_keys = HashSet::new();
-
-        // 1. Direct pubkey match
-        if let Some(entry) = self.pk_index.get(&event.pubkey) {
-            for sub_key in &entry.0 {
-                potential_sub_keys.insert(sub_key);
-            }
-        }
-
-        // 2. Tagged p-tag matches
+        let mut target_pks = HashSet::new();
+        target_pks.insert(event.pubkey.clone());
         for tag in &event.tags {
             if tag.len() >= 2 && tag[0].as_str() == Some("p") {
                 if let Some(pk) = tag[1].as_str() {
-                    if let Some(entry) = self.pk_index.get(pk) {
-                        for sub_key in &entry.0 {
-                            potential_sub_keys.insert(sub_key);
+                    target_pks.insert(pk.to_string());
+                }
+            }
+        }
+
+        let mut sub_to_conns = HashMap::new();
+        for pk in target_pks {
+            if let Some(entry) = self.pk_index.get(&pk) {
+                // For each pubkey, find all matching sub_keys
+                for sub_key in &entry.0 {
+                    if sub_key.1.iter().any(|f| f.matches(event)) {
+                        if let Some(conns) = self.subscription_index.get(sub_key) {
+                            // Find the latest connection for this SPECIFIC pubkey
+                            if let Some(latest_conn) = conns.last() {
+                                // Double check: is this the latest connection for this PK across ALL its subscriptions?
+                                if self.get_connection_id(&pk) == Some(*latest_conn) {
+                                    sub_to_conns.insert(sub_key.0.clone(), vec![*latest_conn]);
+                                }
+                            }
                         }
                     }
                 }
             }
         }
-
-        // 3. Precision filtering and connection mapping
-        potential_sub_keys.into_iter().filter_map(move |sub_key| {
-            if sub_key.1.iter().any(|f| f.matches(event)) {
-                if let Some(conns) = self.subscription_index.get(sub_key) {
-                    return Some((sub_key.0.clone(), conns.iter().cloned().collect::<Vec<_>>()));
-                }
-            }
-            None
-        })
+        sub_to_conns.into_iter()
     }
 
-    pub fn get_connection_ids(&self, pubkey: &str) -> Vec<u32> {
+    pub fn get_connection_id(&self, pubkey: &str) -> Option<u32> {
         if let Some(entry) = self.pk_index.get(pubkey) {
-            let mut ids = HashSet::new();
             for sub_key in &entry.0 {
                 if let Some(conns) = self.subscription_index.get(sub_key) {
-                    for id in conns {
-                        ids.insert(*id);
-                    }
+                    // Return the most recent connection ID (LIFO) for this pubkey
+                    return conns.last().cloned();
                 }
             }
-            return ids.into_iter().collect();
         }
-        Vec::new()
+        None
     }
 
     pub fn export_connection(&self, conn_id: u32) -> Option<serde_json::Value> {
@@ -202,7 +199,6 @@ impl WalletRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nostr::Event;
 
     fn make_event(pubkey: &str, kind: u64, tags: Vec<Vec<serde_json::Value>>) -> Event {
         Event {
@@ -235,9 +231,10 @@ mod tests {
         let matches: Vec<_> = registry.match_event(&event_alice).collect();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].0, "sub1");
-        assert_eq!(matches[0].1.len(), 2);
-        assert!(matches[0].1.contains(&1));
+        // Singular Routing: only the latest connection (2) should be returned
+        assert_eq!(matches[0].1.len(), 1);
         assert!(matches[0].1.contains(&2));
+        assert!(!matches[0].1.contains(&1));
     }
 
     #[test]
