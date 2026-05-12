@@ -2,7 +2,7 @@ use worker::*;
 use crate::nostr::nip_47::{WalletConnectionDetails, WalletConnection, EncryptionMethod, KIND_NWC_REQUEST};
 use crate::nostr::Event;
 use crate::util::now;
-use crate::common::InternalTransport;
+use crate::common::{InternalTransport, InternalConnection};
 use serde_json::Value;
 
 pub struct WalletConnector {
@@ -72,45 +72,46 @@ impl WalletConnector {
     async fn send_request(
         &self,
         transport: &impl InternalTransport,
-        connection: &mut WalletConnection,
+        wallet_connection: &mut WalletConnection,
         request_payload: &Value,
         extra_tags: Option<Vec<Vec<Value>>>,
     ) -> Result<Value> {
-        // 1. Establish Virtual Connection
-        let connection_id = transport.create_connection().await?;
+        // 1. Establish Internal Request
+        let internal_connection = InternalConnection::new(transport).await?;
 
         // 2. Prepare Request Event (Calculate ID early)
         let mut tags = vec![
-            vec![Value::String("p".into()), Value::String(connection.wallet_pubkey.clone())],
+            vec![Value::String("p".into()), Value::String(wallet_connection.wallet_pubkey.clone())],
             vec![Value::String("expiration".into()), Value::String((now() + 60).to_string())],
         ];
         if let Some(extra) = extra_tags {
             tags.extend(extra);
         }
 
-        let encrypted_content = connection.encrypt(request_payload)?;
-        let event = connection.create_event(KIND_NWC_REQUEST, encrypted_content, tags)?;
+        let encrypted_content = wallet_connection.encrypt(request_payload)?;
+        let event = wallet_connection.create_event(KIND_NWC_REQUEST, encrypted_content, tags)?;
         let event_id = event.id.clone();
 
         // 3. Subscribe (Listener) - Start listening BEFORE sending the event
         let req_json = serde_json::json!([
             "REQ",
             "bridge_sub",
-            { "#e": [event_id.clone()], "#p": [connection.my_pubkey] }
+            { "#e": [event_id.clone()], "#p": [wallet_connection.my_pubkey] }
         ]).to_string();
-        transport.send_message(connection_id, req_json).await?;
+        
+        // REQ doesn't expect a reply on virtual connections (EOSE is skipped)
+        let (tx1, _rx1) = futures::channel::oneshot::channel();
+        transport.send_message(internal_connection.id(), req_json, tx1).await?;
 
-        // 4. Send Event
+        // 4. Send Event and Wait for Response
         let event_envelope = serde_json::json!(["EVENT", event]).to_string();
-        transport.send_message(connection_id, event_envelope).await?;
-
-        // 5. Wait for Response
-        let msg_text = transport.receive_message(connection_id).await?;
+        let msg_text = internal_connection.send_and_receive(event_envelope).await?;
 
         // Cleanup: Always close connection and subscription
         let close_envelope = serde_json::json!(["CLOSE", "bridge_sub"]).to_string();
-        let _ = transport.send_message(connection_id, close_envelope).await;
-        let _ = transport.close_connection(connection_id).await;
+        let (tx2, _rx2) = futures::channel::oneshot::channel();
+        let _ = transport.send_message(internal_connection.id(), close_envelope, tx2).await;
+        let _ = internal_connection.close().await;
 
         // 7. Process Response
         let arr: Vec<serde_json::Value> =
@@ -123,8 +124,8 @@ impl WalletConnector {
             // 1. Protocol Verification (Signature & IDs)
             resp_event.verify(now()).map_err(|e| Error::from(e.to_string()))?;
 
-            if resp_event.pubkey != connection.wallet_pubkey {
-                worker::console_error!("NWC dispatch: pubkey mismatch: expected={}, got={}", connection.wallet_pubkey, resp_event.pubkey);
+            if resp_event.pubkey != wallet_connection.wallet_pubkey {
+                worker::console_error!("NWC dispatch: pubkey mismatch: expected={}, got={}", wallet_connection.wallet_pubkey, resp_event.pubkey);
                 return Err(Error::from("Response pubkey mismatch"));
             }
             let has_e_tag = resp_event.tags.iter().any(|t| {
@@ -136,7 +137,7 @@ impl WalletConnector {
             }
 
             // 2. Content Decryption
-            let decrypted = connection.decrypt(&resp_event.content)?;
+            let decrypted = wallet_connection.decrypt(&resp_event.content)?;
             let resp_json: Value =
                 serde_json::from_str(&decrypted).map_err(|e| Error::from(e.to_string()))?;
 

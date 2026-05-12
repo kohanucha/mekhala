@@ -7,17 +7,17 @@ use serde_json::Value;
 #[derive(Debug, PartialEq, Eq)]
 pub enum EngineResponse {
     Send { connection_id: u32, message: String },
-    Signal { connection_id: u32, message: String },
     StoreState { connection_id: u32, connection_data: serde_json::Value, pubkeys: HashSet<String> },
+}
+
+#[derive(Default, Clone, Copy)]
+pub struct MessageFlags {
+    pub is_internal: bool, // Skips OK/EOSE/CLOSED responses and skips emitting EngineResponse::StoreState
 }
 
 impl EngineResponse {
     pub fn send(connection_id: u32, message: String) -> Self {
         EngineResponse::Send { connection_id, message }
-    }
-
-    pub fn signal(connection_id: u32, message: String) -> Self {
-        EngineResponse::Signal { connection_id, message }
     }
 
     pub fn store_state(connection_id: u32, state: crate::nostr::wallet_registry::SavedState) -> Self {
@@ -45,71 +45,73 @@ impl<R: WalletRegistry> NostrEngine<R> {
         Vec::new()
     }
 
-    pub fn register_virtual(&mut self, id: u32) {
-        self.registry.register_virtual(id);
-    }
-
-    pub fn on_message(&mut self, connection_id: u32, message: &str) -> Vec<EngineResponse> {
+    pub fn on_message(&mut self, connection_id: u32, message: &str, flags: MessageFlags) -> Vec<EngineResponse> {
         match ClientMessage::from_json(message) {
-            Ok(ClientMessage::Event(event)) => self.handle_nostr_event(connection_id, event),
-            Ok(ClientMessage::Req(sub_id, filters)) => self.handle_nostr_req(connection_id, sub_id, filters),
-            Ok(ClientMessage::Close(sub_id)) => self.handle_nostr_close(connection_id, sub_id),
+            Ok(ClientMessage::Event(event)) => self.handle_nostr_event(connection_id, event, flags),
+            Ok(ClientMessage::Req(sub_id, filters)) => self.handle_nostr_req(connection_id, sub_id, filters, flags),
+            Ok(ClientMessage::Close(sub_id)) => self.handle_nostr_close(connection_id, sub_id, flags),
             Err(e) => {
-                vec![EngineResponse::send(connection_id, RelayMessage::Notice(format!("parse failed: {}", e)).to_json())]
+                if !flags.is_internal {
+                    vec![EngineResponse::send(connection_id, RelayMessage::Notice(format!("parse failed: {}", e)).to_json())]
+                } else {
+                    Vec::new()
+                }
             }
         }
     }
 
-    pub fn handle_nostr_event(&mut self, connection_id: u32, event: Event) -> Vec<EngineResponse> {
-        let is_virtual = self.registry.is_virtual(connection_id);
-
+    pub fn handle_nostr_event(&mut self, connection_id: u32, event: Event, flags: MessageFlags) -> Vec<EngineResponse> {
         match event.kind {
             13194 => {
-                if is_virtual || event.verify(now()).is_ok() {
+                if event.verify(now()).is_ok() {
                     self.registry.cache_info(event);
-                    if let Some(state) = self.registry.save(connection_id) {
-                        return vec![EngineResponse::store_state(connection_id, state)];
+                    if !flags.is_internal {
+                        if let Some(state) = self.registry.save(connection_id) {
+                            return vec![EngineResponse::store_state(connection_id, state)];
+                        }
                     }
                 }
                 Vec::new()
             }
             23194..=23197 => {
-                if !is_virtual {
-                    if let Err(e) = event.verify(now()) {
+                if let Err(e) = event.verify(now()) {
+                    if !flags.is_internal {
                         return vec![EngineResponse::send(connection_id, RelayMessage::Ok(event.id, false, e.to_string()).to_json())];
+                    } else {
+                        return Vec::new();
                     }
                 }
-                self.handle_verified_event(connection_id, event)
+                self.handle_verified_event(connection_id, event, flags)
             }
             _ => {
-                let verify_result = if is_virtual { Ok(()) } else { event.verify(now()) };
-                let message = if let Err(e) = verify_result {
-                    RelayMessage::Ok(event.id, false, e.to_string())
+                if !flags.is_internal {
+                    let message = if let Err(e) = event.verify(now()) {
+                        RelayMessage::Ok(event.id, false, e.to_string())
+                    } else {
+                        RelayMessage::Ok(event.id, false, "blocked: event kind not allowed".into())
+                    };
+                    
+                    vec![EngineResponse::send(connection_id, message.to_json())]
                 } else {
-                    RelayMessage::Ok(event.id, false, "blocked: event kind not allowed".into())
-                };
-                vec![EngineResponse::send(connection_id, message.to_json())]
+                    Vec::new()
+                }
             }
         }
     }
 
-    fn handle_verified_event(&mut self, id: u32, event: Event) -> Vec<EngineResponse> {
+    fn handle_verified_event(&mut self, id: u32, event: Event, flags: MessageFlags) -> Vec<EngineResponse> {
         let mut responses = Vec::new();
         let ok_message = RelayMessage::Ok(event.id.clone(), true, "".into()).to_json();
 
-        if !self.registry.is_virtual(id) {
+        if !flags.is_internal {
             responses.push(EngineResponse::send(id, ok_message));
         }
 
-        for (client_id, recipient_ids) in self.registry.match_event(&event) {
+        let matches: Vec<(String, Vec<u32>)> = self.registry.match_event(&event).collect();
+        for (client_id, recipient_ids) in matches {
             for rid in recipient_ids {
                 let message = RelayMessage::Event(client_id.clone(), event.clone()).to_json();
-
-                if self.registry.is_virtual(rid) {
-                    responses.push(EngineResponse::signal(rid, message));
-                } else {
-                    responses.push(EngineResponse::send(rid, message));
-                }
+                responses.push(EngineResponse::send(rid, message));
             }
         }
 
@@ -193,19 +195,18 @@ impl<R: WalletRegistry> NostrEngine<R> {
         self.registry.disconnect(id);
     }
 
-    fn handle_nostr_req(&mut self, id: u32, sub_id: String, filters: Vec<Filter>) -> Vec<EngineResponse> {
+    fn handle_nostr_req(&mut self, id: u32, sub_id: String, filters: Vec<Filter>, flags: MessageFlags) -> Vec<EngineResponse> {
         if filters.iter().any(|f| !f.is_valid()) {
             let message = RelayMessage::Closed(sub_id.clone(), "filter too broad".to_string()).to_json();
-            return if self.registry.is_virtual(id) {
-                vec![EngineResponse::signal(id, message)]
+            
+            if !flags.is_internal {
+                return vec![EngineResponse::send(id, message)];
             } else {
-                vec![EngineResponse::send(id, message)]
-            };
+                return Vec::new();
+            }
         }
 
         let mut responses = Vec::new();
-        let is_virtual = self.registry.is_virtual(id);
-
         self.registry.subscribe(id, sub_id.clone(), filters.clone());
 
         for filters_set in filters.iter() {
@@ -213,9 +214,8 @@ impl<R: WalletRegistry> NostrEngine<R> {
                 if let Some(info_event) = self.registry.get_info(&pk) {
                     if filters.iter().any(|f| f.matches(&info_event)) {
                         let message = RelayMessage::Event(sub_id.clone(), info_event.clone()).to_json();
-                        if is_virtual {
-                            responses.push(EngineResponse::signal(id, message));
-                        } else {
+                        
+                        if !flags.is_internal {
                             responses.push(EngineResponse::send(id, message));
                         }
                     }
@@ -223,21 +223,25 @@ impl<R: WalletRegistry> NostrEngine<R> {
             }
         }
 
-        if let Some(state) = self.registry.save(id) {
-            responses.push(EngineResponse::store_state(id, state));
+        if !flags.is_internal {
+            if let Some(state) = self.registry.save(id) {
+                responses.push(EngineResponse::store_state(id, state));
+            }
         }
 
         let eose = RelayMessage::Eose(sub_id).to_json();
-        if !is_virtual {
+        if !flags.is_internal {
             responses.push(EngineResponse::send(id, eose));
         }
         responses
     }
 
-    fn handle_nostr_close(&mut self, id: u32, sub_id: String) -> Vec<EngineResponse> {
+    fn handle_nostr_close(&mut self, id: u32, sub_id: String, flags: MessageFlags) -> Vec<EngineResponse> {
         self.registry.unsubscribe(id, sub_id);
-        if let Some(state) = self.registry.save(id) {
-            return vec![EngineResponse::store_state(id, state)];
+        if !flags.is_internal {
+            if let Some(state) = self.registry.save(id) {
+                return vec![EngineResponse::store_state(id, state)];
+            }
         }
         Vec::new()
     }
@@ -253,7 +257,7 @@ mod tests {
         engine.on_connect(1);
 
         let req = r#"["REQ", "sub1", {"authors": ["pk1"]}]"#;
-        let responses = engine.on_message(1, req);
+        let responses = engine.on_message(1, req, MessageFlags::default());
 
         assert!(responses.iter().any(|r| matches!(r, EngineResponse::StoreState { .. })));
         assert!(responses.iter().any(|r| {
@@ -298,33 +302,47 @@ mod tests {
     fn test_bridge_signaling() {
         let mut engine = NostrEngine::<InMemoryWalletRegistry>::new();
         engine.on_connect(1);
+        let wallet_pk = "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f";
         engine.registry.subscribe(1, "sub1".into(), vec![Filter {
-            p_tags: Some(vec!["wallet_pk".into()]),
+            p_tags: Some(vec![wallet_pk.into()]),
             ..Default::default()
         }]);
 
         let bridge_id = 100;
-        engine.register_virtual(bridge_id);
-        let bridge_req = serde_json::json!(["REQ", "sub_bridge", { "#p": ["bridge"] }]).to_string();
-        let _ = engine.on_message(bridge_id, &bridge_req);
+        let bridge_sk = "0202020202020202020202020202020202020202020202020202020202020202";
+
+        // Create a valid signed event for the bridge
+        let details = crate::nostr::nip_47::WalletConnectionDetails {
+            wallet_pubkey: wallet_pk.to_string(),
+            secret: bridge_sk.to_string(),
+        };
+        let connection = crate::nostr::nip_47::WalletConnection::new(details).unwrap();
+
+        let bridge_req = serde_json::json!(["REQ", "sub_bridge", { "#p": [connection.my_pubkey] }]).to_string();
+        let responses = engine.on_message(bridge_id, &bridge_req, MessageFlags { is_internal: true });
+
+        // REQ should NOT send anything back to sender with suppress_acks (is_internal)
+        assert!(!responses.iter().any(|r| matches!(r, EngineResponse::Send { connection_id: 100, .. })));
+
+        // Create a valid signed event for the bridge
+        let details = crate::nostr::nip_47::WalletConnectionDetails {
+            wallet_pubkey: wallet_pk.to_string(),
+            secret: bridge_sk.to_string(),
+        };
+        let connection = crate::nostr::nip_47::WalletConnection::new(details).unwrap();
+        let bridge_event = connection.create_event(23194, "".into(), vec![vec![serde_json::json!("p"), serde_json::json!(wallet_pk)]]).unwrap();
 
         let bridge_event_json = serde_json::json!([
             "EVENT",
-            {
-                "id": "event1",
-                "pubkey": "bridge",
-                "created_at": now(),
-                "kind": 23194,
-                "tags": [["p", "wallet_pk"]],
-                "content": "",
-                "sig": ""
-            }
+            bridge_event
         ]).to_string();
 
-        let responses = engine.on_message(bridge_id, &bridge_event_json);
+        let responses = engine.on_message(bridge_id, &bridge_event_json, MessageFlags { is_internal: true });
 
-        assert!(!responses.iter().any(|r| matches!(r, EngineResponse::Signal { connection_id: _bridge_id, .. })));
+        // Event should be routed to connection 1
         assert!(responses.iter().any(|r| matches!(r, EngineResponse::Send { connection_id: 1, .. })));
+        // EVENT should NOT send OK back to sender (is_internal)
+        assert!(!responses.iter().any(|r| matches!(r, EngineResponse::Send { connection_id: 100, .. })));
 
         let wallet_response_event: Event = serde_json::from_value(serde_json::json!({
             "id": "resp1",
@@ -335,24 +353,22 @@ mod tests {
             "content": "",
             "sig": "dummy_sig"
         })).unwrap();
+        // Since we use handle_verified_event directly for the response, sig verification is skipped there.
+        // But for the sake of realism, we can use the bridge's pubkey.
+        let mut wallet_response_event = wallet_response_event;
+        wallet_response_event.tags = vec![vec![serde_json::json!("p"), serde_json::json!(connection.my_pubkey)], vec![serde_json::json!("e"), serde_json::json!(bridge_event.id)]];
 
-        let responses = engine.handle_verified_event(1, wallet_response_event);
+        // Wallet response comes from connection 1
+        let responses = engine.handle_verified_event(1, wallet_response_event, MessageFlags::default());
 
-        assert!(responses.iter().any(|r| matches!(r, EngineResponse::Signal { connection_id: _bridge_id, .. })));
-        assert!(responses.iter().any(|r| matches!(r, EngineResponse::Send { connection_id: 1, .. })));
-    }
-
-    #[test]
-    fn test_is_virtual() {
-        let mut engine = NostrEngine::<InMemoryWalletRegistry>::new();
-        engine.on_connect(1);
-
-        assert!(!engine.registry.is_virtual(1));
-
-        let id = 100;
-        engine.register_virtual(id);
-        assert!(engine.registry.is_virtual(id));
-        assert!(!engine.registry.is_virtual(1));
+        // Routed EVENT SHOULD go to connection 100
+        assert!(responses.iter().any(|r| {
+            if let EngineResponse::Send { connection_id, message } = r {
+                *connection_id == 100 && message.contains("resp1")
+            } else {
+                false
+            }
+        }));
     }
 
     #[test]
@@ -361,13 +377,10 @@ mod tests {
         engine.on_connect(1);
 
         let id = 100;
-        engine.register_virtual(id);
         engine.registry.subscribe(id, "sub1".into(), vec![Filter {
             authors: Some(vec!["alice".into()]),
             ..Default::default()
         }]);
-
-        assert!(engine.registry.is_virtual(id));
 
         let event = Event {
             id: "event1".into(),
@@ -378,28 +391,18 @@ mod tests {
             content: "test".into(),
             sig: "sig".into(),
         };
-        let responses = engine.handle_verified_event(id, event);
-        assert!(responses.iter().any(|r| matches!(r, EngineResponse::Signal { .. })));
+
+        let responses = engine.handle_verified_event(2, event, MessageFlags::default());
+
+        assert!(responses.iter().any(|r| {
+            if let EngineResponse::Send { connection_id, message } = r {
+                *connection_id == 100 && message.contains("event1")
+            } else {
+                false
+            }
+        }));
 
         engine.registry.disconnect(id);
-        assert!(!engine.registry.is_virtual(id));
-    }
-
-    #[test]
-    fn test_export_state_virtual() {
-        let mut engine = NostrEngine::<InMemoryWalletRegistry>::new();
-
-        let id = 100;
-        engine.register_virtual(id);
-        engine.registry.subscribe(id, "sub1".into(), vec![Filter {
-            authors: Some(vec!["alice".into()]),
-            ..Default::default()
-        }]);
-
-        let state = engine.registry.save(id);
-        assert!(state.is_some());
-        let state = state.unwrap();
-        assert!(state.json.get("virtual_connections").is_some());
-        assert!(state.pubkeys.contains("alice"));
+        assert!(engine.registry.get_subscriptions(id).is_empty());
     }
 }

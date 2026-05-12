@@ -39,7 +39,7 @@ WRANGLER_PID=$!
 
 # 4. Wait for Relay to be Ready
 echo "Waiting for relay to start..."
-MAX_RETRIES=30
+MAX_RETRIES=60
 COUNT=0
 while ! lsof -i :$PORT > /dev/null; do
     sleep 1

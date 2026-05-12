@@ -15,8 +15,6 @@ pub trait WalletRegistry {
     fn get_info(&self, pubkey: &str) -> Option<Event>;
     fn match_event<'a>(&'a self, event: &'a Event) -> Box<dyn Iterator<Item = (String, Vec<u32>)> + 'a>;
     fn get_connection_id(&self, pubkey: &str) -> Option<u32>;
-    fn register_virtual(&mut self, id: u32);
-    fn is_virtual(&self, conn_id: u32) -> bool;
     fn save(&self, conn_id: u32) -> Option<SavedState>;
     fn restore(&mut self, conn_id: u32, data: serde_json::Value);
 }
@@ -25,7 +23,6 @@ pub struct InMemoryWalletRegistry {
     subscription_index: HashMap<(String, Vec<Filter>), Vec<u32>>,
     pk_index: HashMap<String, (HashSet<(String, Vec<Filter>)>, Option<Event>)>,
     reverse_index: HashMap<u32, HashMap<String, Vec<Filter>>>,
-    virtual_index: HashSet<u32>,
 }
 
 impl InMemoryWalletRegistry {
@@ -34,7 +31,6 @@ impl InMemoryWalletRegistry {
             subscription_index: HashMap::new(),
             pk_index: HashMap::new(),
             reverse_index: HashMap::new(),
-            virtual_index: HashSet::new(),
         }
     }
 
@@ -103,8 +99,6 @@ impl WalletRegistry for InMemoryWalletRegistry {
         for sub_id in sub_ids {
             self.remove_subscription(conn_id, sub_id);
         }
-
-        self.virtual_index.remove(&conn_id);
     }
 
     fn get_subscriptions(&self, conn_id: u32) -> HashMap<String, Vec<Filter>> {
@@ -171,17 +165,9 @@ impl WalletRegistry for InMemoryWalletRegistry {
         None
     }
 
-    fn register_virtual(&mut self, id: u32) {
-        self.virtual_index.insert(id);
-    }
-
-    fn is_virtual(&self, conn_id: u32) -> bool {
-        self.virtual_index.contains(&conn_id)
-    }
-
     fn save(&self, conn_id: u32) -> Option<SavedState> {
         let subscriptions = self.get_subscriptions(conn_id);
-        if subscriptions.is_empty() && !self.is_virtual(conn_id) {
+        if subscriptions.is_empty() {
             return None;
         }
 
@@ -204,7 +190,6 @@ impl WalletRegistry for InMemoryWalletRegistry {
             json: serde_json::json!({
                 "subscriptions": subscriptions,
                 "info_event": info_event,
-                "virtual_connections": self.virtual_index.iter().copied().collect::<Vec<_>>()
             }),
             pubkeys,
         })
@@ -276,58 +261,5 @@ mod tests {
         let stored = registry.get_info("alice");
         assert!(stored.is_some());
         assert_eq!(stored.unwrap().id, event.id);
-    }
-
-    #[test]
-    fn test_virtual_connection_lifecycle() {
-        let mut registry = InMemoryWalletRegistry::new();
-
-        let id = 0;
-        registry.register_virtual(id);
-        assert_eq!(id, 0);
-        assert!(registry.is_virtual(id));
-        assert!(!registry.is_virtual(1));
-
-        registry.disconnect(id);
-        assert!(!registry.is_virtual(id));
-    }
-
-    #[test]
-    fn test_virtual_with_subscription() {
-        let mut registry = InMemoryWalletRegistry::new();
-
-        let id = 0;
-        registry.register_virtual(id);
-        registry.subscribe(id, "sub1".into(), vec![Filter {
-            authors: Some(vec!["alice".into()]),
-            ..Default::default()
-        }]);
-
-        assert!(registry.is_virtual(id));
-        let stored = registry.get_subscriptions(id);
-        assert!(stored.contains_key("sub1"));
-
-        registry.disconnect(id);
-        assert!(!registry.is_virtual(id));
-    }
-
-    #[test]
-    fn test_export_state_virtual() {
-        let mut registry = InMemoryWalletRegistry::new();
-
-        let id = 0;
-        registry.register_virtual(id);
-        registry.subscribe(id, "sub1".into(), vec![Filter {
-            authors: Some(vec!["alice".into()]),
-            ..Default::default()
-        }]);
-
-        let state = registry.save(id);
-        assert!(state.is_some());
-        let state = state.unwrap();
-        assert!(state.json.get("virtual_connections").is_some());
-        let virtual_conns = state.json.get("virtual_connections").unwrap().as_array().unwrap();
-        assert!(virtual_conns.contains(&serde_json::json!(0)));
-        assert!(state.pubkeys.contains("alice"));
     }
 }

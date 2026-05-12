@@ -1,10 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashSet, HashMap};
 use std::cell::RefCell;
 use futures::channel::oneshot;
-use futures_util::FutureExt;
 use worker::*;
 use wasm_bindgen::{JsValue, JsCast};
-use crate::nostr::engine::{NostrEngine, EngineResponse};
+use crate::nostr::engine::{NostrEngine, EngineResponse, MessageFlags};
 use crate::nostr::wallet_registry::{InMemoryWalletRegistry, WalletRegistry};
 use crate::cloudflare::headers::create_cors_response;
 use crate::cloudflare::HibernationState;
@@ -15,7 +14,7 @@ pub struct CloudflareTransport {
     env: Env,
     engine: RefCell<NostrEngine<InMemoryWalletRegistry>>,
     id_map: RefCell<Vec<(WebSocket, u32)>>,
-    internal_connections: RefCell<HashMap<u32, (Option<oneshot::Sender<String>>, Option<oneshot::Receiver<String>>)>>,
+    internal_map: RefCell<HashMap<u32, oneshot::Sender<String>>>,
 }
 
 impl DurableObject for CloudflareTransport {
@@ -27,7 +26,7 @@ impl DurableObject for CloudflareTransport {
             env,
             engine: RefCell::new(engine),
             id_map: RefCell::new(Vec::new()),
-            internal_connections: RefCell::new(HashMap::new()),
+            internal_map: RefCell::new(HashMap::new()),
         }
     }
 
@@ -55,7 +54,7 @@ impl DurableObject for CloudflareTransport {
             // Pre-flight Loading for EVENT messages to support O(1) routing
             self.load_recipients(&text).await;
             
-            let responses = self.engine.borrow_mut().on_message(connection_id, &text);
+            let responses = self.engine.borrow_mut().on_message(connection_id, &text, MessageFlags::default());
             self.process_responses(responses).await?;
 
             Ok(())
@@ -76,6 +75,35 @@ impl DurableObject for CloudflareTransport {
 
 #[async_trait::async_trait(?Send)]
 impl crate::common::InternalTransport for CloudflareTransport {
+    async fn get_wallet_info(&self, pubkey: &str) -> Option<crate::nostr::WalletInfo> {
+        let _ = self.load_connection(pubkey).await.ok();
+        Some(self.engine.borrow().get_wallet_info(pubkey))
+    }
+
+    async fn send_message(&self, id: u32, message: String, sender: oneshot::Sender<String>) -> Result<()> {
+        self.internal_map.borrow_mut().insert(id, sender);
+
+        // Pre-flight Loading for EVENT messages to support O(1) routing
+        self.load_recipients(&message).await;
+
+        let responses = self.engine.borrow_mut().on_message(id, &message, MessageFlags { is_internal: true });
+        self.process_responses(responses).await?;
+        Ok(())
+    }
+
+    async fn generate_id(&self) -> u32 {
+        self.generate_unique_id().await
+    }
+
+    async fn close_connection(&self, id: u32) -> Result<()> {
+        let responses = self.engine.borrow_mut().on_disconnect(id);
+        self.process_responses(responses).await?;
+        self.internal_map.borrow_mut().remove(&id);
+        Ok(())
+    }
+}
+
+impl CloudflareTransport {
     async fn load_connection(&self, pubkey: &str) -> Result<Option<u32>> {
         let storage = self.state.storage();
         let key = format!("pk:{}", pubkey);
@@ -90,7 +118,7 @@ impl crate::common::InternalTransport for CloudflareTransport {
                     }
                 }
             }
-            
+
             // Fallback: search all sockets if tagged one failed to wake up
             for ws in self.state.get_websockets() {
                 if let Some(actual_id) = self.wake_up(&ws).await {
@@ -103,67 +131,20 @@ impl crate::common::InternalTransport for CloudflareTransport {
         Ok(None)
     }
 
-    async fn get_wallet_info(&self, pubkey: &str) -> Option<crate::nostr::WalletInfo> {
-        let _ = <Self as crate::common::InternalTransport>::load_connection(self, pubkey).await.ok();
-        Some(self.engine.borrow().get_wallet_info(pubkey))
-    }
-
-    async fn create_connection(&self) -> Result<u32> {
-        let id = self.generate_unique_id().await;
-        self.engine.borrow_mut().register_virtual(id);
-        let (tx, rx) = oneshot::channel();
-        self.internal_connections.borrow_mut().insert(id, (Some(tx), Some(rx)));
-        Ok(id)
-    }
-
-    async fn send_message(&self, id: u32, message: String) -> Result<()> {
-        // Pre-flight Loading for EVENT messages to support O(1) routing
-        self.load_recipients(&message).await;
-
-        let responses = self.engine.borrow_mut().on_message(id, &message);
-        self.process_responses(responses).await?;
-        Ok(())
-    }
-
-    async fn receive_message(&self, id: u32) -> Result<String> {
-        let rx = {
-            let mut channels = self.internal_connections.borrow_mut();
-            let entry = channels.get_mut(&id).ok_or_else(|| Error::from("Connection not found"))?;
-            entry.1.take().ok_or_else(|| Error::from("Already receiving or channel closed"))?
-        };
-
-        let delay = worker::Delay::from(std::time::Duration::from_secs(10)).fuse();
-        futures_util::pin_mut!(rx, delay);
-
-        match futures_util::future::select(rx, delay).await {
-            futures_util::future::Either::Left((Ok(response), _)) => Ok(response),
-            _ => Err(Error::from("Dispatch timeout")),
-        }
-    }
-
-    async fn close_connection(&self, id: u32) -> Result<()> {
-        let responses = self.engine.borrow_mut().on_disconnect(id);
-        self.process_responses(responses).await?;
-        self.internal_connections.borrow_mut().remove(&id);
-        Ok(())
-    }
-}
-
-impl CloudflareTransport {
     async fn process_responses(&self, responses: Vec<EngineResponse>) -> Result<()> {
         for resp in responses {
             match resp {
                 EngineResponse::Send { connection_id, message } => {
+                    // 1. Try internal routing first
+                    let internal_sender = self.internal_map.borrow_mut().remove(&connection_id);
+                    if let Some(sender) = internal_sender {
+                        let _ = sender.send(message);
+                        continue;
+                    }
+
+                    // 2. Fallback to WebSocket routing
                     if let Some((ws, _)) = self.id_map.borrow().iter().find(|(_, i)| *i == connection_id) {
                         let _ = ws.send_with_str(&message);
-                    }
-                }
-                EngineResponse::Signal { connection_id, message } => {
-                    let mut channels = self.internal_connections.borrow_mut();
-                    if let Some(entry) = channels.get_mut(&connection_id) {
-                        if let Some(sender) = entry.0.take() {
-                            let _ = sender.send(message);
-                        }
                     }
                 }
                 EngineResponse::StoreState { connection_id, connection_data, pubkeys } => {
