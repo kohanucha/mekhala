@@ -5,6 +5,7 @@ use futures_util::FutureExt;
 use worker::*;
 use wasm_bindgen::{JsValue, JsCast};
 use crate::nostr::engine::{NostrEngine, EngineResponse};
+use crate::nostr::wallet_registry::{InMemoryWalletRegistry, WalletRegistry};
 use crate::cloudflare::headers::create_cors_response;
 use crate::cloudflare::HibernationState;
 
@@ -12,14 +13,14 @@ use crate::cloudflare::HibernationState;
 pub struct CloudflareTransport {
     state: State,
     env: Env,
-    engine: RefCell<NostrEngine>,
+    engine: RefCell<NostrEngine<InMemoryWalletRegistry>>,
     id_map: RefCell<Vec<(WebSocket, u32)>>,
     internal_connections: RefCell<HashMap<u32, (Option<oneshot::Sender<String>>, Option<oneshot::Receiver<String>>)>>,
 }
 
 impl DurableObject for CloudflareTransport {
     fn new(state: State, env: Env) -> Self {
-        let engine = NostrEngine::new();
+        let engine = NostrEngine::<InMemoryWalletRegistry>::new();
 
         Self {
             state,
@@ -109,6 +110,7 @@ impl crate::common::InternalTransport for CloudflareTransport {
 
     async fn create_connection(&self) -> Result<u32> {
         let id = self.generate_unique_id().await;
+        self.engine.borrow_mut().register_virtual(id);
         let (tx, rx) = oneshot::channel();
         self.internal_connections.borrow_mut().insert(id, (Some(tx), Some(rx)));
         Ok(id)
@@ -164,40 +166,21 @@ impl CloudflareTransport {
                         }
                     }
                 }
-                EngineResponse::StoreState { connection_id, connection_data } => {
-                    self.sync_to_storage_data(connection_id, connection_data).await;
+                EngineResponse::StoreState { connection_id, connection_data, pubkeys } => {
+                    self.sync_to_storage_data(connection_id, connection_data, pubkeys).await;
                 }
             }
         }
         Ok(())
     }
 
-    async fn sync_to_storage_data(&self, connection_id: u32, state: serde_json::Value) {
+    async fn sync_to_storage_data(&self, connection_id: u32, state: serde_json::Value, pubkeys: HashSet<String>) {
         let storage = self.state.storage();
-        let key = format!("conn:{}", connection_id);
-        let _ = storage.put(&key, state.clone()).await;
+        let _ = storage.put(&format!("conn:{}", connection_id), state).await;
 
-        // Update pubkey index
-        if let Some(registry) = state.get("registry") {
-            if let Some(subs) = registry.get("subscriptions") {
-                if let Ok(subs_map) = serde_json::from_value::<HashMap<String, Vec<crate::nostr::Filter>>>(subs.clone()) {
-                    let mut pks = HashSet::new();
-                    for filters in subs_map.values() {
-                        for filter in filters {
-                            for pk in filter.pubkeys() {
-                                pks.insert(pk);
-                            }
-                        }
-                    }
-
-                    for pk in pks {
-                        let pk_key = format!("pk:{}", pk);
-                        // Store only the latest connection ID for this pubkey (Last-In-Wins)
-                        // Note: Connection ID 0 (System) also gets indexed so bridge can route to it if needed
-                        let _ = storage.put(&pk_key, connection_id).await;
-                    }
-                }
-            }
+        for pk in pubkeys {
+            let pk_key = format!("pk:{}", pk);
+            let _ = storage.put(&pk_key, connection_id).await;
         }
     }
 
@@ -230,7 +213,7 @@ impl CloudflareTransport {
         let storage = self.state.storage();
         let key = format!("conn:{}", id);
         if let Ok(Some(state)) = storage.get::<serde_json::Value>(&key).await {
-            self.engine.borrow_mut().import_state(id, state);
+            self.engine.borrow_mut().registry.restore(id, state);
             self.id_map.borrow_mut().push((ws.clone(), id));
             return Some(id);
         }

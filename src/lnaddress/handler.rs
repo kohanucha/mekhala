@@ -57,7 +57,7 @@ async fn handle_lnaddress_callback_inner(req: Request, env: &Env, username: &str
     let ln_address = LNAddress::new(username);
     let description_hash = ln_address.get_description_hash();
 
-    let connector = WalletConnector::new(env, &nwc_uri);
+    let connector = WalletConnector::new(&nwc_uri)?;
     let pr = connector.make_invoice(transport, amount_msat, description_hash).await?;
     
     let resp = serde_json::json!({
