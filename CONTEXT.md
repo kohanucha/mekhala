@@ -26,6 +26,6 @@ Mekhala provides an LN Address bridge, allowing users to pay to an LN Address (e
 - **Subscription**: A persistent request for events matching specific filters.
 - **Relay Secret**: An optional path parameter used to restrict access to the relay.
 - **Hibernation Tag**: The metadata (serialized `ConnectionState`) attached to a hibernating WebSocket.
-- **ExportedState**: A structured object containing a connection's serialized state (for persistence) and an explicit set of associated pubkeys (for indexing). Used to maintain a clean boundary between domain logic and transport-level storage.
-- **WalletRegistry**: A module that manages NWC subscription indexing and event routing. Maintains the subscription index (filters → connection IDs), pubkey index (pubkey → subscriptions + info event), and virtual connection state. Exposed as a trait with an `InMemoryWalletRegistry` adapter.
-- **Virtual Connection**: A connection tracked by WalletRegistry that has subscriptions but no backing WebSocket. Used by the LN Address bridge to receive routed NWC responses. Distinguished from real connections via `is_virtual()`.
+- **SavedState**: A structured object containing a connection's serialized state (for persistence) and an explicit set of associated pubkeys (for indexing). Used to maintain a clean boundary between domain logic and transport-level storage.
+- **WalletRegistry**: A deep module that manages NWC subscription indexing and event routing. It encapsulates the subscription index (filters → connection IDs), pubkey index (pubkey → subscriptions + info event), and coordinates with an asynchronous storage layer to persist and restore connection state.
+- **Virtual Connection**: A connection tracked by WalletRegistry that has subscriptions but no backing WebSocket. Used by the LN Address bridge to receive routed NWC responses.

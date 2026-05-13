@@ -5,7 +5,7 @@ use futures::lock::Mutex;
 use worker::*;
 use wasm_bindgen::{JsValue, JsCast};
 use crate::nostr::engine::{NostrEngine, EngineResponse, MessageFlags};
-use crate::nostr::wallet_registry::{PersistentWalletRegistry, WalletRegistry, Storage};
+use crate::nostr::wallet_registry::{WalletRegistry, Storage};
 use crate::cloudflare::headers::create_cors_response;
 use crate::cloudflare::HibernationState;
 
@@ -30,7 +30,7 @@ impl Storage for CloudflareStorage {
 pub struct CloudflareTransport {
     state: State,
     env: Env,
-    engine: Mutex<NostrEngine<PersistentWalletRegistry<CloudflareStorage>>>,
+    engine: Mutex<NostrEngine<CloudflareStorage>>,
     id_map: RefCell<Vec<(WebSocket, u32)>>,
     internal_map: RefCell<HashMap<u32, oneshot::Sender<String>>>,
 }
@@ -38,7 +38,7 @@ pub struct CloudflareTransport {
 impl DurableObject for CloudflareTransport {
     fn new(state: State, env: Env) -> Self {
         let storage = CloudflareStorage { storage: state.storage() };
-        let registry = PersistentWalletRegistry::new(storage);
+        let registry = WalletRegistry::new(storage);
         let engine = NostrEngine { registry };
 
         Self {
@@ -131,7 +131,7 @@ impl crate::common::InternalTransport for CloudflareTransport {
 }
 
 impl CloudflareTransport {
-    async fn load_connection_with_engine(&self, pubkey: &str, engine: &mut NostrEngine<PersistentWalletRegistry<CloudflareStorage>>) -> Result<Option<u32>> {
+    async fn load_connection_with_engine(&self, pubkey: &str, engine: &mut NostrEngine<CloudflareStorage>) -> Result<Option<u32>> {
         if let Some(id) = engine.registry.load_by_pubkey(pubkey).await {
             let tag = format!("id:{}", id);
             for ws in self.get_websockets_with_tag(&tag) {
@@ -191,7 +191,7 @@ impl CloudflareTransport {
         result
     }
 
-    async fn wake_up_with_engine(&self, ws: &WebSocket, engine: &mut NostrEngine<PersistentWalletRegistry<CloudflareStorage>>) -> Option<u32> {
+    async fn wake_up_with_engine(&self, ws: &WebSocket, engine: &mut NostrEngine<CloudflareStorage>) -> Option<u32> {
         if let Some(id) = self.get_id(ws) {
             return Some(id);
         }
@@ -208,7 +208,7 @@ impl CloudflareTransport {
         None
     }
 
-    async fn load_recipients_with_engine(&self, engine: &mut NostrEngine<PersistentWalletRegistry<CloudflareStorage>>, text: &str) {
+    async fn load_recipients_with_engine(&self, engine: &mut NostrEngine<CloudflareStorage>, text: &str) {
         if let Some(target_pks) = engine.get_target_pubkeys(text) {
             // Load recipients into engine memory
             for pk in target_pks {

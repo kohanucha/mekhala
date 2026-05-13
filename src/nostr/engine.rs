@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use super::{Filter, Event, RelayMessage, ClientMessage};
-use super::wallet_registry::WalletRegistry;
+use super::wallet_registry::{WalletRegistry, Storage};
 
 #[cfg(test)]
-use super::wallet_registry::InMemoryWalletRegistry;
+use super::wallet_registry::MockStorage;
 use crate::util::now;
 use serde_json::Value;
 
@@ -23,20 +23,20 @@ impl EngineResponse {
     }
 }
 
-pub struct NostrEngine<R: WalletRegistry> {
-    pub registry: R,
+pub struct NostrEngine<S: Storage> {
+    pub registry: WalletRegistry<S>,
 }
 
 #[cfg(test)]
-impl NostrEngine<InMemoryWalletRegistry> {
+impl NostrEngine<MockStorage> {
     pub fn new() -> Self {
         Self {
-            registry: InMemoryWalletRegistry::new(),
+            registry: WalletRegistry::new(MockStorage::new()),
         }
     }
 }
 
-impl<R: WalletRegistry> NostrEngine<R> {
+impl<S: Storage> NostrEngine<S> {
     pub async fn on_connect(&mut self, id: u32) -> Vec<EngineResponse> {
         self.add_connection(id, HashMap::new()).await;
         Vec::new()
@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn test_engine_req_storage() {
         futures::executor::block_on(async {
-            let mut engine = NostrEngine::<InMemoryWalletRegistry>::new();
+            let mut engine = NostrEngine::new();
             engine.on_connect(1).await;
 
             let req = r#"["REQ", "sub1", {"authors": ["pk1"]}]"#;
@@ -253,7 +253,7 @@ mod tests {
     #[test]
     fn test_engine_info_event_routing() {
         futures::executor::block_on(async {
-            let mut engine = NostrEngine::<InMemoryWalletRegistry>::new();
+            let mut engine = NostrEngine::new();
             engine.on_connect(1).await;
 
             let event = Event {
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn test_engine_get_wallet_info() {
-        let engine = NostrEngine::<InMemoryWalletRegistry>::new();
+        let engine = NostrEngine::new();
         let info = engine.get_wallet_info("pk1");
         assert_eq!(info.online, false);
     }
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn test_bridge_signaling() {
         futures::executor::block_on(async {
-            let mut engine = NostrEngine::<InMemoryWalletRegistry>::new();
+            let mut engine = NostrEngine::new();
             engine.on_connect(1).await;
             let wallet_pk = "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f";
             engine.registry.subscribe(1, "sub1".into(), vec![Filter {
@@ -347,14 +347,13 @@ mod tests {
                 let EngineResponse::Send { connection_id, message } = r;
                 connection_id == &100 && message.contains("resp1")
             }));
-
         });
     }
 
     #[test]
     fn test_virtual_connection_lifecycle() {
         futures::executor::block_on(async {
-            let mut engine = NostrEngine::<InMemoryWalletRegistry>::new();
+            let mut engine = NostrEngine::new();
             engine.on_connect(1).await;
 
             let id = 100;
