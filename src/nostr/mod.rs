@@ -44,7 +44,6 @@ impl Default for Limits {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, PartialEq, Clone)]
 pub enum RelayError {
     InvalidKind,
@@ -54,7 +53,6 @@ pub enum RelayError {
     InvalidSignature,
     MalformedHex(String),
     SerializationError(String),
-    ParseError(String),
     LimitExceeded(String),
 }
 
@@ -68,7 +66,6 @@ impl fmt::Display for RelayError {
             Self::InvalidSignature => write!(f, "invalid: signature verification failed"),
             Self::MalformedHex(m) => write!(f, "invalid: malformed {}", m),
             Self::SerializationError(e) => write!(f, "error: serialization failed: {}", e),
-            Self::ParseError(e) => write!(f, "error: parse failed: {}", e),
             Self::LimitExceeded(m) => write!(f, "rejected: {}", m),
         }
     }
@@ -137,7 +134,6 @@ mod tests {
         assert_eq!(RelayError::InvalidSignature.to_string(), "invalid: signature verification failed");
         assert_eq!(RelayError::MalformedHex("key".into()).to_string(), "invalid: malformed key");
         assert_eq!(RelayError::SerializationError("err".into()).to_string(), "error: serialization failed: err");
-        assert_eq!(RelayError::ParseError("err".into()).to_string(), "error: parse failed: err");
         assert_eq!(RelayError::LimitExceeded("max".into()).to_string(), "rejected: max");
     }
 

@@ -1,30 +1,50 @@
-use std::collections::{HashSet, HashMap};
+use std::collections::HashMap;
 use std::cell::RefCell;
 use futures::channel::oneshot;
+use futures::lock::Mutex;
 use worker::*;
 use wasm_bindgen::{JsValue, JsCast};
 use crate::nostr::engine::{NostrEngine, EngineResponse, MessageFlags};
-use crate::nostr::wallet_registry::{InMemoryWalletRegistry, WalletRegistry};
+use crate::nostr::wallet_registry::{PersistentWalletRegistry, WalletRegistry, Storage};
 use crate::cloudflare::headers::create_cors_response;
 use crate::cloudflare::HibernationState;
+
+pub struct CloudflareStorage {
+    storage: worker::Storage,
+}
+
+#[async_trait::async_trait(?Send)]
+impl Storage for CloudflareStorage {
+    async fn put(&self, key: &str, value: serde_json::Value) {
+        let _ = self.storage.put(key, value).await;
+    }
+    async fn get(&self, key: &str) -> Option<serde_json::Value> {
+        self.storage.get(key).await.ok().flatten()
+    }
+    async fn delete(&self, key: &str) {
+        let _ = self.storage.delete(key).await;
+    }
+}
 
 #[durable_object]
 pub struct CloudflareTransport {
     state: State,
     env: Env,
-    engine: RefCell<NostrEngine<InMemoryWalletRegistry>>,
+    engine: Mutex<NostrEngine<PersistentWalletRegistry<CloudflareStorage>>>,
     id_map: RefCell<Vec<(WebSocket, u32)>>,
     internal_map: RefCell<HashMap<u32, oneshot::Sender<String>>>,
 }
 
 impl DurableObject for CloudflareTransport {
     fn new(state: State, env: Env) -> Self {
-        let engine = NostrEngine::<InMemoryWalletRegistry>::new();
+        let storage = CloudflareStorage { storage: state.storage() };
+        let registry = PersistentWalletRegistry::new(storage);
+        let engine = NostrEngine { registry };
 
         Self {
             state,
             env,
-            engine: RefCell::new(engine),
+            engine: Mutex::new(engine),
             id_map: RefCell::new(Vec::new()),
             internal_map: RefCell::new(HashMap::new()),
         }
@@ -45,21 +65,24 @@ impl DurableObject for CloudflareTransport {
 
     async fn websocket_message(&self, websocket: WebSocket, message: WebSocketIncomingMessage) -> Result<()> {
         if let WebSocketIncomingMessage::String(text) = message {
+            let mut engine = self.engine.lock().await;
+
             if text.len() > 65536 {
-                let _ = websocket.send_with_str(&self.engine.borrow().error_message("message too large"));
+                let _ = websocket.send_with_str(&engine.error_message("message too large"));
                 return Ok(());
             }
-            let connection_id = self.wake_up(&websocket).await.ok_or_else(|| Error::from("Connection not found"))?;
+            let connection_id = self.wake_up_with_engine(&websocket, &mut engine).await.ok_or_else(|| Error::from("Connection not found"))?;
 
             // Pre-flight Loading for EVENT messages to support O(1) routing
-            self.load_recipients(&text).await;
+            self.load_recipients_with_engine(&mut engine, &text).await;
             
-            let responses = self.engine.borrow_mut().on_message(connection_id, &text, MessageFlags::default());
+            let responses = engine.on_message(connection_id, &text, MessageFlags::default()).await;
             self.process_responses(responses).await?;
 
             Ok(())
         } else {
-            let _ = websocket.send_with_str(&self.engine.borrow().error_message("binary not supported"));
+            let engine = self.engine.lock().await;
+            let _ = websocket.send_with_str(&engine.error_message("binary not supported"));
             Ok(())
         }
     }
@@ -76,17 +99,20 @@ impl DurableObject for CloudflareTransport {
 #[async_trait::async_trait(?Send)]
 impl crate::common::InternalTransport for CloudflareTransport {
     async fn get_wallet_info(&self, pubkey: &str) -> Option<crate::nostr::WalletInfo> {
-        let _ = self.load_connection(pubkey).await.ok();
-        Some(self.engine.borrow().get_wallet_info(pubkey))
+        let mut engine = self.engine.lock().await;
+        let _ = self.load_connection_with_engine(pubkey, &mut engine).await.ok();
+        Some(engine.get_wallet_info(pubkey))
     }
 
     async fn send_message(&self, id: u32, message: String, sender: oneshot::Sender<String>) -> Result<()> {
         self.internal_map.borrow_mut().insert(id, sender);
 
-        // Pre-flight Loading for EVENT messages to support O(1) routing
-        self.load_recipients(&message).await;
+        let mut engine = self.engine.lock().await;
 
-        let responses = self.engine.borrow_mut().on_message(id, &message, MessageFlags { is_internal: true });
+        // Pre-flight Loading for EVENT messages to support O(1) routing
+        self.load_recipients_with_engine(&mut engine, &message).await;
+
+        let responses = engine.on_message(id, &message, MessageFlags { is_internal: true }).await;
         self.process_responses(responses).await?;
         Ok(())
     }
@@ -96,7 +122,8 @@ impl crate::common::InternalTransport for CloudflareTransport {
     }
 
     async fn close_connection(&self, id: u32) -> Result<()> {
-        let responses = self.engine.borrow_mut().on_disconnect(id);
+        let mut engine = self.engine.lock().await;
+        let responses = engine.on_disconnect(id).await;
         self.process_responses(responses).await?;
         self.internal_map.borrow_mut().remove(&id);
         Ok(())
@@ -104,15 +131,11 @@ impl crate::common::InternalTransport for CloudflareTransport {
 }
 
 impl CloudflareTransport {
-    async fn load_connection(&self, pubkey: &str) -> Result<Option<u32>> {
-        let storage = self.state.storage();
-        let key = format!("pk:{}", pubkey);
-        let id: Option<u32> = storage.get::<u32>(&key).await.unwrap_or(None);
-
-        if let Some(id) = id {
+    async fn load_connection_with_engine(&self, pubkey: &str, engine: &mut NostrEngine<PersistentWalletRegistry<CloudflareStorage>>) -> Result<Option<u32>> {
+        if let Some(id) = engine.registry.load_by_pubkey(pubkey).await {
             let tag = format!("id:{}", id);
             for ws in self.get_websockets_with_tag(&tag) {
-                if let Some(actual_id) = self.wake_up(&ws).await {
+                if let Some(actual_id) = self.wake_up_with_engine(&ws, engine).await {
                     if actual_id == id {
                         return Ok(Some(id));
                     }
@@ -121,12 +144,13 @@ impl CloudflareTransport {
 
             // Fallback: search all sockets if tagged one failed to wake up
             for ws in self.state.get_websockets() {
-                if let Some(actual_id) = self.wake_up(&ws).await {
+                if let Some(actual_id) = self.wake_up_with_engine(&ws, engine).await {
                     if actual_id == id {
                         return Ok(Some(id));
                     }
                 }
             }
+            return Ok(Some(id));
         }
         Ok(None)
     }
@@ -147,22 +171,9 @@ impl CloudflareTransport {
                         let _ = ws.send_with_str(&message);
                     }
                 }
-                EngineResponse::StoreState { connection_id, connection_data, pubkeys } => {
-                    self.sync_to_storage_data(connection_id, connection_data, pubkeys).await;
-                }
             }
         }
         Ok(())
-    }
-
-    async fn sync_to_storage_data(&self, connection_id: u32, state: serde_json::Value, pubkeys: HashSet<String>) {
-        let storage = self.state.storage();
-        let _ = storage.put(&format!("conn:{}", connection_id), state).await;
-
-        for pk in pubkeys {
-            let pk_key = format!("pk:{}", pk);
-            let _ = storage.put(&pk_key, connection_id).await;
-        }
     }
 
     fn get_websockets_with_tag(&self, tag: &str) -> Vec<WebSocket> {
@@ -180,7 +191,7 @@ impl CloudflareTransport {
         result
     }
 
-    async fn wake_up(&self, ws: &WebSocket) -> Option<u32> {
+    async fn wake_up_with_engine(&self, ws: &WebSocket, engine: &mut NostrEngine<PersistentWalletRegistry<CloudflareStorage>>) -> Option<u32> {
         if let Some(id) = self.get_id(ws) {
             return Some(id);
         }
@@ -190,27 +201,21 @@ impl CloudflareTransport {
         let id_tag = tags.iter().find(|t| t.starts_with("id:"))?;
         let id: u32 = id_tag.strip_prefix("id:")?.parse().ok()?;
 
-        // Hydrate from storage
-        let storage = self.state.storage();
-        let key = format!("conn:{}", id);
-        if let Ok(Some(state)) = storage.get::<serde_json::Value>(&key).await {
-            self.engine.borrow_mut().registry.restore(id, state);
+        if engine.registry.load(id).await {
             self.id_map.borrow_mut().push((ws.clone(), id));
             return Some(id);
         }
         None
     }
 
-    async fn load_recipients(&self, text: &str) {
-        if let Some(target_pks) = self.engine.borrow().get_target_pubkeys(text) {
-            let storage = self.state.storage();
+    async fn load_recipients_with_engine(&self, engine: &mut NostrEngine<PersistentWalletRegistry<CloudflareStorage>>, text: &str) {
+        if let Some(target_pks) = engine.get_target_pubkeys(text) {
             // Load recipients into engine memory
             for pk in target_pks {
-                let key = format!("pk:{}", pk);
-                if let Ok(Some(rid)) = storage.get::<u32>(&key).await {
+                if let Some(rid) = engine.registry.load_by_pubkey(&pk).await {
                     let tag = format!("id:{}", rid);
                     for rws in self.get_websockets_with_tag(&tag) {
-                        let _ = self.wake_up(&rws).await;
+                        let _ = self.wake_up_with_engine(&rws, engine).await;
                     }
                 }
             }
@@ -241,8 +246,9 @@ impl CloudflareTransport {
         let WebSocketPair { client, server } = WebSocketPair::new()?;
         self.state.accept_web_socket(&server);
 
+        let mut engine = self.engine.lock().await;
         let connection_id = self.generate_unique_id().await;
-        let responses = self.engine.borrow_mut().on_connect(connection_id);
+        let responses = engine.on_connect(connection_id).await;
         self.id_map.borrow_mut().push((server.clone(), connection_id));
         let _ = self.state.set_tags(&server, vec![format!("id:{}", connection_id)]);
 
@@ -252,8 +258,9 @@ impl CloudflareTransport {
     }
 
     async fn handle_disconnect(&self, ws: &WebSocket) -> Result<()> {
-        if let Some(id) = self.wake_up(ws).await {
-            let responses = self.engine.borrow_mut().on_disconnect(id);
+        let mut engine = self.engine.lock().await;
+        if let Some(id) = self.wake_up_with_engine(ws, &mut engine).await {
+            let responses = engine.on_disconnect(id).await;
             self.process_responses(responses).await?;
             self.id_map.borrow_mut().retain(|(_, i)| *i != id);
             
