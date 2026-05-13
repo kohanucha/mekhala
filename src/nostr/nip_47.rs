@@ -1,6 +1,7 @@
 use crate::nostr::Event;
 use crate::util::now;
 use k256::schnorr::{signature::hazmat::PrehashSigner, SigningKey};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use url::Url;
@@ -8,10 +9,43 @@ use worker::{Error, Result};
 
 pub const KIND_NWC_REQUEST: u64 = 23194;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NwcMethod {
+    MakeInvoice
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NwcRequest {
+    pub method: NwcMethod,
+    pub params: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NwcResponse {
+    pub result: Option<Value>,
+    pub error: Option<NwcError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NwcError {
+    pub code: String,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EncryptionMethod {
     Nip04,
     Nip44,
+}
+
+impl EncryptionMethod {
+    pub fn to_protocol_string(&self) -> String {
+        match self {
+            EncryptionMethod::Nip04 => "nip04".to_string(),
+            EncryptionMethod::Nip44 => "nip44_v2".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
