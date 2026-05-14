@@ -49,12 +49,12 @@ impl EncryptionMethod {
 }
 
 #[derive(Debug, Clone)]
-pub struct WalletConnectionDetails {
+pub struct NwcUri {
     pub wallet_pubkey: String,
     pub secret: String,
 }
 
-impl WalletConnectionDetails {
+impl NwcUri {
     pub fn from_uri(uri: &str) -> Result<Self> {
         let url = Url::parse(uri).map_err(|e| RelayError::UrlError(e.to_string()))?;
         if url.scheme() != "nostr+walletconnect" {
@@ -80,7 +80,7 @@ impl WalletConnectionDetails {
 }
 
 #[derive(Clone)]
-pub struct WalletConnection {
+pub struct NwcClient {
     pub wallet_pubkey: String,
     shared_secret: Vec<u8>,
     signing_key: SigningKey,
@@ -88,11 +88,11 @@ pub struct WalletConnection {
     pub encryption_method: EncryptionMethod,
 }
 
-impl WalletConnection {
-    pub fn new(conn: WalletConnectionDetails) -> Result<Self> {
-        let shared_secret = crate::nostr::get_shared_secret(&conn.secret, &conn.wallet_pubkey)?;
+impl NwcClient {
+    pub fn new(uri: NwcUri) -> Result<Self> {
+        let shared_secret = crate::nostr::get_shared_secret(&uri.secret, &uri.wallet_pubkey)?;
 
-        let sk_bytes = hex::decode(&conn.secret).map_err(|e| RelayError::MalformedHex(e.to_string()))?;
+        let sk_bytes = hex::decode(&uri.secret).map_err(|e| RelayError::MalformedHex(e.to_string()))?;
         let sk_bytes_arr: [u8; 32] = sk_bytes
             .try_into()
             .map_err(|_| RelayError::Generic("Invalid secret key length".into()))?;
@@ -101,7 +101,7 @@ impl WalletConnection {
         let my_pubkey = hex::encode(&signing_key.verifying_key().to_bytes());
 
         Ok(Self {
-            wallet_pubkey: conn.wallet_pubkey,
+            wallet_pubkey: uri.wallet_pubkey,
             shared_secret,
             signing_key,
             my_pubkey,
@@ -123,7 +123,61 @@ impl WalletConnection {
         }
     }
 
-    pub fn create_event(&self, kind: u64, content: String, tags: Vec<Vec<Value>>) -> Result<Event> {
+    pub fn create_request_event(
+        &self,
+        method: NwcMethod,
+        params: Value,
+        extra_tags: Vec<Vec<Value>>,
+    ) -> Result<(Event, String)> {
+        let payload = serde_json::to_value(NwcRequest { method, params })
+            .map_err(|e| RelayError::SerializationError(e.to_string()))?;
+
+        let mut tags = vec![
+            vec![
+                Value::String("p".into()),
+                Value::String(self.wallet_pubkey.clone()),
+            ],
+            vec![
+                Value::String("expiration".into()),
+                Value::String((now() + 60).to_string()),
+            ],
+        ];
+        tags.extend(extra_tags);
+
+        // Always add encryption tag for clarity in the protocol
+        tags.push(vec![
+            Value::String("encryption".into()),
+            Value::String(self.encryption_method.to_protocol_string()),
+        ]);
+
+        let encrypted_content = self.encrypt(&payload)?;
+        let event = self.create_event(KIND_NWC_REQUEST, encrypted_content, tags)?;
+        let event_id = event.id.clone();
+        Ok((event, event_id))
+    }
+
+    pub fn parse_response_event(&self, event: &Event, request_id: &str) -> Result<Value> {
+        event.verify(now())?;
+
+        if event.pubkey != self.wallet_pubkey {
+            return Err(RelayError::Generic("Response pubkey mismatch".into()));
+        }
+
+        let has_e_tag = event.tags.iter().any(|t| {
+            t.len() >= 2 && t[0].as_str() == Some("e") && t[1].as_str() == Some(request_id)
+        });
+
+        if !has_e_tag {
+            return Err(RelayError::Generic("Response missing 'e' tag for request".into()));
+        }
+
+        let decrypted = self.decrypt(&event.content)?;
+        let resp_json: Value = serde_json::from_str(&decrypted)?;
+
+        Ok(resp_json)
+    }
+
+    fn create_event(&self, kind: u64, content: String, tags: Vec<Vec<Value>>) -> Result<Event> {
         let created_at = now();
 
         let serialized =
@@ -158,109 +212,129 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_nwc_connection_from_uri() {
+    fn test_nwc_uri_from_uri() {
         let uri = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
-        let conn = WalletConnectionDetails::from_uri(uri).unwrap();
+        let nwc_uri = NwcUri::from_uri(uri).unwrap();
         assert_eq!(
-            conn.wallet_pubkey,
+            nwc_uri.wallet_pubkey,
             "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f"
         );
         assert_eq!(
-            conn.secret,
+            nwc_uri.secret,
             "0101010101010101010101010101010101010101010101010101010101010101"
         );
     }
 
     #[test]
-    fn test_nwc_session_roundtrip() {
-        let uri = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
-        let conn = WalletConnectionDetails::from_uri(uri).unwrap();
-        let session = WalletConnection::new(conn).unwrap();
+    fn test_nwc_client_roundtrip() {
+        let uri_str = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
+        let nwc_uri = NwcUri::from_uri(uri_str).unwrap();
+        let client = NwcClient::new(nwc_uri).unwrap();
 
         let payload = serde_json::json!({"test": "data"});
-        let encrypted = session.encrypt(&payload).unwrap();
-        let decrypted = session.decrypt(&encrypted).unwrap();
+        let encrypted = client.encrypt(&payload).unwrap();
+        let decrypted = client.decrypt(&encrypted).unwrap();
         let decrypted_json: Value = serde_json::from_str(&decrypted).unwrap();
         assert_eq!(payload, decrypted_json);
 
-        let event = session
-            .create_event(KIND_NWC_REQUEST, encrypted, vec![])
+        let (event, request_id) = client
+            .create_request_event(NwcMethod::MakeInvoice, payload.clone(), vec![])
             .unwrap();
-        assert_eq!(event.pubkey, session.my_pubkey);
+        assert_eq!(event.pubkey, client.my_pubkey);
         assert_eq!(event.kind, KIND_NWC_REQUEST);
+
+        // Test parsing back (mocking a response)
+        let resp_payload = serde_json::json!({"result": {"invoice": "lnbc1..."}});
+        let resp_encrypted = client.encrypt(&resp_payload).unwrap();
+        let resp_event = Event {
+            id: "resp_id".into(),
+            pubkey: client.wallet_pubkey.clone(),
+            created_at: now(),
+            kind: 23195,
+            tags: vec![
+                vec![Value::String("e".into()), Value::String(request_id.clone())],
+                vec![Value::String("p".into()), Value::String(client.my_pubkey.clone())],
+            ],
+            content: resp_encrypted,
+            sig: "sig".into(), // verify(now()) will fail in test unless we sign it properly, but we'll bypass verification for this unit test if needed or just sign it.
+        };
+        
+        // Actually we need to sign it to pass verify(now())
+        let wallet_sk_bytes = hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap();
+        let wallet_sk_arr: [u8; 32] = wallet_sk_bytes.try_into().unwrap();
+        let wallet_sk = SigningKey::from_bytes(&wallet_sk_arr).unwrap();
+        
+        let serialized_resp = serde_json::to_string(&(0, &client.wallet_pubkey, resp_event.created_at, resp_event.kind, &resp_event.tags, &resp_event.content)).unwrap();
+        let mut hasher = Sha256::new();
+        hasher.update(serialized_resp.as_bytes());
+        let resp_id_bytes = hasher.finalize();
+        let resp_id = hex::encode(resp_id_bytes);
+        let resp_sig = hex::encode(wallet_sk.sign_prehash(&resp_id_bytes).unwrap().to_bytes());
+        
+        let signed_resp_event = Event {
+            id: resp_id,
+            sig: resp_sig,
+            ..resp_event
+        };
+
+        let parsed_resp = client.parse_response_event(&signed_resp_event, &request_id).unwrap();
+        assert_eq!(parsed_resp, resp_payload);
     }
 
     #[test]
-    fn test_nwc_session_nip44_roundtrip() {
-        let uri = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
-        let conn = WalletConnectionDetails::from_uri(uri).unwrap();
-        let mut session = WalletConnection::new(conn).unwrap();
-        session.encryption_method = EncryptionMethod::Nip44;
+    fn test_nwc_client_nip44_roundtrip() {
+        let uri_str = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
+        let nwc_uri = NwcUri::from_uri(uri_str).unwrap();
+        let mut client = NwcClient::new(nwc_uri).unwrap();
+        client.encryption_method = EncryptionMethod::Nip44;
 
         let payload = serde_json::json!({"test": "nip44 data"});
-        let encrypted = session.encrypt(&payload).unwrap();
-        let decrypted = session.decrypt(&encrypted).unwrap();
+        let encrypted = client.encrypt(&payload).unwrap();
+        let decrypted = client.decrypt(&encrypted).unwrap();
         let decrypted_json: Value = serde_json::from_str(&decrypted).unwrap();
         assert_eq!(payload, decrypted_json);
     }
 
     #[test]
     #[should_panic(expected = "Invalid scheme")]
-    fn test_connection_invalid_scheme() {
+    fn test_uri_invalid_scheme() {
         let uri = "http://invalid.example.com?secret=0101010101010101010101010101010101010101010101010101010101010101";
-        let _ = WalletConnectionDetails::from_uri(uri).unwrap();
+        let _ = NwcUri::from_uri(uri).unwrap();
     }
 
     #[test]
-    fn test_connection_missing_pubkey_returns_error() {
+    fn test_uri_missing_pubkey_returns_error() {
         let uri = "nostr+walletconnect://?secret=0101010101010101010101010101010101010101010101010101010101010101";
-        let result = WalletConnectionDetails::from_uri(uri);
+        let result = NwcUri::from_uri(uri);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_connection_missing_secret_returns_error() {
+    fn test_uri_missing_secret_returns_error() {
         let uri = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f";
-        let result = WalletConnectionDetails::from_uri(uri);
+        let result = NwcUri::from_uri(uri);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_session_encrypt_deterministic() {
-        let uri = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
-        let conn = WalletConnectionDetails::from_uri(uri).unwrap();
-        let session = WalletConnection::new(conn).unwrap();
+    fn test_client_encrypt_deterministic() {
+        let uri_str = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
+        let nwc_uri = NwcUri::from_uri(uri_str).unwrap();
+        let client = NwcClient::new(nwc_uri).unwrap();
 
         let payload = serde_json::json!({"same": "data"});
-        let encrypted1 = session.encrypt(&payload).unwrap();
-        let encrypted2 = session.encrypt(&payload).unwrap();
+        let encrypted1 = client.encrypt(&payload).unwrap();
+        let encrypted2 = client.encrypt(&payload).unwrap();
         assert_ne!(encrypted1, encrypted2);
     }
 
     #[test]
-    fn test_session_created_has_required_fields() {
-        let uri = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
-        let conn = WalletConnectionDetails::from_uri(uri).unwrap();
-        let session = WalletConnection::new(conn).unwrap();
+    fn test_client_created_has_required_fields() {
+        let uri_str = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
+        let nwc_uri = NwcUri::from_uri(uri_str).unwrap();
+        let client = NwcClient::new(nwc_uri).unwrap();
 
-        assert!(!session.my_pubkey.is_empty());
-    }
-
-    #[test]
-    fn test_event_creation_has_signature() {
-        let uri = "nostr+walletconnect://1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f?relay=ws%3A%2F%2Flocalhost%3A8787%2F&secret=0101010101010101010101010101010101010101010101010101010101010101";
-        let conn = WalletConnectionDetails::from_uri(uri).unwrap();
-        let session = WalletConnection::new(conn).unwrap();
-
-        let payload = serde_json::json!({"test": "data"});
-        let encrypted = session.encrypt(&payload).unwrap();
-        let event = session
-            .create_event(KIND_NWC_REQUEST, encrypted, vec![])
-            .unwrap();
-
-        assert!(!event.id.is_empty());
-        assert!(!event.sig.is_empty());
-        assert_eq!(event.kind, KIND_NWC_REQUEST);
+        assert!(!client.my_pubkey.is_empty());
     }
 
     #[test]

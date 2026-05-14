@@ -171,6 +171,14 @@ impl CloudflareTransport {
     }
 
     async fn accept_new_connection(&self) -> Result<Response> {
+        let max_connections = self.env.var("MAX_CONNECTIONS")
+            .and_then(|v| v.to_string().parse::<usize>().map_err(|e| Error::from(e.to_string())))
+            .unwrap_or(20);
+
+        if self.connections.borrow().len() >= max_connections {
+            return Response::error("Too Many Requests", 429);
+        }
+
         let WebSocketPair { client, server } = WebSocketPair::new()?;
         
         {

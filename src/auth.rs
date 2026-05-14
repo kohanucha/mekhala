@@ -1,13 +1,18 @@
 use worker::Env;
 
-/// The Authenticator manages the relay's security policy.
+#[derive(Debug, PartialEq)]
+pub enum AuthError {
+    Forbidden,
+}
+
+/// The AccessPolicy manages the relay's security policy.
 /// It supports a "Private Mode" (using RELAY_SECRET path parameter)
 /// and a "Public Mode" (if no secret is configured).
-pub struct Authenticator {
+pub struct AccessPolicy {
     expected_secret: Option<String>,
 }
 
-impl Authenticator {
+impl AccessPolicy {
     pub fn from_env(env: &Env) -> Self {
         let expected_secret = env.var("RELAY_SECRET").map(|v| v.to_string()).ok();
         
@@ -21,12 +26,18 @@ impl Authenticator {
     }
 
     /// Checks if the provided secret matches the expected policy.
-    pub fn is_authorized(&self, provided_secret: &str) -> bool {
+    pub fn check_access(&self, provided_secret: &str) -> Result<(), AuthError> {
         match &self.expected_secret {
             // Private Mode: Must match exactly in constant-time
-            Some(expected) => constant_time_eq(provided_secret, expected),
+            Some(expected) => {
+                if constant_time_eq(provided_secret, expected) {
+                    Ok(())
+                } else {
+                    Err(AuthError::Forbidden)
+                }
+            }
             // Public Mode: Always authorized
-            None => true,
+            None => Ok(()),
         }
     }
 }
@@ -48,23 +59,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_authenticator_public_mode() {
-        let auth = Authenticator { expected_secret: None };
-        assert!(auth.is_authorized(""));
-        assert!(auth.is_authorized("any-secret"));
+    fn test_access_policy_public_mode() {
+        let policy = AccessPolicy { expected_secret: None };
+        assert_eq!(policy.check_access(""), Ok(()));
+        assert_eq!(policy.check_access("any-secret"), Ok(()));
     }
 
     #[test]
-    fn test_authenticator_private_mode() {
-        let auth = Authenticator { expected_secret: Some("secret123".into()) };
+    fn test_access_policy_private_mode() {
+        let policy = AccessPolicy { expected_secret: Some("secret123".into()) };
         
         // Correct secret
-        assert!(auth.is_authorized("secret123"));
+        assert_eq!(policy.check_access("secret123"), Ok(()));
         
         // Incorrect secrets
-        assert!(!auth.is_authorized("wrong"));
-        assert!(!auth.is_authorized(""));
-        assert!(!auth.is_authorized("secret1234")); // Length mismatch
+        assert_eq!(policy.check_access("wrong"), Err(AuthError::Forbidden));
+        assert_eq!(policy.check_access(""), Err(AuthError::Forbidden));
+        assert_eq!(policy.check_access("secret1234"), Err(AuthError::Forbidden));
     }
 
     #[test]
@@ -88,34 +99,34 @@ mod tests {
     }
 
     #[test]
-    fn test_authenticator_from_env_treated_as_none() {
-        let auth = Authenticator { expected_secret: Some("".into()) };
-        assert!(auth.is_authorized(""));
-        assert!(!auth.is_authorized("any"));
+    fn test_access_policy_from_env_treated_as_none() {
+        let policy = AccessPolicy { expected_secret: Some("".into()) };
+        assert_eq!(policy.check_access(""), Ok(()));
+        assert_eq!(policy.check_access("any"), Err(AuthError::Forbidden));
     }
 
     #[test]
-    fn test_authenticator_empty_string_as_none() {
-        let auth = Authenticator { expected_secret: None };
-        assert!(auth.is_authorized(""));
-        assert!(auth.is_authorized("anything"));
+    fn test_access_policy_empty_string_as_none() {
+        let policy = AccessPolicy { expected_secret: None };
+        assert_eq!(policy.check_access(""), Ok(()));
+        assert_eq!(policy.check_access("anything"), Ok(()));
     }
 
     #[test]
-    fn test_authenticator_private_mode_case_sensitive() {
-        let auth = Authenticator { expected_secret: Some("Secret123".into()) };
-        assert!(auth.is_authorized("Secret123"));
-        assert!(!auth.is_authorized("secret123"));
-        assert!(!auth.is_authorized("SECRET123"));
+    fn test_access_policy_private_mode_case_sensitive() {
+        let policy = AccessPolicy { expected_secret: Some("Secret123".into()) };
+        assert_eq!(policy.check_access("Secret123"), Ok(()));
+        assert_eq!(policy.check_access("secret123"), Err(AuthError::Forbidden));
+        assert_eq!(policy.check_access("SECRET123"), Err(AuthError::Forbidden));
     }
 
     #[test]
-    fn test_authenticator_private_mode_similar() {
-        let auth = Authenticator { expected_secret: Some("test-secret-123".into()) };
-        assert!(auth.is_authorized("test-secret-123"));
-        assert!(!auth.is_authorized("test-secret-124"));
-        assert!(!auth.is_authorized("test-secret-12"));
-        assert!(!auth.is_authorized("test-secret123"));
+    fn test_access_policy_private_mode_similar() {
+        let policy = AccessPolicy { expected_secret: Some("test-secret-123".into()) };
+        assert_eq!(policy.check_access("test-secret-123"), Ok(()));
+        assert_eq!(policy.check_access("test-secret-124"), Err(AuthError::Forbidden));
+        assert_eq!(policy.check_access("test-secret-12"), Err(AuthError::Forbidden));
+        assert_eq!(policy.check_access("test-secret123"), Err(AuthError::Forbidden));
     }
 
     #[test]

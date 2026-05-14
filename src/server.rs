@@ -1,4 +1,4 @@
-use crate::auth::Authenticator;
+use crate::auth::{AccessPolicy, AuthError};
 use crate::cloudflare::{apply_security_headers, create_cors_response};
 use crate::lnaddress::handle_lnaddress;
 use crate::nostr;
@@ -42,13 +42,14 @@ impl Server {
     }
 
     fn handle_auth(_req: &Request, ctx: &RouteContext<()>) -> Result<Option<Response>> {
-        let auth = Authenticator::from_env(&ctx.env);
+        let policy = AccessPolicy::from_env(&ctx.env);
         let provided_secret = ctx.param("secret").map(|s| s.as_str()).unwrap_or_default();
 
-        if !auth.is_authorized(provided_secret) {
-            Ok(Some(apply_security_headers(Response::error("Not Found", 404)?)?))
-        } else {
-            Ok(None)
+        match policy.check_access(provided_secret) {
+            Err(AuthError::Forbidden) => {
+                Ok(Some(apply_security_headers(Response::error("Not Found", 404)?)?))
+            }
+            Ok(_) => Ok(None),
         }
     }
 

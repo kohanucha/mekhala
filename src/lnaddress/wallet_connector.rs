@@ -1,15 +1,13 @@
 use crate::common::{InternalConnection, InternalTransport};
 use crate::nostr::nip_47::{
-    EncryptionMethod, NwcMethod, NwcRequest, NwcResponse, WalletConnection,
-    WalletConnectionDetails, KIND_NWC_REQUEST,
+    EncryptionMethod, NwcClient, NwcMethod, NwcResponse, NwcUri,
 };
 use crate::nostr::Event;
-use crate::util::now;
 use serde_json::Value;
 use worker::*;
 
 pub struct WalletConnector {
-    pub connection: WalletConnection,
+    pub client: NwcClient,
 }
 
 impl From<crate::nostr::RelayError> for Error {
@@ -20,9 +18,9 @@ impl From<crate::nostr::RelayError> for Error {
 
 impl WalletConnector {
     pub fn new(nwc_uri: &str) -> Result<Self> {
-        let details = WalletConnectionDetails::from_uri(nwc_uri)?;
-        let connection = WalletConnection::new(details)?;
-        Ok(Self { connection })
+        let uri = NwcUri::from_uri(nwc_uri)?;
+        let client = NwcClient::new(uri)?;
+        Ok(Self { client })
     }
 
     pub async fn make_invoice(
@@ -55,22 +53,16 @@ impl WalletConnector {
         method: NwcMethod,
         params: Value,
     ) -> Result<Value> {
-        let mut wallet_connection = self.negotiate_encryption(transport).await?;
+        let mut client = self.negotiate_encryption(transport).await?;
 
-        let request_payload = serde_json::to_value(NwcRequest { method, params })
-            .map_err(|e| Error::from(e.to_string()))?;
-
-        let extra_tags = vec![vec![
-            Value::String("encryption".into()),
-            Value::String(wallet_connection.encryption_method.to_protocol_string()),
-        ]];
+        let (event, request_id) = client.create_request_event(method, params, vec![])?;
 
         let resp_json = self
             .dispatch(
                 transport,
-                &mut wallet_connection,
-                &request_payload,
-                Some(extra_tags),
+                &mut client,
+                &event,
+                &request_id,
             )
             .await?;
 
@@ -93,11 +85,11 @@ impl WalletConnector {
     async fn negotiate_encryption(
         &self,
         transport: &impl InternalTransport,
-    ) -> Result<WalletConnection> {
-        let mut wallet_connection = self.connection.clone();
+    ) -> Result<NwcClient> {
+        let mut client = self.client.clone();
 
         let info = transport
-            .get_wallet_info(&wallet_connection.wallet_pubkey)
+            .get_wallet_info(&client.wallet_pubkey)
             .await
             .ok_or_else(|| Error::from("Wallet not connected"))?;
 
@@ -111,31 +103,29 @@ impl WalletConnector {
 
         let encryption_algorithms = info.encryption_algorithms;
         if encryption_algorithms.contains(&"nip44_v2".to_string()) {
-            wallet_connection.encryption_method = EncryptionMethod::Nip44;
+            client.encryption_method = EncryptionMethod::Nip44;
         } else {
-            wallet_connection.encryption_method = EncryptionMethod::Nip04;
+            client.encryption_method = EncryptionMethod::Nip04;
         };
 
-        Ok(wallet_connection)
+        Ok(client)
     }
+
     /// Internal helper to dispatch an NWC request and wait for the response.
     async fn dispatch<T: InternalTransport>(
         &self,
         transport: &T,
-        wallet_connection: &mut WalletConnection,
-        request_payload: &Value,
-        extra_tags: Option<Vec<Vec<Value>>>,
+        client: &mut NwcClient,
+        event: &Event,
+        request_id: &str,
     ) -> Result<Value> {
         let internal_connection = InternalConnection::new(transport).await?;
-
-        let (event, event_id) =
-            self.prepare_request_event(wallet_connection, request_payload, extra_tags)?;
 
         self.subscribe(
             transport,
             internal_connection.id(),
-            &event_id,
-            &wallet_connection.my_pubkey,
+            request_id,
+            &client.my_pubkey,
         )
         .await?;
 
@@ -152,33 +142,7 @@ impl WalletConnector {
 
         self.cleanup(transport, internal_connection).await;
 
-        self.process_response(wallet_connection, &msg_text, &event_id)
-    }
-
-    fn prepare_request_event(
-        &self,
-        wallet_connection: &WalletConnection,
-        request_payload: &Value,
-        extra_tags: Option<Vec<Vec<Value>>>,
-    ) -> Result<(Event, String)> {
-        let mut tags = vec![
-            vec![
-                Value::String("p".into()),
-                Value::String(wallet_connection.wallet_pubkey.clone()),
-            ],
-            vec![
-                Value::String("expiration".into()),
-                Value::String((now() + 60).to_string()),
-            ],
-        ];
-        if let Some(extra) = extra_tags {
-            tags.extend(extra);
-        }
-
-        let encrypted_content = wallet_connection.encrypt(request_payload)?;
-        let event = wallet_connection.create_event(KIND_NWC_REQUEST, encrypted_content, tags)?;
-        let event_id = event.id.clone();
-        Ok((event, event_id))
+        self.process_response(client, &msg_text, request_id)
     }
 
     async fn subscribe<T: InternalTransport>(
@@ -214,9 +178,9 @@ impl WalletConnector {
 
     fn process_response(
         &self,
-        wallet_connection: &WalletConnection,
+        client: &NwcClient,
         msg_text: &str,
-        event_id: &str,
+        request_id: &str,
     ) -> Result<Value> {
         let arr: Vec<serde_json::Value> =
             serde_json::from_str(msg_text).map_err(|e| Error::from(e.to_string()))?;
@@ -225,39 +189,10 @@ impl WalletConnector {
             let resp_event: Event =
                 serde_json::from_value(arr[2].clone()).map_err(|e| Error::from(e.to_string()))?;
 
-            resp_event
-                .verify(now())
-                .map_err(|e| Error::from(e.to_string()))?;
-
-            if resp_event.pubkey != wallet_connection.wallet_pubkey {
-                worker::console_error!(
-                    "NWC dispatch: pubkey mismatch: expected={}, got={}",
-                    wallet_connection.wallet_pubkey,
-                    resp_event.pubkey
-                );
-                return Err(Error::from("Response pubkey mismatch"));
-            }
-
-            let has_e_tag = resp_event.tags.iter().any(|t| {
-                t.len() >= 2 && t[0].as_str() == Some("e") && t[1].as_str() == Some(event_id)
-            });
-
-            if !has_e_tag {
-                worker::console_error!(
-                    "NWC dispatch: response missing 'e' tag for request {}",
-                    event_id
-                );
-                return Err(Error::from("Response missing 'e' tag for request"));
-            }
-
-            let decrypted = wallet_connection.decrypt(&resp_event.content)?;
-            let resp_json: Value =
-                serde_json::from_str(&decrypted).map_err(|e| Error::from(e.to_string()))?;
-
-            return Ok(resp_json);
+            client.parse_response_event(&resp_event, request_id).map_err(|e| Error::from(e.to_string()))
+        } else {
+            worker::console_error!("NWC dispatch: malformed response from relay: {}", msg_text);
+            Err(Error::from("Malformed response from dispatch"))
         }
-
-        worker::console_error!("NWC dispatch: malformed response from relay: {}", msg_text);
-        Err(Error::from("Malformed response from dispatch"))
     }
 }

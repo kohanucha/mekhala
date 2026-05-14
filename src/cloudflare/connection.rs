@@ -133,6 +133,10 @@ impl ConnectionRegistry {
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.state.get_websockets().len()
+    }
+
     pub fn storage(&self) -> Storage {
         self.state.storage()
     }
@@ -149,4 +153,3 @@ impl ConnectionRegistry {
         self.connections.remove(&id)
     }
 }
-

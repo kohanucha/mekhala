@@ -248,13 +248,13 @@ mod tests {
             let bridge_sk = "0202020202020202020202020202020202020202020202020202020202020202";
 
             // Create a valid signed event for the bridge
-            let details = crate::nostr::nip_47::WalletConnectionDetails {
+            let uri = crate::nostr::nip_47::NwcUri {
                 wallet_pubkey: wallet_pk.to_string(),
                 secret: bridge_sk.to_string(),
             };
-            let connection = crate::nostr::nip_47::WalletConnection::new(details).unwrap();
+            let client = crate::nostr::nip_47::NwcClient::new(uri).unwrap();
 
-            let bridge_req = serde_json::json!(["REQ", "sub_bridge", { "#p": [connection.my_pubkey] }]).to_string();
+            let bridge_req = serde_json::json!(["REQ", "sub_bridge", { "#p": [client.my_pubkey] }]).to_string();
             let mut handler = NostrProtocolHandler::new(engine);
             let responses = handler.handle(bridge_id, &bridge_req, MessageFlags { is_internal: true }).await;
 
@@ -262,12 +262,12 @@ mod tests {
             assert!(!responses.iter().any(|r| matches!(r, EngineResponse::Send { connection_id: 100, .. })));
 
             // Create a valid signed event for the bridge
-            let details = crate::nostr::nip_47::WalletConnectionDetails {
+            let uri = crate::nostr::nip_47::NwcUri {
                 wallet_pubkey: wallet_pk.to_string(),
                 secret: bridge_sk.to_string(),
             };
-            let connection = crate::nostr::nip_47::WalletConnection::new(details).unwrap();
-            let bridge_event = connection.create_event(23194, "".into(), vec![vec![serde_json::json!("p"), serde_json::json!(wallet_pk)]]).unwrap();
+            let client = crate::nostr::nip_47::NwcClient::new(uri).unwrap();
+            let (bridge_event, _) = client.create_request_event(crate::nostr::nip_47::NwcMethod::MakeInvoice, serde_json::json!({}), vec![]).unwrap();
 
             let bridge_event_json = serde_json::json!([
                 "EVENT",
@@ -292,7 +292,7 @@ mod tests {
             })).unwrap();
             
             let mut wallet_response_event = wallet_response_event;
-            wallet_response_event.tags = vec![vec![serde_json::json!("p"), serde_json::json!(connection.my_pubkey)], vec![serde_json::json!("e"), serde_json::json!(bridge_event.id)]];
+            wallet_response_event.tags = vec![vec![serde_json::json!("p"), serde_json::json!(client.my_pubkey)], vec![serde_json::json!("e"), serde_json::json!(bridge_event.id)]];
 
             // Wallet response comes from connection 1
             let responses = handler.engine.process_event(1, wallet_response_event, MessageFlags::default()).await;
