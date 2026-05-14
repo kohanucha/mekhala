@@ -1,7 +1,6 @@
 use worker::*;
 use crate::cloudflare::create_cors_response;
-use crate::lnaddress::lnaddress::LNAddress;
-use crate::lnaddress::wallet_connector::WalletConnector;
+use crate::lnaddress::LnAddressGateway;
 
 pub async fn handle_lnaddress(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     match handle_lnaddress_inner(req, ctx).await {
@@ -17,21 +16,9 @@ fn lnaddress_error(reason: &str) -> Result<Response> {
 
 async fn handle_lnaddress_inner(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let username = ctx.param("username").ok_or_else(|| Error::from("Missing username"))?;
+    let gateway = LnAddressGateway::new(username);
     
-    if get_nwc_uri(&ctx.env, username).await?.is_none() {
-        return Err(Error::from("User not found"));
-    }
-
-    let ln_address = LNAddress::new(username);
-
-    let url = req.url()?;
-    let is_local = url.host_str() == Some("localhost") || url.host_str() == Some("127.0.0.1");
-    let host = url.host_str().unwrap_or_default();
-    let port = url.port().map(|p| format!(":{}", p)).unwrap_or_default();
-    let protocol = if is_local { "http" } else { "https" };
-    
-    let callback_url = format!("{}://{}{}/lnaddress/{}/callback", protocol, host, port, username);
-    let info = ln_address.get_info(&callback_url);
+    let info = gateway.get_pay_request_info(&ctx.env, &req.url()?).await?;
 
     create_cors_response(Response::from_json(&info)?)
 }
@@ -51,23 +38,12 @@ async fn handle_lnaddress_callback_inner(req: Request, env: &Env, username: &str
         .and_then(|(_, v)| v.parse::<u64>().ok())
         .ok_or_else(|| Error::from("Missing amount"))?;
 
-    let nwc_uri = get_nwc_uri(env, username).await?
-        .ok_or_else(|| Error::from("User not found"))?;
-
-    let ln_address = LNAddress::new(username);
-    let description_hash = ln_address.get_description_hash();
-
-    let connector = WalletConnector::new(&nwc_uri)?;
-    let pr = connector.make_invoice(transport, amount_msat, description_hash).await?;
+    let gateway = LnAddressGateway::new(username);
+    let pr = gateway.create_invoice(env, transport, amount_msat).await?;
     
     let resp = serde_json::json!({
         "pr": pr,
         "routes": []
     });
     create_cors_response(Response::from_json(&resp)?)
-}
-
-async fn get_nwc_uri(env: &Env, username: &str) -> Result<Option<String>> {
-    let kv = env.kv("MEKHALA_NWC_KV")?;
-    kv.get(username).text().await.map_err(|e| Error::from(e.to_string()))
 }
