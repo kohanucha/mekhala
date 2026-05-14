@@ -137,10 +137,6 @@ impl ConnectionRegistry {
         self.state.get_websockets().len()
     }
 
-    pub fn storage(&self) -> Storage {
-        self.state.storage()
-    }
-
     pub fn accept_web_socket(&self, ws: &WebSocket) {
         self.state.accept_web_socket(ws);
     }
