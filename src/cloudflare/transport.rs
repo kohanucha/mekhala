@@ -2,12 +2,10 @@ use std::cell::RefCell;
 use futures::channel::oneshot;
 use futures::lock::Mutex;
 use worker::*;
-use wasm_bindgen::{JsValue, JsCast};
 use crate::nostr::engine::{NostrEngine, EngineResponse, MessageFlags};
 use crate::nostr::wallet_registry::{WalletRegistry, Storage};
 use crate::cloudflare::create_cors_response;
-use crate::cloudflare::HibernationState;
-use crate::cloudflare::connection::ConnectionManager;
+use crate::cloudflare::connection::ConnectionRegistry;
 
 pub struct CloudflareStorage {
     storage: worker::Storage,
@@ -28,10 +26,9 @@ impl Storage for CloudflareStorage {
 
 #[durable_object]
 pub struct CloudflareTransport {
-    state: State,
     env: Env,
     engine: Mutex<NostrEngine<CloudflareStorage>>,
-    connections: RefCell<ConnectionManager<WebSocket>>,
+    connections: RefCell<ConnectionRegistry>,
 }
 
 impl DurableObject for CloudflareTransport {
@@ -41,10 +38,9 @@ impl DurableObject for CloudflareTransport {
         let engine = NostrEngine { registry };
 
         Self {
-            state,
             env,
             engine: Mutex::new(engine),
-            connections: RefCell::new(ConnectionManager::new()),
+            connections: RefCell::new(ConnectionRegistry::new(state)),
         }
     }
 
@@ -110,7 +106,7 @@ impl crate::common::InternalTransport for CloudflareTransport {
     }
 
     async fn generate_id(&self) -> u32 {
-        self.generate_unique_id().await
+        self.connections.borrow().next_id().await
     }
 
     async fn close_connection(&self, id: u32) -> Result<()> {
@@ -125,20 +121,17 @@ impl crate::common::InternalTransport for CloudflareTransport {
 impl CloudflareTransport {
     async fn load_connection_with_engine(&self, pubkey: &str, engine: &mut NostrEngine<CloudflareStorage>) -> Result<Option<u32>> {
         if let Some(id) = engine.registry.load_by_pubkey(pubkey).await {
-            let tag = format!("id:{}", id);
-            for ws in self.get_websockets_with_tag(&tag) {
-                if let Some(actual_id) = self.wake_up_with_engine(&ws, engine).await {
-                    if actual_id == id {
-                        return Ok(Some(id));
-                    }
-                }
-            }
-
-            // Fallback: search all sockets if tagged one failed to wake up
-            for ws in self.state.get_websockets() {
-                if let Some(actual_id) = self.wake_up_with_engine(&ws, engine).await {
-                    if actual_id == id {
-                        return Ok(Some(id));
+            let ws = self.connections.borrow().find_by_id(id);
+            if let Some(ws) = ws {
+                let _ = self.wake_up_with_engine(&ws, engine).await;
+            } else {
+                // Fallback: search all sockets if tagged one failed to wake up
+                let all_ws = self.connections.borrow().get_all_websockets();
+                for ws in all_ws {
+                    if let Some(actual_id) = self.wake_up_with_engine(&ws, engine).await {
+                        if actual_id == id {
+                            return Ok(Some(id));
+                        }
                     }
                 }
             }
@@ -151,13 +144,11 @@ impl CloudflareTransport {
         for resp in responses {
             match resp {
                 EngineResponse::Send { connection_id, message } => {
-                    self.connections.borrow_mut().send(connection_id, message, |ws, msg| {
-                        let _ = ws.send_with_str(msg);
-                    });
+                    self.connections.borrow_mut().send(connection_id, message);
                 }
                 EngineResponse::WakeUp { connection_id } => {
-                    let tag = format!("id:{}", connection_id);
-                    for ws in self.get_websockets_with_tag(&tag) {
+                    let ws = self.connections.borrow().find_by_id(connection_id);
+                    if let Some(ws) = ws {
                         let _ = self.wake_up_with_engine(&ws, engine).await;
                     }
                 }
@@ -166,67 +157,30 @@ impl CloudflareTransport {
         Ok(())
     }
 
-    fn get_websockets_with_tag(&self, tag: &str) -> Vec<WebSocket> {
-        let state_js: &JsValue = unsafe { std::mem::transmute(&self.state) };
-        let state_ext: &crate::cloudflare::hibernation::DurableObjectStateExt = state_js.unchecked_ref();
-        let js_array = state_ext.get_websockets_raw(Some(tag));
-        let mut result = Vec::new();
-        for i in 0..js_array.length() {
-            let ws_js = js_array.get(i);
-            // Convert JsValue to web_sys::WebSocket, then to worker::WebSocket
-            let web_sys_ws: worker::web_sys::WebSocket = ws_js.unchecked_into();
-            let ws: WebSocket = web_sys_ws.into();
-            result.push(ws);
-        }
-        result
-    }
-
     async fn wake_up_with_engine(&self, ws: &WebSocket, engine: &mut NostrEngine<CloudflareStorage>) -> Option<u32> {
-        if let Some(id) = self.get_id(ws) {
-            return Some(id);
-        }
-        
-        // Try to recover from tags
-        let tags = self.state.get_tags(ws);
-        let id_tag = tags.iter().find(|t| t.starts_with("id:"))?;
-        let id: u32 = id_tag.strip_prefix("id:")?.parse().ok()?;
+        let id = self.connections.borrow().identify(ws)?;
 
-        if engine.registry.load(id).await {
-            self.connections.borrow_mut().add_active(id, ws.clone());
-            return Some(id);
-        }
-        None
-    }
-
-    fn get_id(&self, ws: &WebSocket) -> Option<u32> {
-        self.connections.borrow().get_id(ws, ws_eq)
-    }
-
-    async fn generate_unique_id(&self) -> u32 {
-        // Use timestamp-based counter to ensure strictly increasing IDs for "Last-In-Wins" logic.
-        // Even if the DO restarts, the timestamp will ensure we stay ahead of old IDs.
-        let storage = self.state.storage();
-        let mut counter = storage.get::<u32>("id_counter").await.ok().flatten().unwrap_or(0);
-        let now = crate::util::now() as u32;
+        // Attempt to load state, but don't fail if there is no state yet (e.g. new connection)
+        let _ = engine.registry.load(id).await;
         
-        if counter < now {
-            counter = now;
-        }
-        counter += 1;
-        
-        let _ = storage.put("id_counter", counter).await;
-        counter
+        // Ensure it's in memory as an active connection
+        self.connections.borrow_mut().add_active(id, ws.clone());
+        Some(id)
     }
 
     async fn accept_new_connection(&self) -> Result<Response> {
         let WebSocketPair { client, server } = WebSocketPair::new()?;
-        self.state.accept_web_socket(&server);
+        
+        {
+            let connections = self.connections.borrow();
+            connections.accept_web_socket(&server);
+        }
 
         let mut engine = self.engine.lock().await;
-        let connection_id = self.generate_unique_id().await;
+        let connection_id = self.connections.borrow().next_id().await;
         let responses = engine.on_connect(connection_id).await;
-        self.connections.borrow_mut().add_active(connection_id, server.clone());
-        let _ = self.state.set_tags(&server, vec![format!("id:{}", connection_id)]);
+        
+        self.connections.borrow_mut().register_active(connection_id, server);
 
         self.process_responses(responses, &mut engine).await?;
 
@@ -238,20 +192,19 @@ impl CloudflareTransport {
         if let Some(id) = self.wake_up_with_engine(ws, &mut engine).await {
             let responses = engine.on_disconnect(id).await;
             self.process_responses(responses, &mut engine).await?;
+            
+            let storage = {
+                let registry = self.connections.borrow();
+                registry.storage()
+            };
+            
             self.connections.borrow_mut().remove(id);
             
             // Clean up storage
-            let storage = self.state.storage();
             let _ = storage.delete(&format!("conn:{}", id)).await;
-            // Note: cleaning up pk index is more complex (scan-intensive),
-            // but for personal relay we can let it be or implement gradual cleanup.
         }
         Ok(())
     }
-}
-
-fn ws_eq(a: &WebSocket, b: &WebSocket) -> bool {
-    js_sys::Object::is(a.as_ref(), b.as_ref())
 }
 
 pub async fn connect(req: Request, env: &Env) -> Result<Response> {
