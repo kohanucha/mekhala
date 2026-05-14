@@ -200,18 +200,9 @@ impl CloudflareTransport {
     async fn handle_disconnect(&self, ws: &WebSocket) -> Result<()> {
         let mut handler = self.handler.lock().await;
         if let Some(id) = self.wake_up_with_handler(ws, &mut handler).await {
-            let responses = handler.engine.on_disconnect(id).await;
+            let responses = handler.engine.on_terminate(id).await;
             self.process_responses(responses, &mut handler).await?;
-            
-            let storage = {
-                let registry = self.connections.borrow();
-                registry.storage()
-            };
-            
             self.connections.borrow_mut().remove(id);
-            
-            // Clean up storage
-            let _ = storage.delete(&format!("conn:{}", id)).await;
         }
         Ok(())
     }

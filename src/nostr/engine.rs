@@ -129,6 +129,11 @@ impl<S: Storage> NostrEngine<S> {
         Vec::new()
     }
 
+    pub async fn on_terminate(&mut self, id: u32) -> Vec<EngineResponse> {
+        self.registry.terminate(id).await;
+        Vec::new()
+    }
+
     pub fn get_wallet_info(&self, pubkey: &str) -> super::WalletInfo {
         let mut online = false;
         let mut ready = false;

@@ -240,6 +240,13 @@ impl<S: Storage> WalletRegistry<S> {
         self.index.disconnect(conn_id);
     }
 
+    /// Fully terminates a connection, removing it from memory and persistent storage.
+    /// Note: Pubkey pointers are left for lazy deletion.
+    pub async fn terminate(&mut self, conn_id: u32) {
+        self.index.disconnect(conn_id);
+        self.storage.delete(&format!("conn:{}", conn_id)).await;
+    }
+
     #[cfg(test)]
     pub fn get_subscriptions(&self, conn_id: u32) -> HashMap<String, Vec<Filter>> {
         self.index.get_subscriptions(conn_id)
@@ -283,6 +290,9 @@ impl<S: Storage> WalletRegistry<S> {
                 let id = id as u32;
                 if self.load(id).await {
                     return Some(id);
+                } else {
+                    // Lazy deletion of stale pointer
+                    self.storage.delete(&key).await;
                 }
             }
         }
@@ -381,6 +391,45 @@ mod tests {
             let data = registry.storage.data.lock().unwrap();
             assert!(data.contains_key("conn:1"));
             assert!(data.contains_key("pk:alice"));
+        });
+    }
+
+    #[test]
+    fn test_registry_terminate() {
+        futures::executor::block_on(async {
+            let storage = MockStorage::new();
+            let mut registry = WalletRegistry::new(storage);
+
+            registry.subscribe(1, "sub1".into(), vec![Filter {
+                authors: Some(vec!["alice".into()]),
+                ..Default::default()
+            }]).await;
+
+            registry.terminate(1).await;
+
+            let data = registry.storage.data.lock().unwrap();
+            assert!(!data.contains_key("conn:1"));
+            // pk:alice is still there (lazy deletion)
+            assert!(data.contains_key("pk:alice"));
+            assert!(registry.get_subscriptions(1).is_empty());
+        });
+    }
+
+    #[test]
+    fn test_registry_lazy_deletion() {
+        futures::executor::block_on(async {
+            let storage = MockStorage::new();
+            let mut registry = WalletRegistry::new(storage);
+
+            // 1. Manually seed a stale pk: pointer
+            registry.storage.put("pk:stale", serde_json::json!(99)).await;
+
+            // 2. Attempt to load by pubkey (should fail load(99) and delete pk:stale)
+            let result = registry.load_by_pubkey("stale").await;
+            assert!(result.is_none());
+
+            let data = registry.storage.data.lock().unwrap();
+            assert!(!data.contains_key("pk:stale"));
         });
     }
 }
