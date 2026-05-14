@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::cell::RefCell;
 use futures::channel::oneshot;
 use futures::lock::Mutex;
@@ -8,6 +7,7 @@ use crate::nostr::engine::{NostrEngine, EngineResponse, MessageFlags};
 use crate::nostr::wallet_registry::{WalletRegistry, Storage};
 use crate::cloudflare::create_cors_response;
 use crate::cloudflare::HibernationState;
+use crate::cloudflare::connection::ConnectionManager;
 
 pub struct CloudflareStorage {
     storage: worker::Storage,
@@ -31,8 +31,7 @@ pub struct CloudflareTransport {
     state: State,
     env: Env,
     engine: Mutex<NostrEngine<CloudflareStorage>>,
-    id_map: RefCell<Vec<(WebSocket, u32)>>,
-    internal_map: RefCell<HashMap<u32, oneshot::Sender<String>>>,
+    connections: RefCell<ConnectionManager<WebSocket>>,
 }
 
 impl DurableObject for CloudflareTransport {
@@ -45,8 +44,7 @@ impl DurableObject for CloudflareTransport {
             state,
             env,
             engine: Mutex::new(engine),
-            id_map: RefCell::new(Vec::new()),
-            internal_map: RefCell::new(HashMap::new()),
+            connections: RefCell::new(ConnectionManager::new()),
         }
     }
 
@@ -102,7 +100,7 @@ impl crate::common::InternalTransport for CloudflareTransport {
     }
 
     async fn send_message(&self, id: u32, message: String, sender: oneshot::Sender<String>) -> Result<()> {
-        self.internal_map.borrow_mut().insert(id, sender);
+        self.connections.borrow_mut().add_internal(id, sender);
 
         let mut engine = self.engine.lock().await;
 
@@ -119,7 +117,7 @@ impl crate::common::InternalTransport for CloudflareTransport {
         let mut engine = self.engine.lock().await;
         let responses = engine.on_disconnect(id).await;
         self.process_responses(responses, &mut engine).await?;
-        self.internal_map.borrow_mut().remove(&id);
+        self.connections.borrow_mut().remove(id);
         Ok(())
     }
 }
@@ -153,17 +151,9 @@ impl CloudflareTransport {
         for resp in responses {
             match resp {
                 EngineResponse::Send { connection_id, message } => {
-                    // 1. Try internal routing first
-                    let internal_sender = self.internal_map.borrow_mut().remove(&connection_id);
-                    if let Some(sender) = internal_sender {
-                        let _ = sender.send(message);
-                        continue;
-                    }
-
-                    // 2. Fallback to WebSocket routing
-                    if let Some((ws, _)) = self.id_map.borrow().iter().find(|(_, i)| *i == connection_id) {
-                        let _ = ws.send_with_str(&message);
-                    }
+                    self.connections.borrow_mut().send(connection_id, message, |ws, msg| {
+                        let _ = ws.send_with_str(msg);
+                    });
                 }
                 EngineResponse::WakeUp { connection_id } => {
                     let tag = format!("id:{}", connection_id);
@@ -202,14 +192,14 @@ impl CloudflareTransport {
         let id: u32 = id_tag.strip_prefix("id:")?.parse().ok()?;
 
         if engine.registry.load(id).await {
-            self.id_map.borrow_mut().push((ws.clone(), id));
+            self.connections.borrow_mut().add_active(id, ws.clone());
             return Some(id);
         }
         None
     }
 
     fn get_id(&self, ws: &WebSocket) -> Option<u32> {
-        self.id_map.borrow().iter().find(|(w, _)| ws_eq(w, ws)).map(|(_, id)| *id)
+        self.connections.borrow().get_id(ws, ws_eq)
     }
 
     async fn generate_unique_id(&self) -> u32 {
@@ -235,7 +225,7 @@ impl CloudflareTransport {
         let mut engine = self.engine.lock().await;
         let connection_id = self.generate_unique_id().await;
         let responses = engine.on_connect(connection_id).await;
-        self.id_map.borrow_mut().push((server.clone(), connection_id));
+        self.connections.borrow_mut().add_active(connection_id, server.clone());
         let _ = self.state.set_tags(&server, vec![format!("id:{}", connection_id)]);
 
         self.process_responses(responses, &mut engine).await?;
@@ -248,7 +238,7 @@ impl CloudflareTransport {
         if let Some(id) = self.wake_up_with_engine(ws, &mut engine).await {
             let responses = engine.on_disconnect(id).await;
             self.process_responses(responses, &mut engine).await?;
-            self.id_map.borrow_mut().retain(|(_, i)| *i != id);
+            self.connections.borrow_mut().remove(id);
             
             // Clean up storage
             let storage = self.state.storage();

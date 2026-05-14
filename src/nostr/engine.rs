@@ -5,7 +5,6 @@ use super::wallet_registry::{WalletRegistry, Storage};
 #[cfg(test)]
 use super::wallet_registry::MockStorage;
 use crate::util::now;
-use serde_json::Value;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum EngineResponse {
@@ -183,27 +182,6 @@ impl<S: Storage> NostrEngine<S> {
 
     pub fn error_message(&self, msg: &str) -> String {
         RelayMessage::Notice(msg.to_string()).to_json()
-    }
-
-    pub fn get_target_pubkeys(&self, message: &str) -> Option<Vec<String>> {
-        if message.starts_with("[\"EVENT\"") {
-            if let Ok(Value::Array(arr)) = serde_json::from_str::<Value>(message) {
-                if arr.len() >= 2 {
-                    if let Ok(event) = serde_json::from_value::<Event>(arr[1].clone()) {
-                        let mut target_pks = HashSet::new();
-                        for tag in &event.tags {
-                            if tag.len() >= 2 && tag[0].as_str() == Some("p") {
-                                if let Some(pk) = tag[1].as_str() {
-                                    target_pks.insert(pk.to_string());
-                                }
-                            }
-                        }
-                        return Some(target_pks.into_iter().collect());
-                    }
-                }
-            }
-        }
-        None
     }
 
     pub async fn add_connection(&mut self, id: u32, subscriptions: HashMap<String, Vec<Filter>>) {

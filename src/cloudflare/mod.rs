@@ -1,6 +1,7 @@
 pub mod transport;
 pub mod hibernation;
 pub mod durable_object;
+pub mod connection;
 
 pub use transport::{CloudflareTransport};
 pub use hibernation::HibernationState;

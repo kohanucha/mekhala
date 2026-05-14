@@ -240,6 +240,7 @@ impl<S: Storage> WalletRegistry<S> {
         self.index.disconnect(conn_id);
     }
 
+    #[cfg(test)]
     pub fn get_subscriptions(&self, conn_id: u32) -> HashMap<String, Vec<Filter>> {
         self.index.get_subscriptions(conn_id)
     }
