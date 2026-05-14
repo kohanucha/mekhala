@@ -4,12 +4,14 @@ pub mod nip_04;
 pub mod nip_44;
 pub mod nip_47;
 pub mod engine;
+pub mod protocol_handler;
 pub mod event;
 pub mod filter;
 
 pub use nip_01::{RelayMessage, ClientMessage};
 pub use event::Event;
 pub use filter::Filter;
+pub use engine::MessageFlags;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

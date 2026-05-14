@@ -1,9 +1,10 @@
 use std::collections::{HashMap, HashSet};
-use super::{Filter, Event, RelayMessage, ClientMessage};
+use super::{Filter, Event, RelayMessage};
 use super::wallet_registry::{WalletRegistry, Storage};
 
 #[cfg(test)]
 use super::wallet_registry::MockStorage;
+#[cfg(test)]
 use crate::util::now;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -46,61 +47,16 @@ impl<S: Storage> NostrEngine<S> {
         Vec::new()
     }
 
-    pub async fn on_message(&mut self, connection_id: u32, message: &str, flags: MessageFlags) -> Vec<EngineResponse> {
-        match ClientMessage::from_json(message) {
-            Ok(ClientMessage::Event(event)) => self.handle_nostr_event(connection_id, event, flags).await,
-            Ok(ClientMessage::Req(sub_id, filters)) => self.handle_nostr_req(connection_id, sub_id, filters, flags).await,
-            Ok(ClientMessage::Close(sub_id)) => self.handle_nostr_close(connection_id, sub_id, flags).await,
-            Err(e) => {
-                if !flags.is_internal {
-                    vec![EngineResponse::send(connection_id, RelayMessage::Notice(format!("parse failed: {}", e)).to_json())]
-                } else {
-                    Vec::new()
-                }
-            }
-        }
+    pub async fn process_info_event(&mut self, event: Event) {
+        self.registry.cache_info(event);
     }
 
-    pub async fn handle_nostr_event(&mut self, connection_id: u32, event: Event, flags: MessageFlags) -> Vec<EngineResponse> {
-        match event.kind {
-            13194 => {
-                if event.verify(now()).is_ok() {
-                    self.registry.cache_info(event);
-                }
-                Vec::new()
-            }
-            23194..=23197 => {
-                if let Err(e) = event.verify(now()) {
-                    if !flags.is_internal {
-                        return vec![EngineResponse::send(connection_id, RelayMessage::Ok(event.id, false, e.to_string()).to_json())];
-                    } else {
-                        return Vec::new();
-                    }
-                }
-                self.handle_verified_event(connection_id, event, flags).await
-            }
-            _ => {
-                if !flags.is_internal {
-                    let message = if let Err(e) = event.verify(now()) {
-                        RelayMessage::Ok(event.id, false, e.to_string())
-                    } else {
-                        RelayMessage::Ok(event.id, false, "blocked: event kind not allowed".into())
-                    };
-                    
-                    vec![EngineResponse::send(connection_id, message.to_json())]
-                } else {
-                    Vec::new()
-                }
-            }
-        }
-    }
-
-    pub async fn handle_verified_event(&mut self, id: u32, event: Event, flags: MessageFlags) -> Vec<EngineResponse> {
+    pub async fn process_event(&mut self, connection_id: u32, event: Event, flags: MessageFlags) -> Vec<EngineResponse> {
         let mut responses = Vec::new();
         let ok_message = RelayMessage::Ok(event.id.clone(), true, "".into()).to_json();
 
         if !flags.is_internal {
-            responses.push(EngineResponse::send(id, ok_message));
+            responses.push(EngineResponse::send(connection_id, ok_message));
         }
 
         // 1. Identify target pubkeys for routing
@@ -138,8 +94,38 @@ impl<S: Storage> NostrEngine<S> {
         responses
     }
 
+    pub async fn process_req(&mut self, id: u32, sub_id: String, filters: Vec<Filter>, flags: MessageFlags) -> Vec<EngineResponse> {
+        let mut responses = Vec::new();
+        self.registry.subscribe(id, sub_id.clone(), filters.clone()).await;
+
+        for filters_set in filters.iter() {
+            for pk in filters_set.pubkeys() {
+                if let Some(info_event) = self.registry.get_info(&pk) {
+                    if filters.iter().any(|f| f.matches(&info_event)) {
+                        let message = RelayMessage::Event(sub_id.clone(), info_event.clone()).to_json();
+                        
+                        if !flags.is_internal {
+                            responses.push(EngineResponse::send(id, message));
+                        }
+                    }
+                }
+            }
+        }
+
+        let eose = RelayMessage::Eose(sub_id).to_json();
+        if !flags.is_internal {
+            responses.push(EngineResponse::send(id, eose));
+        }
+        responses
+    }
+
+    pub async fn process_close(&mut self, id: u32, sub_id: String) -> Vec<EngineResponse> {
+        self.registry.unsubscribe(id, sub_id).await;
+        Vec::new()
+    }
+
     pub async fn on_disconnect(&mut self, id: u32) -> Vec<EngineResponse> {
-        self.disconnect(id).await;
+        self.registry.disconnect(id).await;
         Vec::new()
     }
 
@@ -189,64 +175,22 @@ impl<S: Storage> NostrEngine<S> {
             self.registry.subscribe(id, sub_id, filters).await;
         }
     }
-
-    pub async fn disconnect(&mut self, id: u32) {
-        self.registry.disconnect(id).await;
-    }
-
-    async fn handle_nostr_req(&mut self, id: u32, sub_id: String, filters: Vec<Filter>, flags: MessageFlags) -> Vec<EngineResponse> {
-        if filters.iter().any(|f| !f.is_valid()) {
-            let message = RelayMessage::Closed(sub_id.clone(), "filter too broad".to_string()).to_json();
-            
-            if !flags.is_internal {
-                return vec![EngineResponse::send(id, message)];
-            } else {
-                return Vec::new();
-            }
-        }
-
-        let mut responses = Vec::new();
-        self.registry.subscribe(id, sub_id.clone(), filters.clone()).await;
-
-        for filters_set in filters.iter() {
-            for pk in filters_set.pubkeys() {
-                if let Some(info_event) = self.registry.get_info(&pk) {
-                    if filters.iter().any(|f| f.matches(&info_event)) {
-                        let message = RelayMessage::Event(sub_id.clone(), info_event.clone()).to_json();
-                        
-                        if !flags.is_internal {
-                            responses.push(EngineResponse::send(id, message));
-                        }
-                    }
-                }
-            }
-        }
-
-        let eose = RelayMessage::Eose(sub_id).to_json();
-        if !flags.is_internal {
-            responses.push(EngineResponse::send(id, eose));
-        }
-        responses
-    }
-
-    async fn handle_nostr_close(&mut self, id: u32, sub_id: String, _flags: MessageFlags) -> Vec<EngineResponse> {
-        self.registry.unsubscribe(id, sub_id).await;
-        Vec::new()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::protocol_handler::NostrProtocolHandler;
 
     #[test]
     fn test_engine_req_storage() {
         futures::executor::block_on(async {
-            let mut engine = NostrEngine::new();
-            engine.on_connect(1).await;
+            let engine = NostrEngine::new();
+            let mut handler = NostrProtocolHandler::new(engine);
+            handler.engine.on_connect(1).await;
 
             let req = r#"["REQ", "sub1", {"authors": ["pk1"]}]"#;
-            let responses = engine.on_message(1, req, MessageFlags::default()).await;
+            let responses = handler.handle(1, req, MessageFlags::default()).await;
 
             assert!(responses.iter().any(|r| {
                 if let EngineResponse::Send { message, .. } = r {
@@ -256,7 +200,7 @@ mod tests {
                 }
             }));
 
-            assert!(engine.registry.get_subscriptions(1).contains_key("sub1"));
+            assert!(handler.engine.registry.get_subscriptions(1).contains_key("sub1"));
         });
     }
 
@@ -311,7 +255,8 @@ mod tests {
             let connection = crate::nostr::nip_47::WalletConnection::new(details).unwrap();
 
             let bridge_req = serde_json::json!(["REQ", "sub_bridge", { "#p": [connection.my_pubkey] }]).to_string();
-            let responses = engine.on_message(bridge_id, &bridge_req, MessageFlags { is_internal: true }).await;
+            let mut handler = NostrProtocolHandler::new(engine);
+            let responses = handler.handle(bridge_id, &bridge_req, MessageFlags { is_internal: true }).await;
 
             // REQ should NOT send anything back to sender with suppress_acks (is_internal)
             assert!(!responses.iter().any(|r| matches!(r, EngineResponse::Send { connection_id: 100, .. })));
@@ -329,7 +274,7 @@ mod tests {
                 bridge_event
             ]).to_string();
 
-            let responses = engine.on_message(bridge_id, &bridge_event_json, MessageFlags { is_internal: true }).await;
+            let responses = handler.handle(bridge_id, &bridge_event_json, MessageFlags { is_internal: true }).await;
 
             // Event should be routed to connection 1
             assert!(responses.iter().any(|r| matches!(r, EngineResponse::Send { connection_id: 1, .. })));
@@ -350,7 +295,7 @@ mod tests {
             wallet_response_event.tags = vec![vec![serde_json::json!("p"), serde_json::json!(connection.my_pubkey)], vec![serde_json::json!("e"), serde_json::json!(bridge_event.id)]];
 
             // Wallet response comes from connection 1
-            let responses = engine.handle_verified_event(1, wallet_response_event, MessageFlags::default()).await;
+            let responses = handler.engine.process_event(1, wallet_response_event, MessageFlags::default()).await;
 
             // Routed EVENT SHOULD go to connection 100
             assert!(responses.iter().any(|r| {
@@ -385,7 +330,7 @@ mod tests {
                 sig: "sig".into(),
             };
 
-            let responses = engine.handle_verified_event(2, event, MessageFlags::default()).await;
+            let responses = engine.process_event(2, event, MessageFlags::default()).await;
 
             assert!(responses.iter().any(|r| {
                 if let EngineResponse::Send { connection_id, message } = r {
@@ -428,7 +373,7 @@ mod tests {
                 sig: "sig".into(),
             };
 
-            let responses = engine.handle_verified_event(99, event, MessageFlags::default()).await;
+            let responses = engine.process_event(99, event, MessageFlags::default()).await;
 
             // 3. Verify that a WakeUp response was returned
             assert!(responses.iter().any(|r| matches!(r, EngineResponse::WakeUp { connection_id: 42 })));
