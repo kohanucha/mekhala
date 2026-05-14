@@ -10,6 +10,7 @@ use serde_json::Value;
 #[derive(Debug, PartialEq, Eq)]
 pub enum EngineResponse {
     Send { connection_id: u32, message: String },
+    WakeUp { connection_id: u32 },
 }
 
 #[derive(Default, Clone, Copy)]
@@ -20,6 +21,10 @@ pub struct MessageFlags {
 impl EngineResponse {
     pub fn send(connection_id: u32, message: String) -> Self {
         EngineResponse::Send { connection_id, message }
+    }
+
+    pub fn wake_up(connection_id: u32) -> Self {
+        EngineResponse::WakeUp { connection_id }
     }
 }
 
@@ -99,6 +104,30 @@ impl<S: Storage> NostrEngine<S> {
             responses.push(EngineResponse::send(id, ok_message));
         }
 
+        // 1. Identify target pubkeys for routing
+        let mut target_pks = HashSet::new();
+        target_pks.insert(event.pubkey.clone());
+        for tag in &event.tags {
+            if tag.len() >= 2 && tag[0].as_str() == Some("p") {
+                if let Some(pk) = tag[1].as_str() {
+                    target_pks.insert(pk.to_string());
+                }
+            }
+        }
+
+        // 2. For each pubkey, ensure the connection is loaded
+        for pk in target_pks {
+            // Check if connection is already in memory
+            if self.registry.get_connection_id(&pk).is_none() {
+                // Not in memory, try loading from storage
+                if let Some(rid) = self.registry.load_by_pubkey(&pk).await {
+                    // Found in storage and now loaded into memory, signal a wake-up
+                    responses.push(EngineResponse::wake_up(rid));
+                }
+            }
+        }
+
+        // 3. Match and route to active connections
         let matches: Vec<(String, Vec<u32>)> = self.registry.match_event(&event).collect();
         for (client_id, recipient_ids) in matches {
             for rid in recipient_ids {
@@ -242,8 +271,11 @@ mod tests {
             let responses = engine.on_message(1, req, MessageFlags::default()).await;
 
             assert!(responses.iter().any(|r| {
-                let EngineResponse::Send { message, .. } = r;
-                message.contains("EOSE")
+                if let EngineResponse::Send { message, .. } = r {
+                    message.contains("EOSE")
+                } else {
+                    false
+                }
             }));
 
             assert!(engine.registry.get_subscriptions(1).contains_key("sub1"));
@@ -344,8 +376,11 @@ mod tests {
 
             // Routed EVENT SHOULD go to connection 100
             assert!(responses.iter().any(|r| {
-                let EngineResponse::Send { connection_id, message } = r;
-                connection_id == &100 && message.contains("resp1")
+                if let EngineResponse::Send { connection_id, message } = r {
+                    *connection_id == 100 && message.contains("resp1")
+                } else {
+                    false
+                }
             }));
         });
     }
@@ -375,12 +410,59 @@ mod tests {
             let responses = engine.handle_verified_event(2, event, MessageFlags::default()).await;
 
             assert!(responses.iter().any(|r| {
-                let EngineResponse::Send { connection_id, message } = r;
-                connection_id == &100 && message.contains("event1")
+                if let EngineResponse::Send { connection_id, message } = r {
+                    *connection_id == 100 && message.contains("event1")
+                } else {
+                    false
+                }
             }));
 
             engine.registry.disconnect(id).await;
             assert!(engine.registry.get_subscriptions(id).is_empty());
+        });
+    }
+
+    #[test]
+    fn test_engine_wakeup_logic() {
+        futures::executor::block_on(async {
+            // 1. Seed the storage with a "hibernated" connection
+            let id = 42;
+            let pk = "hibernated_pk";
+            let storage = MockStorage::new();
+            storage.put(&format!("pk:{}", pk), serde_json::json!(id)).await;
+            storage.put(&format!("conn:{}", id), serde_json::json!({
+                "subscriptions": {
+                    "sub1": [{"authors": [pk]}]
+                },
+                "info_event": null
+            })).await;
+            
+            let mut engine = NostrEngine { registry: WalletRegistry::new(storage) };
+
+            // 2. Handle an event that targets the hibernated pubkey
+            let event = Event {
+                id: "event1".into(),
+                pubkey: pk.into(),
+                created_at: now(),
+                kind: 23194,
+                tags: vec![vec!["p".into(), pk.into()]],
+                content: "wake up!".into(),
+                sig: "sig".into(),
+            };
+
+            let responses = engine.handle_verified_event(99, event, MessageFlags::default()).await;
+
+            // 3. Verify that a WakeUp response was returned
+            assert!(responses.iter().any(|r| matches!(r, EngineResponse::WakeUp { connection_id: 42 })));
+            
+            // 4. Verify that a Send response was ALSO returned (since matching happens after loading)
+            assert!(responses.iter().any(|r| {
+                if let EngineResponse::Send { connection_id, .. } = r {
+                    *connection_id == 42
+                } else {
+                    false
+                }
+            }));
         });
     }
 }

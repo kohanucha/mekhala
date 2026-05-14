@@ -1,5 +1,5 @@
 use worker::*;
-use crate::cloudflare::{create_cors_response, get_nwc_uri};
+use crate::cloudflare::create_cors_response;
 use crate::lnaddress::lnaddress::LNAddress;
 use crate::lnaddress::wallet_connector::WalletConnector;
 
@@ -65,4 +65,9 @@ async fn handle_lnaddress_callback_inner(req: Request, env: &Env, username: &str
         "routes": []
     });
     create_cors_response(Response::from_json(&resp)?)
+}
+
+async fn get_nwc_uri(env: &Env, username: &str) -> Result<Option<String>> {
+    let kv = env.kv("MEKHALA_NWC_KV")?;
+    kv.get(username).text().await.map_err(|e| Error::from(e.to_string()))
 }

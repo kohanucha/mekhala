@@ -4,7 +4,7 @@ use block_padding::Pkcs7;
 use cbc::{Decryptor, Encryptor};
 use cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use rand::RngCore;
-use worker::{Error, Result};
+use crate::nostr::{RelayError, Result};
 
 pub fn encrypt_nip04(shared_secret: &[u8], plaintext: &str) -> Result<String> {
     let mut iv = [0u8; 16];
@@ -16,9 +16,9 @@ pub fn encrypt_nip04(shared_secret: &[u8], plaintext: &str) -> Result<String> {
 
     let pos = pt_bytes.len();
     let ct = Encryptor::<Aes256>::new_from_slices(shared_secret, &iv)
-        .map_err(|e| Error::from(e.to_string()))?
+        .map_err(|e| RelayError::CryptoError(e.to_string()))?
         .encrypt_padded_mut::<Pkcs7>(&mut buffer, pos)
-        .map_err(|e| Error::from(e.to_string()))?;
+        .map_err(|e| RelayError::CryptoError(e.to_string()))?;
 
     let iv_b64 = general_purpose::STANDARD.encode(iv);
     let ct_b64 = general_purpose::STANDARD.encode(ct);
@@ -29,22 +29,22 @@ pub fn encrypt_nip04(shared_secret: &[u8], plaintext: &str) -> Result<String> {
 pub fn decrypt_nip04(shared_secret: &[u8], encrypted_content: &str) -> Result<String> {
     let parts: Vec<&str> = encrypted_content.split("?iv=").collect();
     if parts.len() != 2 {
-        return Err(Error::from("Invalid NIP-04 format"));
+        return Err(RelayError::Generic("Invalid NIP-04 format".into()));
     }
 
     let mut ct_bytes = general_purpose::STANDARD
         .decode(parts[0])
-        .map_err(|e| Error::from(e.to_string()))?;
+        .map_err(|e| RelayError::Base64Error(e.to_string()))?;
     let iv_bytes = general_purpose::STANDARD
         .decode(parts[1])
-        .map_err(|e| Error::from(e.to_string()))?;
+        .map_err(|e| RelayError::Base64Error(e.to_string()))?;
 
     let pt = Decryptor::<Aes256>::new_from_slices(shared_secret, &iv_bytes)
-        .map_err(|e| Error::from(e.to_string()))?
+        .map_err(|e| RelayError::CryptoError(e.to_string()))?
         .decrypt_padded_mut::<Pkcs7>(&mut ct_bytes)
-        .map_err(|e| Error::from(e.to_string()))?;
+        .map_err(|e| RelayError::CryptoError(e.to_string()))?;
 
-    String::from_utf8(pt.to_vec()).map_err(|e| Error::from(e.to_string()))
+    String::from_utf8(pt.to_vec()).map_err(|e| RelayError::Utf8Error(e.to_string()))
 }
 
 #[cfg(test)]
@@ -68,7 +68,7 @@ mod tests {
         let shared_secret = [42u8; 32];
         let result = decrypt_nip04(&shared_secret, "not-base64-content");
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Invalid NIP-04 format");
+        assert_eq!(result.unwrap_err().to_string(), "error: Invalid NIP-04 format");
     }
 
     #[test]

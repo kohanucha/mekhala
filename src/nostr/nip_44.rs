@@ -6,7 +6,7 @@ use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use rand::RngCore;
 use sha2::{Sha256};
-use worker::{Error, Result};
+use crate::nostr::{RelayError, Result};
 
 pub fn encrypt_nip44(shared_secret: &[u8], plaintext: &str) -> Result<String> {
     let conversation_key = derive_conversation_key(shared_secret);
@@ -18,11 +18,11 @@ pub fn encrypt_nip44(shared_secret: &[u8], plaintext: &str) -> Result<String> {
     let padded = pad(plaintext);
     let mut ciphertext = padded.clone();
     let mut cipher = ChaCha20::new_from_slices(&chacha_key, &chacha_nonce)
-        .map_err(|e| Error::from(e.to_string()))?;
+        .map_err(|e| RelayError::CryptoError(e.to_string()))?;
     cipher.apply_keystream(&mut ciphertext);
 
     let mut hmac = Hmac::<Sha256>::new_from_slice(&hmac_key)
-        .map_err(|e| Error::from(e.to_string()))?;
+        .map_err(|e| RelayError::CryptoError(e.to_string()))?;
     hmac.update(&nonce);
     hmac.update(&ciphertext);
     let mac = hmac.finalize().into_bytes();
@@ -39,14 +39,14 @@ pub fn encrypt_nip44(shared_secret: &[u8], plaintext: &str) -> Result<String> {
 pub fn decrypt_nip44(shared_secret: &[u8], encrypted_content: &str) -> Result<String> {
     let payload = general_purpose::STANDARD
         .decode(encrypted_content)
-        .map_err(|e| Error::from(e.to_string()))?;
+        .map_err(|e| RelayError::Base64Error(e.to_string()))?;
 
     if payload.is_empty() || payload[0] != 0x02 {
-        return Err(Error::from("Unsupported NIP-44 version"));
+        return Err(RelayError::Generic("Unsupported NIP-44 version".into()));
     }
 
     if payload.len() < 1 + 32 + 32 {
-        return Err(Error::from("Invalid NIP-44 payload length"));
+        return Err(RelayError::Generic("Invalid NIP-44 payload length".into()));
     }
 
     let nonce = &payload[1..33];
@@ -58,16 +58,16 @@ pub fn decrypt_nip44(shared_secret: &[u8], encrypted_content: &str) -> Result<St
     let (chacha_key, chacha_nonce, hmac_key) = derive_message_keys(&conversation_key, nonce);
 
     let mut hmac = Hmac::<Sha256>::new_from_slice(&hmac_key)
-        .map_err(|e| Error::from(e.to_string()))?;
+        .map_err(|e| RelayError::CryptoError(e.to_string()))?;
     hmac.update(nonce);
     hmac.update(ciphertext);
     if hmac.verify_slice(mac).is_err() {
-        return Err(Error::from("Invalid NIP-44 MAC"));
+        return Err(RelayError::CryptoError("Invalid NIP-44 MAC".into()));
     }
 
     let mut plaintext = ciphertext.to_vec();
     let mut cipher = ChaCha20::new_from_slices(&chacha_key, &chacha_nonce)
-        .map_err(|e| Error::from(e.to_string()))?;
+        .map_err(|e| RelayError::CryptoError(e.to_string()))?;
     cipher.apply_keystream(&mut plaintext);
 
     unpad(&plaintext)
@@ -121,13 +121,13 @@ pub fn pad(plaintext: &str) -> Vec<u8> {
 
 pub fn unpad(padded: &[u8]) -> Result<String> {
     if padded.len() < 2 {
-        return Err(Error::from("Invalid padding"));
+        return Err(RelayError::Generic("Invalid padding".into()));
     }
     let len = u16::from_be_bytes([padded[0], padded[1]]) as usize;
     if len + 2 > padded.len() {
-        return Err(Error::from("Invalid padding length"));
+        return Err(RelayError::Generic("Invalid padding length".into()));
     }
-    String::from_utf8(padded[2..2 + len].to_vec()).map_err(|e| Error::from(e.to_string()))
+    String::from_utf8(padded[2..2 + len].to_vec()).map_err(|e| RelayError::Utf8Error(e.to_string()))
 }
 
 #[cfg(test)]
@@ -196,7 +196,7 @@ mod tests {
         
         let result = decrypt_nip44(&shared_secret, &tampered_encrypted);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Invalid NIP-44 MAC");
+        assert_eq!(result.unwrap_err().to_string(), "error: crypto failure: Invalid NIP-44 MAC");
     }
 
     #[test]
@@ -207,7 +207,7 @@ mod tests {
         let encrypted = general_purpose::STANDARD.encode(payload);
         let result = decrypt_nip44(&shared_secret, &encrypted);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Unsupported NIP-44 version");
+        assert_eq!(result.unwrap_err().to_string(), "error: Unsupported NIP-44 version");
     }
 
     #[test]
@@ -218,7 +218,7 @@ mod tests {
         let encrypted = general_purpose::STANDARD.encode(payload);
         let result = decrypt_nip44(&shared_secret, &encrypted);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Invalid NIP-44 payload length");
+        assert_eq!(result.unwrap_err().to_string(), "error: Invalid NIP-44 payload length");
     }
 
     #[test]
@@ -230,6 +230,6 @@ mod tests {
         let result = decrypt_nip44(&key2, &encrypted);
         assert!(result.is_err());
         // Should fail MAC verification
-        assert_eq!(result.unwrap_err().to_string(), "Invalid NIP-44 MAC");
+        assert_eq!(result.unwrap_err().to_string(), "error: crypto failure: Invalid NIP-44 MAC");
     }
 }

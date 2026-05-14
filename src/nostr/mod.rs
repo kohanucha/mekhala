@@ -54,7 +54,14 @@ pub enum RelayError {
     MalformedHex(String),
     SerializationError(String),
     LimitExceeded(String),
+    CryptoError(String),
+    Base64Error(String),
+    Utf8Error(String),
+    UrlError(String),
+    Generic(String),
 }
+
+pub type Result<T> = std::result::Result<T, RelayError>;
 
 impl fmt::Display for RelayError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -67,6 +74,11 @@ impl fmt::Display for RelayError {
             Self::MalformedHex(m) => write!(f, "invalid: malformed {}", m),
             Self::SerializationError(e) => write!(f, "error: serialization failed: {}", e),
             Self::LimitExceeded(m) => write!(f, "rejected: {}", m),
+            Self::CryptoError(m) => write!(f, "error: crypto failure: {}", m),
+            Self::Base64Error(m) => write!(f, "error: base64 failure: {}", m),
+            Self::Utf8Error(m) => write!(f, "error: utf8 failure: {}", m),
+            Self::UrlError(m) => write!(f, "error: url failure: {}", m),
+            Self::Generic(m) => write!(f, "error: {}", m),
         }
     }
 }
@@ -83,21 +95,26 @@ impl From<hex::FromHexError> for RelayError {
     }
 }
 
+impl From<base64::DecodeError> for RelayError {
+    fn from(e: base64::DecodeError) -> Self {
+        Self::Base64Error(e.to_string())
+    }
+}
+
 use k256::{PublicKey as K256PublicKey, SecretKey as K256SecretKey};
-use worker::{Error, Result};
 
 pub fn get_shared_secret(secret_key_hex: &str, public_key_hex: &str) -> Result<Vec<u8>> {
-    let secret_key_bytes = hex::decode(secret_key_hex).map_err(|e| Error::from(e.to_string()))?;
+    let secret_key_bytes = hex::decode(secret_key_hex).map_err(|e| RelayError::MalformedHex(e.to_string()))?;
     let sk =
-        K256SecretKey::from_slice(&secret_key_bytes).map_err(|e| Error::from(e.to_string()))?;
+        K256SecretKey::from_slice(&secret_key_bytes).map_err(|e| RelayError::CryptoError(e.to_string()))?;
 
-    let public_key_bytes = hex::decode(public_key_hex).map_err(|e| Error::from(e.to_string()))?;
+    let public_key_bytes = hex::decode(public_key_hex).map_err(|e| RelayError::MalformedHex(e.to_string()))?;
     let mut full_pk_bytes = [0u8; 33];
     full_pk_bytes[0] = 0x02;
     full_pk_bytes[1..].copy_from_slice(&public_key_bytes);
 
     let pk =
-        K256PublicKey::from_sec1_bytes(&full_pk_bytes).map_err(|e| Error::from(e.to_string()))?;
+        K256PublicKey::from_sec1_bytes(&full_pk_bytes).map_err(|e| RelayError::CryptoError(e.to_string()))?;
 
     let shared = k256::ecdh::diffie_hellman(sk.to_nonzero_scalar(), pk.as_affine());
     Ok(shared.raw_secret_bytes().to_vec())

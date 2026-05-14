@@ -12,6 +12,12 @@ pub struct WalletConnector {
     pub connection: WalletConnection,
 }
 
+impl From<crate::nostr::RelayError> for Error {
+    fn from(e: crate::nostr::RelayError) -> Self {
+        Error::from(e.to_string())
+    }
+}
+
 impl WalletConnector {
     pub fn new(nwc_uri: &str) -> Result<Self> {
         let details = WalletConnectionDetails::from_uri(nwc_uri)?;

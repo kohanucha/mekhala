@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use url::Url;
-use worker::{Error, Result};
+use crate::nostr::{RelayError, Result};
 
 pub const KIND_NWC_REQUEST: u64 = 23194;
 
@@ -56,20 +56,20 @@ pub struct WalletConnectionDetails {
 
 impl WalletConnectionDetails {
     pub fn from_uri(uri: &str) -> Result<Self> {
-        let url = Url::parse(uri).map_err(|e| Error::from(e.to_string()))?;
+        let url = Url::parse(uri).map_err(|e| RelayError::UrlError(e.to_string()))?;
         if url.scheme() != "nostr+walletconnect" {
-            return Err(Error::from("Invalid scheme"));
+            return Err(RelayError::Generic("Invalid scheme".into()));
         }
 
         let wallet_pubkey = url
             .host_str()
-            .ok_or_else(|| Error::from("Missing wallet pubkey"))?
+            .ok_or_else(|| RelayError::Generic("Missing wallet pubkey".into()))?
             .to_string();
         let query: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
 
         let secret = query
             .get("secret")
-            .ok_or_else(|| Error::from("Missing secret"))?
+            .ok_or_else(|| RelayError::Generic("Missing secret".into()))?
             .clone();
 
         Ok(Self {
@@ -92,12 +92,12 @@ impl WalletConnection {
     pub fn new(conn: WalletConnectionDetails) -> Result<Self> {
         let shared_secret = crate::nostr::get_shared_secret(&conn.secret, &conn.wallet_pubkey)?;
 
-        let sk_bytes = hex::decode(&conn.secret).map_err(|e| Error::from(e.to_string()))?;
+        let sk_bytes = hex::decode(&conn.secret).map_err(|e| RelayError::MalformedHex(e.to_string()))?;
         let sk_bytes_arr: [u8; 32] = sk_bytes
             .try_into()
-            .map_err(|_| Error::from("Invalid secret key length"))?;
+            .map_err(|_| RelayError::Generic("Invalid secret key length".into()))?;
         let signing_key =
-            SigningKey::from_bytes(&sk_bytes_arr).map_err(|e| Error::from(e.to_string()))?;
+            SigningKey::from_bytes(&sk_bytes_arr).map_err(|e| RelayError::CryptoError(e.to_string()))?;
         let my_pubkey = hex::encode(&signing_key.verifying_key().to_bytes());
 
         Ok(Self {
@@ -128,7 +128,7 @@ impl WalletConnection {
 
         let serialized =
             serde_json::to_string(&(0, &self.my_pubkey, created_at, kind, &tags, &content))
-                .map_err(|e| Error::from(e.to_string()))?;
+                .map_err(|e| RelayError::SerializationError(e.to_string()))?;
 
         let mut hasher = Sha256::new();
         hasher.update(serialized.as_bytes());
@@ -138,7 +138,7 @@ impl WalletConnection {
         let signature = self
             .signing_key
             .sign_prehash(&id_bytes)
-            .map_err(|e| Error::from(e.to_string()))?;
+            .map_err(|e| RelayError::CryptoError(e.to_string()))?;
         let sig = hex::encode(signature.to_bytes());
 
         Ok(Event {

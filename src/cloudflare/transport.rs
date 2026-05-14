@@ -6,7 +6,7 @@ use worker::*;
 use wasm_bindgen::{JsValue, JsCast};
 use crate::nostr::engine::{NostrEngine, EngineResponse, MessageFlags};
 use crate::nostr::wallet_registry::{WalletRegistry, Storage};
-use crate::cloudflare::headers::create_cors_response;
+use crate::cloudflare::create_cors_response;
 use crate::cloudflare::HibernationState;
 
 pub struct CloudflareStorage {
@@ -73,11 +73,8 @@ impl DurableObject for CloudflareTransport {
             }
             let connection_id = self.wake_up_with_engine(&websocket, &mut engine).await.ok_or_else(|| Error::from("Connection not found"))?;
 
-            // Pre-flight Loading for EVENT messages to support O(1) routing
-            self.load_recipients_with_engine(&mut engine, &text).await;
-            
             let responses = engine.on_message(connection_id, &text, MessageFlags::default()).await;
-            self.process_responses(responses).await?;
+            self.process_responses(responses, &mut engine).await?;
 
             Ok(())
         } else {
@@ -109,11 +106,8 @@ impl crate::common::InternalTransport for CloudflareTransport {
 
         let mut engine = self.engine.lock().await;
 
-        // Pre-flight Loading for EVENT messages to support O(1) routing
-        self.load_recipients_with_engine(&mut engine, &message).await;
-
         let responses = engine.on_message(id, &message, MessageFlags { is_internal: true }).await;
-        self.process_responses(responses).await?;
+        self.process_responses(responses, &mut engine).await?;
         Ok(())
     }
 
@@ -124,7 +118,7 @@ impl crate::common::InternalTransport for CloudflareTransport {
     async fn close_connection(&self, id: u32) -> Result<()> {
         let mut engine = self.engine.lock().await;
         let responses = engine.on_disconnect(id).await;
-        self.process_responses(responses).await?;
+        self.process_responses(responses, &mut engine).await?;
         self.internal_map.borrow_mut().remove(&id);
         Ok(())
     }
@@ -155,7 +149,7 @@ impl CloudflareTransport {
         Ok(None)
     }
 
-    async fn process_responses(&self, responses: Vec<EngineResponse>) -> Result<()> {
+    async fn process_responses(&self, responses: Vec<EngineResponse>, engine: &mut NostrEngine<CloudflareStorage>) -> Result<()> {
         for resp in responses {
             match resp {
                 EngineResponse::Send { connection_id, message } => {
@@ -169,6 +163,12 @@ impl CloudflareTransport {
                     // 2. Fallback to WebSocket routing
                     if let Some((ws, _)) = self.id_map.borrow().iter().find(|(_, i)| *i == connection_id) {
                         let _ = ws.send_with_str(&message);
+                    }
+                }
+                EngineResponse::WakeUp { connection_id } => {
+                    let tag = format!("id:{}", connection_id);
+                    for ws in self.get_websockets_with_tag(&tag) {
+                        let _ = self.wake_up_with_engine(&ws, engine).await;
                     }
                 }
             }
@@ -208,20 +208,6 @@ impl CloudflareTransport {
         None
     }
 
-    async fn load_recipients_with_engine(&self, engine: &mut NostrEngine<CloudflareStorage>, text: &str) {
-        if let Some(target_pks) = engine.get_target_pubkeys(text) {
-            // Load recipients into engine memory
-            for pk in target_pks {
-                if let Some(rid) = engine.registry.load_by_pubkey(&pk).await {
-                    let tag = format!("id:{}", rid);
-                    for rws in self.get_websockets_with_tag(&tag) {
-                        let _ = self.wake_up_with_engine(&rws, engine).await;
-                    }
-                }
-            }
-        }
-    }
-
     fn get_id(&self, ws: &WebSocket) -> Option<u32> {
         self.id_map.borrow().iter().find(|(w, _)| ws_eq(w, ws)).map(|(_, id)| *id)
     }
@@ -252,7 +238,7 @@ impl CloudflareTransport {
         self.id_map.borrow_mut().push((server.clone(), connection_id));
         let _ = self.state.set_tags(&server, vec![format!("id:{}", connection_id)]);
 
-        self.process_responses(responses).await?;
+        self.process_responses(responses, &mut engine).await?;
 
         Ok(Response::from_websocket(client)?)
     }
@@ -261,7 +247,7 @@ impl CloudflareTransport {
         let mut engine = self.engine.lock().await;
         if let Some(id) = self.wake_up_with_engine(ws, &mut engine).await {
             let responses = engine.on_disconnect(id).await;
-            self.process_responses(responses).await?;
+            self.process_responses(responses, &mut engine).await?;
             self.id_map.borrow_mut().retain(|(_, i)| *i != id);
             
             // Clean up storage
