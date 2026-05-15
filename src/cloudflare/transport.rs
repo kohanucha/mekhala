@@ -2,7 +2,8 @@ use std::cell::RefCell;
 use futures::channel::oneshot;
 use futures::lock::Mutex;
 use worker::*;
-use crate::nostr::engine::{NostrEngine, EngineResponse, Storage};
+use crate::nostr::engine::{NostrEngine, EngineResponse};
+use crate::nostr::wallet_registry::Storage;
 use crate::cloudflare::create_cors_response;
 use crate::cloudflare::connection::ConnectionRegistry;
 

@@ -1,27 +1,48 @@
-# Issue tracker — GitHub
+# Issue tracker — GitHub (MCP)
 
-This repo uses GitHub Issues to track work.
+This repo uses GitHub Issues to track work, managed via GitHub MCP tools.
 
-## Commands
+## Tools
+
+Agents should use the following tools to interact with the issue tracker:
+
+- **Creating Issues:** Use `mcp_github_issue_write` with `method: 'create'`.
+- **Listing/Reading Issues:** Use `mcp_github_list_issues` or `mcp_github_issue_read`.
+- **Triaging/Updating:** Use `mcp_github_issue_write` with `method: 'update'`.
+- **Searching:** Use `mcp_github_search_issues`.
+
+## Repository Information
+
+- **Owner:** kohanucha
+- **Repo:** mekhala
+
+## Workflows
 
 ### `to-issues`
 
-When an agent needs to record a task, bug, or idea, it uses the `gh` CLI:
+When an agent needs to record a task, bug, or idea, use `mcp_github_issue_write`:
 
-```bash
-gh issue create --title "..." --body "..." --label "ready-for-agent"
+```json
+{
+  "method": "create",
+  "owner": "kohanucha",
+  "repo": "mekhala",
+  "title": "...",
+  "body": "...",
+  "labels": ["ready-for-agent"]
+}
 ```
 
 ### `triage`
 
-When an agent triages incoming issues, it reads them via:
+When an agent triages incoming issues, list them using `mcp_github_list_issues` (filtering by labels if necessary). To update an issue's labels:
 
-```bash
-gh issue list --label "needs-triage"
-```
-
-Then it applies labels to move them through the state machine:
-
-```bash
-gh issue edit <number> --add-label "ready-for-agent" --remove-label "needs-triage"
+```json
+{
+  "method": "update",
+  "owner": "kohanucha",
+  "repo": "mekhala",
+  "issue_number": <number>,
+  "labels": ["ready-for-agent"]
+}
 ```

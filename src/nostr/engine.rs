@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use super::{Filter, Event, RelayMessage, ClientMessage};
-use async_trait::async_trait;
+use super::wallet_registry::{WalletRegistry, Storage, RegistryResponse};
 
 #[cfg(test)]
 use crate::util::now;
@@ -29,208 +29,15 @@ impl EngineResponse {
     }
 }
 
-#[async_trait(?Send)]
-pub trait Storage {
-    async fn get(&self, key: &str) -> Option<serde_json::Value>;
-    async fn put_batch(&self, entries: HashMap<String, serde_json::Value>);
-    async fn delete_batch(&self, keys: Vec<String>);
-}
-
-pub struct SavedState {
-    pub json: serde_json::Value,
-    pub pubkeys: HashSet<String>,
-}
-
-/// A purely synchronous index for subscriptions and info events.
-struct WalletIndex {
-    subscription_index: HashMap<(String, Vec<Filter>), Vec<u32>>,
-    pk_index: HashMap<String, (HashSet<(String, Vec<Filter>)>, Option<Event>)>,
-    reverse_index: HashMap<u32, HashMap<String, Vec<Filter>>>,
-}
-
-impl WalletIndex {
-    fn new() -> Self {
-        Self {
-            subscription_index: HashMap::new(),
-            pk_index: HashMap::new(),
-            reverse_index: HashMap::new(),
-        }
-    }
-
-    fn subscribe(&mut self, conn_id: u32, sub_id: String, filters: Vec<Filter>) {
-        self.unsubscribe(conn_id, sub_id.clone());
-
-        let sub_key = (sub_id.clone(), filters.clone());
-
-        for filter in &filters {
-            for pk in filter.pubkeys() {
-                let entry = self.pk_index.entry(pk).or_insert_with(|| (HashSet::new(), None));
-                entry.0.insert(sub_key.clone());
-            }
-        }
-
-        let conns = self.subscription_index.entry(sub_key).or_default();
-        if !conns.contains(&conn_id) {
-            conns.push(conn_id);
-        }
-
-        self.reverse_index.entry(conn_id)
-            .or_default()
-            .insert(sub_id, filters);
-    }
-
-    fn unsubscribe(&mut self, conn_id: u32, sub_id: String) {
-        if let Some(conn_subs) = self.reverse_index.get_mut(&conn_id) {
-            if let Some(filters) = conn_subs.remove(&sub_id) {
-                let sub_key = (sub_id, filters);
-
-                if let Some(conns) = self.subscription_index.get_mut(&sub_key) {
-                    conns.retain(|&id| id != conn_id);
-                    if conns.is_empty() {
-                        self.subscription_index.remove(&sub_key);
-
-                        for filter in &sub_key.1 {
-                            for pk in filter.pubkeys() {
-                                if let Some(entry) = self.pk_index.get_mut(&pk) {
-                                    entry.0.remove(&sub_key);
-                                    if entry.0.is_empty() && entry.1.is_none() {
-                                        self.pk_index.remove(&pk);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if conn_subs.is_empty() {
-                self.reverse_index.remove(&conn_id);
-            }
-        }
-    }
-
-    fn disconnect(&mut self, conn_id: u32) {
-        let sub_ids: Vec<String> = self.reverse_index.get(&conn_id)
-            .map(|m| m.keys().cloned().collect())
-            .unwrap_or_default();
-
-        for sub_id in sub_ids {
-            self.unsubscribe(conn_id, sub_id);
-        }
-    }
-
-    fn get_subscriptions(&self, conn_id: u32) -> HashMap<String, Vec<Filter>> {
-        self.reverse_index.get(&conn_id).cloned().unwrap_or_default()
-    }
-
-    fn cache_info(&mut self, event: Event) {
-        let entry = self.pk_index.entry(event.pubkey.clone()).or_insert_with(|| (HashSet::new(), None));
-        entry.1 = Some(event);
-    }
-
-    fn get_info(&self, pubkey: &str) -> Option<Event> {
-        self.pk_index.get(pubkey).and_then(|e| e.1.clone())
-    }
-
-    fn match_event<'a>(&'a self, event: &'a Event) -> Box<dyn Iterator<Item = (String, Vec<u32>)> + 'a> {
-        let target_pks = event.target_pubkeys();
-
-        let mut sub_to_conns = HashMap::new();
-        for pk in target_pks {
-            if let Some(entry) = self.pk_index.get(&pk) {
-                let global_latest = self.get_connection_id(&pk);
-
-                for sub_key in &entry.0 {
-                    if sub_key.1.iter().any(|f| f.matches(event)) {
-                        if let Some(conns) = self.subscription_index.get(sub_key) {
-                            if let Some(latest_conn) = conns.last() {
-                                if global_latest == Some(*latest_conn) {
-                                    sub_to_conns.insert(sub_key.0.clone(), vec![*latest_conn]);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Box::new(sub_to_conns.into_iter())
-    }
-
-    fn get_connection_id(&self, pubkey: &str) -> Option<u32> {
-        if let Some(entry) = self.pk_index.get(pubkey) {
-            let mut latest = None;
-            for sub_key in &entry.0 {
-                if let Some(conns) = self.subscription_index.get(sub_key) {
-                    if let Some(&id) = conns.last() {
-                        match latest {
-                            None => latest = Some(id),
-                            Some(current) if id > current => latest = Some(id),
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            return latest;
-        }
-        None
-    }
-
-    fn save(&self, conn_id: u32) -> Option<SavedState> {
-        let subscriptions = self.get_subscriptions(conn_id);
-        if subscriptions.is_empty() {
-            return None;
-        }
-
-        let mut info_event = None;
-        let mut pubkeys = HashSet::new();
-        for filters in subscriptions.values() {
-            for filter in filters {
-                for pk in filter.pubkeys() {
-                    pubkeys.insert(pk.clone());
-                    if info_event.is_none() {
-                        if let Some(event) = self.get_info(&pk) {
-                            info_event = Some(event);
-                        }
-                    }
-                }
-            }
-        }
-
-        Some(SavedState {
-            json: serde_json::json!({
-                "subscriptions": subscriptions,
-                "info_event": info_event,
-            }),
-            pubkeys,
-        })
-    }
-
-    fn restore(&mut self, conn_id: u32, data: serde_json::Value) {
-        if let Some(subs_val) = data.get("subscriptions") {
-            if let Ok(subs) = serde_json::from_value::<HashMap<String, Vec<Filter>>>(subs_val.clone()) {
-                for (sub_id, filters) in subs {
-                    self.subscribe(conn_id, sub_id, filters);
-                }
-            }
-        }
-        if let Some(info_val) = data.get("info_event") {
-            if let Ok(event) = serde_json::from_value::<Event>(info_val.clone()) {
-                self.cache_info(event);
-            }
-        }
-    }
-}
-
 pub struct NostrEngine<S: Storage> {
-    index: WalletIndex,
-    pub storage: S,
+    pub registry: WalletRegistry<S>,
 }
 
 #[cfg(test)]
-impl NostrEngine<MockStorage> {
+impl NostrEngine<super::wallet_registry::tests::MockStorage> {
     pub fn new() -> Self {
         Self {
-            index: WalletIndex::new(),
-            storage: MockStorage::new(),
+            registry: WalletRegistry::new(super::wallet_registry::tests::MockStorage::new()),
         }
     }
 }
@@ -238,8 +45,7 @@ impl NostrEngine<MockStorage> {
 impl<S: Storage> NostrEngine<S> {
     pub fn new_with_storage(storage: S) -> Self {
         Self {
-            index: WalletIndex::new(),
-            storage,
+            registry: WalletRegistry::new(storage),
         }
     }
 
@@ -314,7 +120,7 @@ impl<S: Storage> NostrEngine<S> {
     }
 
     pub async fn process_info_event(&mut self, event: Event) {
-        self.index.cache_info(event);
+        self.registry.cache_info(event);
     }
 
     pub async fn process_event(&mut self, connection_id: u32, event: Event) -> Vec<EngineResponse> {
@@ -323,26 +129,16 @@ impl<S: Storage> NostrEngine<S> {
         // Always provide the protocol feedback intent
         responses.push(EngineResponse::reply(connection_id, RelayMessage::Ok(event.id.clone(), true, "".into())));
 
-        // 1. Identify target pubkeys for routing
-        let target_pks = event.target_pubkeys();
-
-        // 2. For each pubkey, ensure the connection is loaded
-        for pk in target_pks {
-            // Check if connection is already in memory
-            if self.index.get_connection_id(&pk).is_none() {
-                // Not in memory, try loading from storage
-                if let Some(rid) = self.load_by_pubkey(&pk).await {
-                    // Found in storage and now loaded into memory, signal a wake-up
-                    responses.push(EngineResponse::wake_up(rid));
+        // Match and route using the deep registry interface
+        let registry_responses = self.registry.match_event(&event).await;
+        for resp in registry_responses {
+            match resp {
+                RegistryResponse::Send { recipient_id, sub_id } => {
+                    responses.push(EngineResponse::data(recipient_id, RelayMessage::Event(sub_id, event.clone())));
                 }
-            }
-        }
-
-        // 3. Match and route to active connections
-        let matches: Vec<(String, Vec<u32>)> = self.index.match_event(&event).collect();
-        for (client_id, recipient_ids) in matches {
-            for rid in recipient_ids {
-                responses.push(EngineResponse::data(rid, RelayMessage::Event(client_id.clone(), event.clone())));
+                RegistryResponse::WakeUp(recipient_id) => {
+                    responses.push(EngineResponse::wake_up(recipient_id));
+                }
             }
         }
 
@@ -351,11 +147,11 @@ impl<S: Storage> NostrEngine<S> {
 
     pub async fn process_req(&mut self, id: u32, sub_id: String, filters: Vec<Filter>) -> Vec<EngineResponse> {
         let mut responses = Vec::new();
-        self.subscribe(id, sub_id.clone(), filters.clone()).await;
+        let _ = self.registry.subscribe(id, sub_id.clone(), filters.clone()).await;
 
         for filters_set in filters.iter() {
             for pk in filters_set.pubkeys() {
-                if let Some(info_event) = self.index.get_info(&pk) {
+                if let Some(info_event) = self.registry.get_info(&pk) {
                     if filters.iter().any(|f| f.matches(&info_event)) {
                         responses.push(EngineResponse::data(id, RelayMessage::Event(sub_id.clone(), info_event.clone())));
                     }
@@ -368,18 +164,17 @@ impl<S: Storage> NostrEngine<S> {
     }
 
     pub async fn process_close(&mut self, id: u32, sub_id: String) -> Vec<EngineResponse> {
-        self.unsubscribe(id, sub_id).await;
+        let _ = self.registry.unsubscribe(id, sub_id).await;
         Vec::new()
     }
 
     pub async fn on_disconnect(&mut self, id: u32) -> Vec<EngineResponse> {
-        self.index.disconnect(id);
+        self.registry.on_disconnect(id).await;
         Vec::new()
     }
 
     pub async fn on_terminate(&mut self, id: u32) -> Vec<EngineResponse> {
-        self.index.disconnect(id);
-        self.storage.delete_batch(vec![format!("conn:{}", id)]).await;
+        self.registry.on_terminate(id).await;
         Vec::new()
     }
 
@@ -388,7 +183,7 @@ impl<S: Storage> NostrEngine<S> {
         let mut ready = false;
         let mut encryption = HashSet::new();
 
-        if let Some(info_event) = self.index.get_info(pubkey) {
+        if let Some(info_event) = self.registry.get_info(pubkey) {
             online = true;
             ready = true;
             let mut has_encryption_tag = false;
@@ -409,7 +204,7 @@ impl<S: Storage> NostrEngine<S> {
             if !has_encryption_tag {
                 encryption.insert("nip04".to_string());
             }
-        } else if self.index.get_connection_id(pubkey).is_some() {
+        } else if self.registry.get_connection_id(pubkey).is_some() {
             online = true;
         }
 
@@ -426,102 +221,31 @@ impl<S: Storage> NostrEngine<S> {
 
     pub async fn add_connection(&mut self, id: u32, subscriptions: HashMap<String, Vec<Filter>>) {
         for (sub_id, filters) in subscriptions {
-            self.subscribe(id, sub_id, filters).await;
-        }
-    }
-
-    async fn sync(&self, conn_id: u32) {
-        if let Some(state) = self.index.save(conn_id) {
-            let mut entries = HashMap::new();
-            entries.insert(format!("conn:{}", conn_id), state.json);
-            for pk in state.pubkeys {
-                entries.insert(format!("pk:{}", pk), serde_json::json!(conn_id));
-            }
-            self.storage.put_batch(entries).await;
-        } else {
-            self.storage.delete_batch(vec![format!("conn:{}", conn_id)]).await;
+            let _ = self.registry.subscribe(id, sub_id, filters).await;
         }
     }
 
     pub async fn subscribe(&mut self, conn_id: u32, sub_id: String, filters: Vec<Filter>) {
-        self.index.subscribe(conn_id, sub_id, filters);
-        self.sync(conn_id).await;
+        let _ = self.registry.subscribe(conn_id, sub_id, filters).await;
     }
 
     pub async fn unsubscribe(&mut self, conn_id: u32, sub_id: String) {
-        self.index.unsubscribe(conn_id, sub_id);
-        self.sync(conn_id).await;
+        let _ = self.registry.unsubscribe(conn_id, sub_id).await;
     }
 
     pub async fn load(&mut self, conn_id: u32) -> bool {
-        if !self.index.get_subscriptions(conn_id).is_empty() {
-            return true;
-        }
-        let key = format!("conn:{}", conn_id);
-        if let Some(data) = self.storage.get(&key).await {
-            self.index.restore(conn_id, data);
-            return true;
-        }
-        false
+        self.registry.load(conn_id).await
     }
 
     pub async fn load_by_pubkey(&mut self, pubkey: &str) -> Option<u32> {
-        if let Some(id) = self.index.get_connection_id(pubkey) {
-            return Some(id);
-        }
-        let key = format!("pk:{}", pubkey);
-        if let Some(val) = self.storage.get(&key).await {
-            if let Some(id) = val.as_u64() {
-                let id = id as u32;
-                if self.load(id).await {
-                    return Some(id);
-                } else {
-                    // Lazy deletion of stale pointer
-                    self.storage.delete_batch(vec![key]).await;
-                }
-            }
-        }
-        None
-    }
-}
-
-#[cfg(test)]
-pub struct MockStorage {
-    pub data: std::sync::Arc<std::sync::Mutex<HashMap<String, serde_json::Value>>>,
-}
-
-#[cfg(test)]
-impl MockStorage {
-    pub fn new() -> Self {
-        Self {
-            data: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
-        }
-    }
-}
-
-#[cfg(test)]
-#[async_trait(?Send)]
-impl Storage for MockStorage {
-    async fn get(&self, key: &str) -> Option<serde_json::Value> {
-        self.data.lock().unwrap().get(key).cloned()
-    }
-    async fn put_batch(&self, entries: HashMap<String, serde_json::Value>) {
-        let mut data = self.data.lock().unwrap();
-        for (k, v) in entries {
-            data.insert(k, v);
-        }
-    }
-    async fn delete_batch(&self, keys: Vec<String>) {
-        let mut data = self.data.lock().unwrap();
-        for k in keys {
-            data.remove(&k);
-        }
+        self.registry.load_by_pubkey(pubkey).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::wallet_registry::tests::MockStorage;
 
     fn make_event(pubkey: &str, kind: u64, tags: Vec<Vec<serde_json::Value>>) -> Event {
         Event {
@@ -552,7 +276,7 @@ mod tests {
                 }
             }));
 
-            assert!(engine.index.get_subscriptions(1).contains_key("sub1"));
+            assert!(engine.registry.index.get_subscriptions(1).contains_key("sub1"));
         });
     }
 
@@ -572,9 +296,9 @@ mod tests {
                 sig: "sig1".into(),
             };
 
-            engine.index.cache_info(event);
+            engine.registry.index.cache_info(event);
 
-            assert!(engine.index.get_info("pk1").is_some());
+            assert!(engine.registry.index.get_info("pk1").is_some());
         });
     }
 
@@ -700,7 +424,7 @@ mod tests {
             }));
 
             engine.on_disconnect(id).await;
-            assert!(engine.index.get_subscriptions(id).is_empty());
+            assert!(engine.registry.index.get_subscriptions(id).is_empty());
         });
     }
 
@@ -759,7 +483,7 @@ mod tests {
             }]).await;
 
             let event_alice = make_event("alice", 1, vec![]);
-            let matches: Vec<_> = engine.index.match_event(&event_alice).collect();
+            let matches: Vec<_> = engine.registry.index.match_event(&event_alice).collect();
             assert_eq!(matches.len(), 1);
             assert_eq!(matches[0].0, "sub1");
             assert_eq!(matches[0].1.len(), 1);
@@ -772,9 +496,9 @@ mod tests {
     fn test_info_event_caching() {
         let mut engine = NostrEngine::new();
         let event = make_event("alice", 13194, vec![]);
-        engine.index.cache_info(event.clone());
+        engine.registry.index.cache_info(event.clone());
 
-        let stored = engine.index.get_info("alice");
+        let stored = engine.registry.index.get_info("alice");
         assert!(stored.is_some());
         assert_eq!(stored.unwrap().id, event.id);
     }
@@ -789,7 +513,7 @@ mod tests {
                 ..Default::default()
             }]).await;
 
-            let data = engine.storage.data.lock().unwrap();
+            let data = engine.registry.storage.data.lock().unwrap();
             assert!(data.contains_key("conn:1"));
             assert!(data.contains_key("pk:alice"));
         });
@@ -807,11 +531,11 @@ mod tests {
 
             engine.on_terminate(1).await;
 
-            let data = engine.storage.data.lock().unwrap();
+            let data = engine.registry.storage.data.lock().unwrap();
             assert!(!data.contains_key("conn:1"));
             // pk:alice is still there (lazy deletion)
             assert!(data.contains_key("pk:alice"));
-            assert!(engine.index.get_subscriptions(1).is_empty());
+            assert!(engine.registry.index.get_subscriptions(1).is_empty());
         });
     }
 
@@ -823,13 +547,13 @@ mod tests {
             // 1. Manually seed a stale pk: pointer
             let mut entries = HashMap::new();
             entries.insert("pk:stale".to_string(), serde_json::json!(99));
-            engine.storage.put_batch(entries).await;
+            engine.registry.storage.put_batch(entries).await;
 
             // 2. Attempt to load by pubkey (should fail load(99) and delete pk:stale)
             let result = engine.load_by_pubkey("stale").await;
             assert!(result.is_none());
 
-            let data = engine.storage.data.lock().unwrap();
+            let data = engine.registry.storage.data.lock().unwrap();
             assert!(!data.contains_key("pk:stale"));
         });
     }

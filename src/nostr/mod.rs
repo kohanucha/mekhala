@@ -3,6 +3,7 @@ pub mod nip_04;
 pub mod nip_44;
 pub mod nip_47;
 pub mod engine;
+pub mod wallet_registry;
 pub mod event;
 pub mod filter;
 pub mod rpc_machine;

@@ -177,7 +177,7 @@ impl NwcClient {
         Ok(resp_json)
     }
 
-    fn create_event(&self, kind: u64, content: String, tags: Vec<Vec<Value>>) -> Result<Event> {
+    pub fn create_event(&self, kind: u64, content: String, tags: Vec<Vec<Value>>) -> Result<Event> {
         let created_at = now();
 
         let serialized =

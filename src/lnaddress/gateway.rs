@@ -2,7 +2,7 @@ use worker::*;
 use serde_json::Value;
 use sha2::{Sha256, Digest};
 use crate::common::NwcTransport;
-use crate::lnaddress::wallet_connector::WalletConnector;
+use crate::lnaddress::wallet_connector::NwcSession;
 
 pub struct LnAddressGateway {
     username: String,
@@ -48,10 +48,8 @@ impl LnAddressGateway {
 
         let description_hash = self.get_description_hash();
 
-        let connector = WalletConnector::new(&nwc_uri)?;
-        connector
-            .make_invoice(transport, amount_msat, description_hash)
-            .await
+        let session = NwcSession::new(transport, &nwc_uri)?;
+        session.make_invoice(amount_msat, description_hash).await
     }
 
     fn generate_metadata(&self) -> String {

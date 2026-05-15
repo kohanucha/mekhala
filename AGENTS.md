@@ -46,7 +46,7 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 
 ### Issue tracker
 
-GitHub Issues. See `docs/agents/issue-tracker.md`.
+GitHub Issues via GitHub MCP. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
