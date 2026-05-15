@@ -1,7 +1,7 @@
 use worker::*;
 use serde_json::Value;
-use crate::common::InternalTransport;
-use crate::lnaddress::lnaddress::LNAddress;
+use sha2::{Sha256, Digest};
+use crate::common::NwcTransport;
 use crate::lnaddress::wallet_connector::WalletConnector;
 
 pub struct LnAddressGateway {
@@ -23,8 +23,14 @@ impl LnAddressGateway {
         }
 
         let callback_url = self.build_callback_url(request_url)?;
-        let addr = LNAddress::new(&self.username);
-        Ok(addr.get_info(&callback_url))
+        
+        Ok(serde_json::json!({
+            "callback": callback_url,
+            "maxSendable": 100000000,
+            "minSendable": 1000,
+            "metadata": self.generate_metadata(),
+            "tag": "payRequest"
+        }))
     }
 
     /// Bridges the LN Address payment request to the wallet via NWC.
@@ -32,7 +38,7 @@ impl LnAddressGateway {
     pub async fn create_invoice(
         &self,
         env: &Env,
-        transport: &impl InternalTransport,
+        transport: &impl NwcTransport,
         amount_msat: u64,
     ) -> Result<String> {
         let nwc_uri = self
@@ -40,13 +46,24 @@ impl LnAddressGateway {
             .await?
             .ok_or_else(|| Error::from("User not found"))?;
 
-        let addr = LNAddress::new(&self.username);
-        let description_hash = addr.get_description_hash();
+        let description_hash = self.get_description_hash();
 
         let connector = WalletConnector::new(&nwc_uri)?;
         connector
             .make_invoice(transport, amount_msat, description_hash)
             .await
+    }
+
+    fn generate_metadata(&self) -> String {
+        format!("[[\"text/plain\",\"Payment to {}\"]]", self.username)
+    }
+
+    fn get_description_hash(&self) -> String {
+        let metadata = self.generate_metadata();
+        let mut hasher = Sha256::new();
+        hasher.update(metadata.as_bytes());
+        let hash = hasher.finalize();
+        hex::encode(hash)
     }
 
     async fn fetch_nwc_uri(&self, env: &Env) -> Result<Option<String>> {
@@ -106,5 +123,27 @@ mod tests {
         let url = Url::parse("https://relay.com/.well-known/lnurlp/charlie").unwrap();
         let callback = gateway.build_callback_url(&url).unwrap();
         assert_eq!(callback, "https://relay.com/lnaddress/charlie/callback");
+    }
+
+    #[test]
+    fn test_generate_metadata_format() {
+        let gateway = LnAddressGateway::new("alice");
+        let metadata = gateway.generate_metadata();
+        assert_eq!(metadata, "[[\"text/plain\",\"Payment to alice\"]]");
+    }
+
+    #[test]
+    fn test_description_hash_length() {
+        let gateway = LnAddressGateway::new("testuser");
+        let hash = gateway.get_description_hash();
+        assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn test_description_hash_deterministic() {
+        let gateway = LnAddressGateway::new("testuser");
+        let hash1 = gateway.get_description_hash();
+        let hash2 = gateway.get_description_hash();
+        assert_eq!(hash1, hash2);
     }
 }

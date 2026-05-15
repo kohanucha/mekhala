@@ -23,14 +23,14 @@ async fn handle_lnaddress_inner(req: Request, ctx: RouteContext<()>) -> Result<R
     create_cors_response(Response::from_json(&info)?)
 }
 
-pub async fn handle_lnaddress_callback(req: Request, env: &Env, username: &str, transport: &impl crate::common::InternalTransport) -> Result<Response> {
+pub async fn handle_lnaddress_callback(req: Request, env: &Env, username: &str, transport: &impl crate::common::NwcTransport) -> Result<Response> {
     match handle_lnaddress_callback_inner(req, env, username, transport).await {
         Ok(resp) => Ok(resp),
         Err(e) => lnaddress_error(&e.to_string()),
     }
 }
 
-async fn handle_lnaddress_callback_inner(req: Request, env: &Env, username: &str, transport: &impl crate::common::InternalTransport) -> Result<Response> {
+async fn handle_lnaddress_callback_inner(req: Request, env: &Env, username: &str, transport: &impl crate::common::NwcTransport) -> Result<Response> {
     let url = req.url()?;
     let mut query = url.query_pairs();
     let amount_msat = query

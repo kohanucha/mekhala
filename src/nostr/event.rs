@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use k256::schnorr::signature::hazmat::PrehashVerifier;
 use k256::schnorr::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -5,7 +6,7 @@ use sha2::{Digest, Sha256};
 use crate::nostr::RelayError;
 use crate::nostr::Limits;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Event {
     pub id: String,
     pub pubkey: String,
@@ -17,6 +18,19 @@ pub struct Event {
 }
 
 impl Event {
+    pub fn target_pubkeys(&self) -> HashSet<String> {
+        let mut keys = HashSet::new();
+        keys.insert(self.pubkey.clone());
+        for tag in &self.tags {
+            if tag.len() >= 2 && tag[0].as_str() == Some("p") {
+                if let Some(pk) = tag[1].as_str() {
+                    keys.insert(pk.to_string());
+                }
+            }
+        }
+        keys
+    }
+
     pub fn verify(&self, current_time: u64) -> Result<(), RelayError> {
         let limits = Limits::default();
         
@@ -86,5 +100,69 @@ impl Event {
         verifying_key
             .verify_prehash(&id_bytes, &signature)
             .map_err(|_| RelayError::InvalidSignature)
-    }
-}
+            }
+            }
+
+            #[cfg(test)]
+            mod tests {
+            use super::*;
+
+            #[test]
+            fn test_target_pubkeys_author_only() {
+            let event = Event {
+            id: "id".into(),
+            pubkey: "pk1".into(),
+            created_at: 0,
+            kind: 1,
+            tags: vec![],
+            content: "".into(),
+            sig: "".into(),
+            };
+            let keys = event.target_pubkeys();
+            assert_eq!(keys.len(), 1);
+            assert!(keys.contains("pk1"));
+            }
+
+            #[test]
+            fn test_target_pubkeys_with_p_tags() {
+            let event = Event {
+            id: "id".into(),
+            pubkey: "author".into(),
+            created_at: 0,
+            kind: 1,
+            tags: vec![
+                vec!["p".into(), "recipient1".into()],
+                vec!["p".into(), "recipient2".into()],
+                vec!["e".into(), "event_id".into()], // Ignore other tags
+            ],
+            content: "".into(),
+            sig: "".into(),
+            };
+            let keys = event.target_pubkeys();
+            assert_eq!(keys.len(), 3);
+            assert!(keys.contains("author"));
+            assert!(keys.contains("recipient1"));
+            assert!(keys.contains("recipient2"));
+            }
+
+            #[test]
+            fn test_target_pubkeys_deduplication() {
+            let event = Event {
+            id: "id".into(),
+            pubkey: "pk1".into(),
+            created_at: 0,
+            kind: 1,
+            tags: vec![
+                vec!["p".into(), "pk1".into()], // author already in set
+                vec!["p".into(), "pk2".into()],
+                vec!["p".into(), "pk2".into()], // duplicate tag
+            ],
+            content: "".into(),
+            sig: "".into(),
+            };
+            let keys = event.target_pubkeys();
+            assert_eq!(keys.len(), 2);
+            assert!(keys.contains("pk1"));
+            assert!(keys.contains("pk2"));
+            }
+            }

@@ -1,6 +1,5 @@
 mod gateway;
 mod handler;
-mod lnaddress;
 mod wallet_connector;
 
 pub use gateway::LnAddressGateway;

@@ -39,7 +39,7 @@ impl ClientMessage {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelayMessage {
     Ok(String, bool, String),
     Event(String, crate::nostr::Event),
@@ -49,6 +49,43 @@ pub enum RelayMessage {
 }
 
 impl RelayMessage {
+    pub fn from_json(text: &str) -> Result<Self, String> {
+        let arr: Vec<serde_json::Value> = serde_json::from_str(text).map_err(|e| e.to_string())?;
+
+        if arr.is_empty() {
+            return Err("empty message".to_string());
+        }
+
+        match arr[0].as_str() {
+            Some("OK") if arr.len() >= 4 => {
+                let id = arr[1].as_str().ok_or("invalid id")?.to_string();
+                let ok = arr[2].as_bool().ok_or("invalid ok")?;
+                let msg = arr[3].as_str().ok_or("invalid message")?.to_string();
+                Ok(Self::Ok(id, ok, msg))
+            }
+            Some("EVENT") if arr.len() >= 3 => {
+                let sub_id = arr[1].as_str().ok_or("invalid sub_id")?.to_string();
+                let event: crate::nostr::Event = serde_json::from_value(arr[2].clone()).map_err(|e| e.to_string())?;
+                Ok(Self::Event(sub_id, event))
+            }
+            Some("EOSE") if arr.len() >= 2 => {
+                let sub_id = arr[1].as_str().ok_or("invalid sub_id")?.to_string();
+                Ok(Self::Eose(sub_id))
+            }
+            Some("NOTICE") if arr.len() >= 2 => {
+                let msg = arr[1].as_str().ok_or("invalid message")?.to_string();
+                Ok(Self::Notice(msg))
+            }
+            Some("CLOSED") if arr.len() >= 3 => {
+                let sub_id = arr[1].as_str().ok_or("invalid sub_id")?.to_string();
+                let msg = arr[2].as_str().ok_or("invalid message")?.to_string();
+                Ok(Self::Closed(sub_id, msg))
+            }
+            Some(v) => Err(format!("unknown message type: {}", v)),
+            None => Err("missing message type".to_string()),
+        }
+    }
+
     pub fn to_json(&self) -> String {
         match self {
             Self::Ok(id, ok, msg) => serde_json::json!(["OK", id, ok, msg]).to_string(),
