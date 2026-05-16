@@ -289,10 +289,7 @@ impl CloudflareTransport {
     async fn process_responses(&self, responses: Vec<EngineResponse>, engine: &mut NostrEngine<CloudflareStorage>) -> Result<()> {
         for resp in responses {
             match resp {
-                EngineResponse::Data { recipient_id, message } => {
-                    self.connections.borrow_mut().send(recipient_id, message.to_json());
-                }
-                EngineResponse::Reply { recipient_id, message } => {
+                EngineResponse::Send { recipient_id, message } => {
                     self.connections.borrow_mut().send(recipient_id, message.to_json());
                 }
                 EngineResponse::WakeUp { connection_id } => {

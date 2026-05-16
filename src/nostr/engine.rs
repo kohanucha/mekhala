@@ -7,18 +7,13 @@ use crate::util::now;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum EngineResponse {
-    Data { recipient_id: u32, message: RelayMessage },
-    Reply { recipient_id: u32, message: RelayMessage },
+    Send { recipient_id: u32, message: RelayMessage },
     WakeUp { connection_id: u32 },
 }
 
 impl EngineResponse {
-    pub fn data(recipient_id: u32, message: RelayMessage) -> Self {
-        EngineResponse::Data { recipient_id, message }
-    }
-
-    pub fn reply(recipient_id: u32, message: RelayMessage) -> Self {
-        EngineResponse::Reply { recipient_id, message }
+    pub fn send(recipient_id: u32, message: RelayMessage) -> Self {
+        EngineResponse::Send { recipient_id, message }
     }
 
     pub fn wake_up(connection_id: u32) -> Self {
@@ -53,7 +48,7 @@ impl<S: Storage> NostrEngine<S> {
         match ClientMessage::from_json(message) {
             Ok(msg) => self.handle_typed(connection_id, msg).await,
             Err(e) => {
-                vec![EngineResponse::reply(connection_id, RelayMessage::Notice(format!("parse failed: {}", e)))]
+                vec![EngineResponse::send(connection_id, RelayMessage::Notice(format!("parse failed: {}", e)))]
             }
         }
     }
@@ -77,7 +72,7 @@ impl<S: Storage> NostrEngine<S> {
                 let ts = now();
 
                 if let Err(e) = event.verify(ts, &self.limits) {
-                    return vec![EngineResponse::reply(connection_id, RelayMessage::Ok(event.id, false, e.to_string()))];
+                    return vec![EngineResponse::send(connection_id, RelayMessage::Ok(event.id, false, e.to_string()))];
                 }
                 
                 // 3. Dispatch to engine
@@ -100,7 +95,7 @@ impl<S: Storage> NostrEngine<S> {
                     RelayMessage::Ok(event.id, false, "blocked: event kind not allowed".into())
                 };
                 
-                vec![EngineResponse::reply(connection_id, message)]
+                vec![EngineResponse::send(connection_id, message)]
             }
         }
     }
@@ -108,7 +103,7 @@ impl<S: Storage> NostrEngine<S> {
     async fn handle_req(&mut self, id: u32, sub_id: String, filters: Vec<Filter>) -> Vec<EngineResponse> {
         if filters.iter().any(|f| !f.is_valid(&self.limits)) {
             let message = RelayMessage::Closed(sub_id.clone(), "filter too broad".to_string());
-            return vec![EngineResponse::data(id, message)];
+            return vec![EngineResponse::send(id, message)];
         }
 
         self.process_req(id, sub_id, filters).await
@@ -127,14 +122,14 @@ impl<S: Storage> NostrEngine<S> {
         let mut responses = Vec::new();
         
         // Always provide the protocol feedback intent
-        responses.push(EngineResponse::reply(connection_id, RelayMessage::Ok(event.id.clone(), true, "".into())));
+        responses.push(EngineResponse::send(connection_id, RelayMessage::Ok(event.id.clone(), true, "".into())));
 
         // Match and route using the deep registry interface
         let registry_responses = self.registry.match_event(&event).await;
         for resp in registry_responses {
             match resp {
                 RegistryResponse::Send { recipient_id, sub_id } => {
-                    responses.push(EngineResponse::data(recipient_id, RelayMessage::Event(sub_id, event.clone())));
+                    responses.push(EngineResponse::send(recipient_id, RelayMessage::Event(sub_id, event.clone())));
                 }
                 RegistryResponse::WakeUp(recipient_id) => {
                     responses.push(EngineResponse::wake_up(recipient_id));
@@ -153,13 +148,13 @@ impl<S: Storage> NostrEngine<S> {
             for pk in filters_set.pubkeys() {
                 if let Some(info_event) = self.registry.get_info(&pk) {
                     if filters.iter().any(|f| f.matches(&info_event)) {
-                        responses.push(EngineResponse::data(id, RelayMessage::Event(sub_id.clone(), info_event.clone())));
+                        responses.push(EngineResponse::send(id, RelayMessage::Event(sub_id.clone(), info_event.clone())));
                     }
                 }
             }
         }
 
-        responses.push(EngineResponse::data(id, RelayMessage::Eose(sub_id)));
+        responses.push(EngineResponse::send(id, RelayMessage::Eose(sub_id)));
         responses
     }
 
@@ -261,7 +256,7 @@ mod tests {
             let responses = engine.handle(1, req).await;
 
             assert!(responses.iter().any(|r| {
-                if let EngineResponse::Data { message, .. } = r {
+                if let EngineResponse::Send { message, .. } = r {
                     matches!(message, RelayMessage::Eose(_))
                 } else {
                     false
@@ -325,8 +320,8 @@ mod tests {
             let bridge_req = serde_json::json!(["REQ", "sub_bridge", { "#p": [client.my_pubkey] }]).to_string();
             let responses = engine.handle(bridge_id, &bridge_req).await;
 
-            // REQ should return EOSE Data intent
-            assert!(responses.iter().any(|r| matches!(r, EngineResponse::Data { recipient_id: 100, message: RelayMessage::Eose(_) })));
+            // REQ should return EOSE Send
+            assert!(responses.iter().any(|r| matches!(r, EngineResponse::Send { recipient_id: 100, message: RelayMessage::Eose(_) })));
 
             // Create a valid signed event for the bridge
             let uri = crate::nostr::nip_47::NwcUri {
@@ -343,10 +338,10 @@ mod tests {
 
             let responses = engine.handle(bridge_id, &bridge_event_json).await;
 
-            // Event should be routed to connection 1 as Data
-            assert!(responses.iter().any(|r| matches!(r, EngineResponse::Data { recipient_id: 1, .. })));
-            // EVENT should return OK Reply intent
-            assert!(responses.iter().any(|r| matches!(r, EngineResponse::Reply { recipient_id: 100, message: RelayMessage::Ok(_, true, _) })));
+            // Event should be routed to connection 1 as Send
+            assert!(responses.iter().any(|r| matches!(r, EngineResponse::Send { recipient_id: 1, .. })));
+            // EVENT should return OK Send
+            assert!(responses.iter().any(|r| matches!(r, EngineResponse::Send { recipient_id: 100, message: RelayMessage::Ok(_, true, _) })));
 
             let wallet_response_event: Event = serde_json::from_value(serde_json::json!({
                 "id": "resp1",
@@ -364,9 +359,9 @@ mod tests {
             // Wallet response comes from connection 1
             let responses = engine.process_event(1, wallet_response_event).await;
 
-            // Routed EVENT SHOULD go to connection 100 as Data
+            // Routed EVENT SHOULD go to connection 100 as Send
             assert!(responses.iter().any(|r| {
-                if let EngineResponse::Data { recipient_id, message } = r {
+                if let EngineResponse::Send { recipient_id, message } = r {
                     if let RelayMessage::Event(_, event) = message {
                         *recipient_id == 100 && event.id == "resp1"
                     } else {
@@ -404,7 +399,7 @@ mod tests {
             let responses = engine.process_event(2, event).await;
 
             assert!(responses.iter().any(|r| {
-                if let EngineResponse::Data { recipient_id, message } = r {
+                if let EngineResponse::Send { recipient_id, message } = r {
                     if let RelayMessage::Event(_, event) = message {
                         *recipient_id == 100 && event.id == "event1"
                     } else {
@@ -456,7 +451,7 @@ mod tests {
             assert!(responses.iter().any(|r| matches!(r, EngineResponse::WakeUp { connection_id: 42 })));
             
             // 4. Verify that a Data response was ALSO returned (since matching happens after loading)
-            assert!(responses.iter().any(|r| matches!(r, EngineResponse::Data { recipient_id: 42, .. })));
+            assert!(responses.iter().any(|r| matches!(r, EngineResponse::Send { recipient_id: 42, .. })));
         });
     }
 
