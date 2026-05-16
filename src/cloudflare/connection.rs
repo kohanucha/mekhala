@@ -133,10 +133,6 @@ impl ConnectionRegistry {
         }
     }
 
-    pub fn is_internal(&self, id: u32) -> bool {
-        matches!(self.connections.get(&id), Some(Connection::Internal(_)))
-    }
-
     pub fn len(&self) -> usize {
         self.state.get_websockets().len()
     }

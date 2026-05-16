@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use url::Url;
-use crate::nostr::{RelayError, Result};
+use crate::nostr::{RelayError, Result, Limits};
 
 pub const KIND_NWC_REQUEST: u64 = 23194;
 
@@ -157,7 +157,7 @@ impl NwcClient {
     }
 
     pub fn parse_response_event(&self, event: &Event, request_id: &str) -> Result<Value> {
-        event.verify(now())?;
+        event.verify(now(), &Limits::default())?;
 
         if event.pubkey != self.wallet_pubkey {
             return Err(RelayError::Generic("Response pubkey mismatch".into()));

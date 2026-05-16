@@ -31,8 +31,7 @@ impl Event {
         keys
     }
 
-    pub fn verify(&self, current_time: u64) -> Result<(), RelayError> {
-        let limits = Limits::default();
+    pub fn verify(&self, current_time: u64, limits: &Limits) -> Result<(), RelayError> {
         
         // Enforce NWC-only kinds
         match self.kind {

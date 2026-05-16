@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use super::{Filter, Event, RelayMessage, ClientMessage};
+use super::{Filter, Event, RelayMessage, ClientMessage, Limits};
 use super::wallet_registry::{WalletRegistry, Storage, RegistryResponse};
 
 #[cfg(test)]
@@ -7,11 +7,8 @@ use crate::util::now;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum EngineResponse {
-    /// Data intended for a subscriber (e.g., EVENT, EOSE).
     Data { recipient_id: u32, message: RelayMessage },
-    /// Protocol feedback for the message sender (e.g., OK, NOTICE, CLOSED).
     Reply { recipient_id: u32, message: RelayMessage },
-    /// Internal control signal to wake up a hibernated connection.
     WakeUp { connection_id: u32 },
 }
 
@@ -31,6 +28,7 @@ impl EngineResponse {
 
 pub struct NostrEngine<S: Storage> {
     pub registry: WalletRegistry<S>,
+    limits: Limits,
 }
 
 #[cfg(test)]
@@ -38,14 +36,16 @@ impl NostrEngine<super::wallet_registry::tests::MockStorage> {
     pub fn new() -> Self {
         Self {
             registry: WalletRegistry::new(super::wallet_registry::tests::MockStorage::new()),
+            limits: Limits::default(),
         }
     }
 }
 
 impl<S: Storage> NostrEngine<S> {
-    pub fn new_with_storage(storage: S) -> Self {
+    pub fn new_with_storage(storage: S, limits: Limits) -> Self {
         Self {
             registry: WalletRegistry::new(storage),
+            limits,
         }
     }
 
@@ -76,7 +76,7 @@ impl<S: Storage> NostrEngine<S> {
                 #[cfg(test)]
                 let ts = now();
 
-                if let Err(e) = event.verify(ts) {
+                if let Err(e) = event.verify(ts, &self.limits) {
                     return vec![EngineResponse::reply(connection_id, RelayMessage::Ok(event.id, false, e.to_string()))];
                 }
                 
@@ -94,7 +94,7 @@ impl<S: Storage> NostrEngine<S> {
                 #[cfg(test)]
                 let ts = now();
 
-                let message = if let Err(e) = event.verify(ts) {
+                let message = if let Err(e) = event.verify(ts, &self.limits) {
                     RelayMessage::Ok(event.id, false, e.to_string())
                 } else {
                     RelayMessage::Ok(event.id, false, "blocked: event kind not allowed".into())
@@ -106,7 +106,7 @@ impl<S: Storage> NostrEngine<S> {
     }
 
     async fn handle_req(&mut self, id: u32, sub_id: String, filters: Vec<Filter>) -> Vec<EngineResponse> {
-        if filters.iter().any(|f| !f.is_valid()) {
+        if filters.iter().any(|f| !f.is_valid(&self.limits)) {
             let message = RelayMessage::Closed(sub_id.clone(), "filter too broad".to_string());
             return vec![EngineResponse::data(id, message)];
         }
@@ -225,14 +225,6 @@ impl<S: Storage> NostrEngine<S> {
         }
     }
 
-    pub async fn subscribe(&mut self, conn_id: u32, sub_id: String, filters: Vec<Filter>) {
-        let _ = self.registry.subscribe(conn_id, sub_id, filters).await;
-    }
-
-    pub async fn unsubscribe(&mut self, conn_id: u32, sub_id: String) {
-        let _ = self.registry.unsubscribe(conn_id, sub_id).await;
-    }
-
     pub async fn load(&mut self, conn_id: u32) -> bool {
         self.registry.load(conn_id).await
     }
@@ -315,7 +307,7 @@ mod tests {
             let mut engine = NostrEngine::new();
             engine.on_connect(1).await;
             let wallet_pk = "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f";
-            engine.subscribe(1, "sub1".into(), vec![Filter {
+            let _ = engine.registry.subscribe(1, "sub1".into(), vec![Filter {
                 p_tags: Some(vec![wallet_pk.into()]),
                 ..Default::default()
             }]).await;
@@ -394,7 +386,7 @@ mod tests {
             engine.on_connect(1).await;
 
             let id = 100;
-            engine.subscribe(id, "sub1".into(), vec![Filter {
+            let _ = engine.registry.subscribe(id, "sub1".into(), vec![Filter {
                 authors: Some(vec!["alice".into()]),
                 ..Default::default()
             }]).await;
@@ -445,7 +437,7 @@ mod tests {
             }));
             storage.put_batch(entries).await;
             
-            let mut engine = NostrEngine::new_with_storage(storage);
+            let mut engine = NostrEngine::new_with_storage(storage, Limits::default());
 
             // 2. Handle an event that targets the hibernated pubkey
             let event = Event {
@@ -473,11 +465,11 @@ mod tests {
         let mut engine = NostrEngine::new();
 
         futures::executor::block_on(async {
-            engine.subscribe(1, "sub1".into(), vec![Filter {
+            let _ = engine.registry.subscribe(1, "sub1".into(), vec![Filter {
                 authors: Some(vec!["alice".into()]),
                 ..Default::default()
             }]).await;
-            engine.subscribe(2, "sub1".into(), vec![Filter {
+            let _ = engine.registry.subscribe(2, "sub1".into(), vec![Filter {
                 authors: Some(vec!["alice".into()]),
                 ..Default::default()
             }]).await;
@@ -508,7 +500,7 @@ mod tests {
         futures::executor::block_on(async {
             let mut engine = NostrEngine::new();
 
-            engine.subscribe(1, "sub1".into(), vec![Filter {
+            let _ = engine.registry.subscribe(1, "sub1".into(), vec![Filter {
                 authors: Some(vec!["alice".into()]),
                 ..Default::default()
             }]).await;
@@ -524,7 +516,7 @@ mod tests {
         futures::executor::block_on(async {
             let mut engine = NostrEngine::new();
 
-            engine.subscribe(1, "sub1".into(), vec![Filter {
+            let _ = engine.registry.subscribe(1, "sub1".into(), vec![Filter {
                 authors: Some(vec!["alice".into()]),
                 ..Default::default()
             }]).await;

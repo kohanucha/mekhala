@@ -12,6 +12,7 @@ pub use nip_01::{RelayMessage, ClientMessage};
 pub use event::Event;
 pub use filter::Filter;
 
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -33,6 +34,16 @@ pub struct Limits {
     pub max_filter_items: usize,
     pub max_event_tags: usize,
     pub max_content_length: usize,
+}
+
+impl Limits {
+    pub fn new(max_filter_items: usize, max_event_tags: usize, max_content_length: usize) -> Self {
+        Self {
+            max_filter_items,
+            max_event_tags,
+            max_content_length,
+        }
+    }
 }
 
 impl Default for Limits {

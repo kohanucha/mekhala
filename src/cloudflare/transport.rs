@@ -4,6 +4,7 @@ use futures::lock::Mutex;
 use worker::*;
 use crate::nostr::engine::{NostrEngine, EngineResponse};
 use crate::nostr::wallet_registry::Storage;
+use crate::nostr::Limits;
 use crate::cloudflare::create_cors_response;
 use crate::cloudflare::connection::ConnectionRegistry;
 
@@ -38,7 +39,18 @@ pub struct CloudflareTransport {
 impl DurableObject for CloudflareTransport {
     fn new(state: State, env: Env) -> Self {
         let storage = CloudflareStorage { storage: state.storage() };
-        let engine = NostrEngine::new_with_storage(storage);
+        let limits = Limits::new(
+            env.var("MAX_FILTER_ITEMS")
+                .and_then(|v| v.to_string().parse::<usize>().map_err(|e| Error::from(e.to_string())))
+                .unwrap_or(10),
+            env.var("MAX_EVENT_TAGS")
+                .and_then(|v| v.to_string().parse::<usize>().map_err(|e| Error::from(e.to_string())))
+                .unwrap_or(10),
+            env.var("MAX_CONTENT_LENGTH")
+                .and_then(|v| v.to_string().parse::<usize>().map_err(|e| Error::from(e.to_string())))
+                .unwrap_or(16384),
+        );
+        let engine = NostrEngine::new_with_storage(storage, limits);
 
         Self {
             env,
@@ -281,10 +293,7 @@ impl CloudflareTransport {
                     self.connections.borrow_mut().send(recipient_id, message.to_json());
                 }
                 EngineResponse::Reply { recipient_id, message } => {
-                    // Delivery Policy: Suppress protocol acknowledgments for internal/bridge connections
-                    if !self.connections.borrow().is_internal(recipient_id) {
-                        self.connections.borrow_mut().send(recipient_id, message.to_json());
-                    }
+                    self.connections.borrow_mut().send(recipient_id, message.to_json());
                 }
                 EngineResponse::WakeUp { connection_id } => {
                     let ws = self.connections.borrow().find_by_id(connection_id);
