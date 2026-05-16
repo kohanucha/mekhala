@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use super::{Filter, Event, RelayMessage, ClientMessage, Limits};
 use super::wallet_registry::{WalletRegistry, Storage, RegistryResponse};
 
@@ -22,7 +22,7 @@ impl EngineResponse {
 }
 
 pub struct NostrEngine<S: Storage> {
-    pub registry: WalletRegistry<S>,
+    registry: WalletRegistry<S>,
     limits: Limits,
 }
 
@@ -173,41 +173,13 @@ impl<S: Storage> NostrEngine<S> {
         Vec::new()
     }
 
-    pub fn get_wallet_info(&self, pubkey: &str) -> super::WalletInfo {
-        let mut online = false;
-        let mut ready = false;
-        let mut encryption = HashSet::new();
+    pub fn get_wallet_info(&self, pubkey: &str) -> Option<super::WalletInfo> {
+        self.registry.get_info(pubkey).map(|event| super::nip_47::parse_wallet_info(&event))
+    }
 
-        if let Some(info_event) = self.registry.get_info(pubkey) {
-            online = true;
-            ready = true;
-            let mut has_encryption_tag = false;
-            for tag in &info_event.tags {
-                if tag.len() >= 2 && tag[0].as_str() == Some("encryption") {
-                    has_encryption_tag = true;
-                    if let Some(schemes) = tag[1].as_str() {
-                        for scheme in schemes.split_whitespace() {
-                            match scheme {
-                                "nip44_v2" => { encryption.insert("nip44_v2".to_string()); }
-                                "nip04" => { encryption.insert("nip04".to_string()); }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-            }
-            if !has_encryption_tag {
-                encryption.insert("nip04".to_string());
-            }
-        } else if self.registry.get_connection_id(pubkey).is_some() {
-            online = true;
-        }
-
-        super::WalletInfo {
-            online,
-            ready,
-            encryption_algorithms: encryption.into_iter().collect::<Vec<_>>()
-        }
+    #[cfg(test)]
+    pub fn has_subscription(&self, conn_id: u32, sub_id: &str) -> bool {
+        self.registry.has_subscription(conn_id, sub_id)
     }
 
     pub fn error_message(&self, msg: &str) -> String {
@@ -234,18 +206,6 @@ mod tests {
     use super::*;
     use super::super::wallet_registry::tests::MockStorage;
 
-    fn make_event(pubkey: &str, kind: u64, tags: Vec<Vec<serde_json::Value>>) -> Event {
-        Event {
-            id: "id".into(),
-            pubkey: pubkey.into(),
-            kind,
-            tags,
-            content: "".into(),
-            sig: "".into(),
-            created_at: 1000,
-        }
-    }
-
     #[test]
     fn test_engine_req_storage() {
         futures::executor::block_on(async {
@@ -263,7 +223,7 @@ mod tests {
                 }
             }));
 
-            assert!(engine.registry.index.get_subscriptions(1).contains_key("sub1"));
+            assert!(engine.has_subscription(1, "sub1"));
         });
     }
 
@@ -283,17 +243,57 @@ mod tests {
                 sig: "sig1".into(),
             };
 
-            engine.registry.index.cache_info(event);
+            engine.process_info_event(event).await;
 
-            assert!(engine.registry.index.get_info("pk1").is_some());
+            assert!(engine.get_wallet_info("pk1").is_some());
         });
     }
 
     #[test]
-    fn test_engine_get_wallet_info() {
+    fn test_engine_get_wallet_info_unknown_pubkey() {
         let engine = NostrEngine::new();
-        let info = engine.get_wallet_info("pk1");
-        assert_eq!(info.online, false);
+        assert!(engine.get_wallet_info("pk1").is_none());
+    }
+
+    #[test]
+    fn test_engine_get_wallet_info_with_encryption_tag() {
+        futures::executor::block_on(async {
+            let mut engine = NostrEngine::new();
+            let event = Event {
+                id: "id1".into(),
+                pubkey: "pk1".into(),
+                created_at: 1000,
+                kind: 13194,
+                tags: vec![super::super::Tag::encryption("nip44_v2 nip04")],
+                content: "".into(),
+                sig: "sig1".into(),
+            };
+            engine.process_info_event(event).await;
+
+            let info = engine.get_wallet_info("pk1").unwrap();
+            assert!(info.encryption_algorithms.contains(&super::super::nip_47::EncryptionMethod::Nip44));
+            assert!(info.encryption_algorithms.contains(&super::super::nip_47::EncryptionMethod::Nip04));
+        });
+    }
+
+    #[test]
+    fn test_engine_get_wallet_info_default_nip04() {
+        futures::executor::block_on(async {
+            let mut engine = NostrEngine::new();
+            let event = Event {
+                id: "id1".into(),
+                pubkey: "pk1".into(),
+                created_at: 1000,
+                kind: 13194,
+                tags: vec![],
+                content: "".into(),
+                sig: "sig1".into(),
+            };
+            engine.process_info_event(event).await;
+
+            let info = engine.get_wallet_info("pk1").unwrap();
+            assert_eq!(info.encryption_algorithms, vec![super::super::nip_47::EncryptionMethod::Nip04]);
+        });
     }
 
     #[test]
@@ -302,7 +302,7 @@ mod tests {
             let mut engine = NostrEngine::new();
             engine.on_connect(1).await;
             let wallet_pk = "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f";
-            let _ = engine.registry.subscribe(1, "sub1".into(), vec![Filter {
+            let _ = engine.process_req(1, "sub1".into(), vec![Filter {
                 p_tags: Some(vec![wallet_pk.into()]),
                 ..Default::default()
             }]).await;
@@ -354,7 +354,7 @@ mod tests {
             })).unwrap();
             
             let mut wallet_response_event = wallet_response_event;
-            wallet_response_event.tags = vec![vec![serde_json::json!("p"), serde_json::json!(client.my_pubkey)], vec![serde_json::json!("e"), serde_json::json!(bridge_event.id)]];
+            wallet_response_event.tags = vec![super::super::Tag::p(&client.my_pubkey), super::super::Tag::e(&bridge_event.id)];
 
             // Wallet response comes from connection 1
             let responses = engine.process_event(1, wallet_response_event).await;
@@ -381,7 +381,7 @@ mod tests {
             engine.on_connect(1).await;
 
             let id = 100;
-            let _ = engine.registry.subscribe(id, "sub1".into(), vec![Filter {
+            let _ = engine.process_req(id, "sub1".into(), vec![Filter {
                 authors: Some(vec!["alice".into()]),
                 ..Default::default()
             }]).await;
@@ -411,7 +411,7 @@ mod tests {
             }));
 
             engine.on_disconnect(id).await;
-            assert!(engine.registry.index.get_subscriptions(id).is_empty());
+            assert!(!engine.has_subscription(id, "sub1"));
         });
     }
 
@@ -440,7 +440,7 @@ mod tests {
                 pubkey: pk.into(),
                 created_at: now(),
                 kind: 23194,
-                tags: vec![vec!["p".into(), pk.into()]],
+                tags: vec![super::super::Tag::p(pk)],
                 content: "wake up!".into(),
                 sig: "sig".into(),
             };
@@ -455,93 +455,4 @@ mod tests {
         });
     }
 
-    #[test]
-    fn test_index_matching_grouped() {
-        let mut engine = NostrEngine::new();
-
-        futures::executor::block_on(async {
-            let _ = engine.registry.subscribe(1, "sub1".into(), vec![Filter {
-                authors: Some(vec!["alice".into()]),
-                ..Default::default()
-            }]).await;
-            let _ = engine.registry.subscribe(2, "sub1".into(), vec![Filter {
-                authors: Some(vec!["alice".into()]),
-                ..Default::default()
-            }]).await;
-
-            let event_alice = make_event("alice", 1, vec![]);
-            let matches: Vec<_> = engine.registry.index.match_event(&event_alice).collect();
-            assert_eq!(matches.len(), 1);
-            assert_eq!(matches[0].0, "sub1");
-            assert_eq!(matches[0].1.len(), 1);
-            assert!(matches[0].1.contains(&2));
-            assert!(!matches[0].1.contains(&1));
-        });
     }
-
-    #[test]
-    fn test_info_event_caching() {
-        let mut engine = NostrEngine::new();
-        let event = make_event("alice", 13194, vec![]);
-        engine.registry.index.cache_info(event.clone());
-
-        let stored = engine.registry.index.get_info("alice");
-        assert!(stored.is_some());
-        assert_eq!(stored.unwrap().id, event.id);
-    }
-
-    #[test]
-    fn test_registry_sync() {
-        futures::executor::block_on(async {
-            let mut engine = NostrEngine::new();
-
-            let _ = engine.registry.subscribe(1, "sub1".into(), vec![Filter {
-                authors: Some(vec!["alice".into()]),
-                ..Default::default()
-            }]).await;
-
-            let data = engine.registry.storage.data.lock().unwrap();
-            assert!(data.contains_key("conn:1"));
-            assert!(data.contains_key("pk:alice"));
-        });
-    }
-
-    #[test]
-    fn test_registry_terminate() {
-        futures::executor::block_on(async {
-            let mut engine = NostrEngine::new();
-
-            let _ = engine.registry.subscribe(1, "sub1".into(), vec![Filter {
-                authors: Some(vec!["alice".into()]),
-                ..Default::default()
-            }]).await;
-
-            engine.on_terminate(1).await;
-
-            let data = engine.registry.storage.data.lock().unwrap();
-            assert!(!data.contains_key("conn:1"));
-            // pk:alice is still there (lazy deletion)
-            assert!(data.contains_key("pk:alice"));
-            assert!(engine.registry.index.get_subscriptions(1).is_empty());
-        });
-    }
-
-    #[test]
-    fn test_registry_lazy_deletion() {
-        futures::executor::block_on(async {
-            let mut engine = NostrEngine::new();
-
-            // 1. Manually seed a stale pk: pointer
-            let mut entries = HashMap::new();
-            entries.insert("pk:stale".to_string(), serde_json::json!(99));
-            engine.registry.storage.put_batch(entries).await;
-
-            // 2. Attempt to load by pubkey (should fail load(99) and delete pk:stale)
-            let result = engine.load_by_pubkey("stale").await;
-            assert!(result.is_none());
-
-            let data = engine.registry.storage.data.lock().unwrap();
-            assert!(!data.contains_key("pk:stale"));
-        });
-    }
-}

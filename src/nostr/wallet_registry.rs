@@ -16,7 +16,7 @@ pub struct SavedState {
 }
 
 /// A purely synchronous index for subscriptions and info events.
-pub struct WalletIndex {
+struct WalletIndex {
     subscription_index: HashMap<(String, Vec<Filter>), Vec<u32>>,
     pk_index: HashMap<String, (HashSet<(String, Vec<Filter>)>, Option<Event>)>,
     reverse_index: HashMap<u32, HashMap<String, Vec<Filter>>>,
@@ -92,20 +92,20 @@ impl WalletIndex {
         }
     }
 
-    pub fn get_subscriptions(&self, conn_id: u32) -> HashMap<String, Vec<Filter>> {
+    fn get_subscriptions(&self, conn_id: u32) -> HashMap<String, Vec<Filter>> {
         self.reverse_index.get(&conn_id).cloned().unwrap_or_default()
     }
 
-    pub fn cache_info(&mut self, event: Event) {
+    fn cache_info(&mut self, event: Event) {
         let entry = self.pk_index.entry(event.pubkey.clone()).or_insert_with(|| (HashSet::new(), None));
         entry.1 = Some(event);
     }
 
-    pub fn get_info(&self, pubkey: &str) -> Option<Event> {
+    fn get_info(&self, pubkey: &str) -> Option<Event> {
         self.pk_index.get(pubkey).and_then(|e| e.1.clone())
     }
 
-    pub fn match_event<'a>(&'a self, event: &'a Event) -> Box<dyn Iterator<Item = (String, Vec<u32>)> + 'a> {
+    fn match_event<'a>(&'a self, event: &'a Event) -> Box<dyn Iterator<Item = (String, Vec<u32>)> + 'a> {
         let target_pks = event.target_pubkeys();
 
         let mut sub_to_conns = HashMap::new();
@@ -195,8 +195,8 @@ impl WalletIndex {
 }
 
 pub struct WalletRegistry<S: Storage> {
-    pub storage: S,
-    pub index: WalletIndex,
+    pub(crate) storage: S,
+    index: WalletIndex,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -292,8 +292,9 @@ impl<S: Storage> WalletRegistry<S> {
         self.index.get_info(pubkey)
     }
 
-    pub fn get_connection_id(&self, pubkey: &str) -> Option<u32> {
-        self.index.get_connection_id(pubkey)
+    #[cfg(test)]
+    pub fn has_subscription(&self, conn_id: u32, sub_id: &str) -> bool {
+        self.index.get_subscriptions(conn_id).contains_key(sub_id)
     }
 
     async fn sync(&self, conn_id: u32) {
@@ -313,6 +314,7 @@ impl<S: Storage> WalletRegistry<S> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use crate::nostr::Tag;
     use std::sync::{Arc, Mutex};
 
     pub struct MockStorage {
@@ -383,7 +385,7 @@ pub mod tests {
                 pubkey: "app_pk".into(),
                 created_at: 1000,
                 kind: 23194,
-                tags: vec![vec!["p".into(), wallet_pk.into()]],
+                tags: vec![Tag::p(wallet_pk)],
                 content: "test".into(),
                 sig: "sig".into(),
             };
@@ -420,7 +422,7 @@ pub mod tests {
                 pubkey: "app_pk".into(),
                 created_at: 1000,
                 kind: 23194,
-                tags: vec![vec!["p".into(), wallet_pk.into()]],
+                tags: vec![Tag::p(wallet_pk)],
                 content: "test".into(),
                 sig: "sig".into(),
             };
@@ -430,6 +432,119 @@ pub mod tests {
             // 3. Verify WakeUp and Send
             assert!(responses.contains(&RegistryResponse::WakeUp(conn_id)));
             assert!(responses.contains(&RegistryResponse::Send { recipient_id: conn_id, sub_id: "sub1".into() }));
+        });
+    }
+
+    #[test]
+    fn test_index_matching_grouped() {
+        futures::executor::block_on(async {
+            let storage = MockStorage::new();
+            let mut registry = WalletRegistry::new(storage);
+
+            registry.subscribe(1, "sub1".into(), vec![Filter {
+                authors: Some(vec!["alice".into()]),
+                ..Default::default()
+            }]).await.unwrap();
+            registry.subscribe(2, "sub1".into(), vec![Filter {
+                authors: Some(vec!["alice".into()]),
+                ..Default::default()
+            }]).await.unwrap();
+
+            let event_alice = Event {
+                id: "id".into(),
+                pubkey: "alice".into(),
+                kind: 1,
+                tags: vec![],
+                content: "".into(),
+                sig: "".into(),
+                created_at: 1000,
+            };
+            let responses = registry.match_event(&event_alice).await;
+
+            let grouped: Vec<_> = responses.iter()
+                .filter_map(|r| match r {
+                    RegistryResponse::Send { recipient_id, sub_id } if sub_id == "sub1" => Some(*recipient_id),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(grouped.len(), 1);
+            assert!(grouped.contains(&2));
+            assert!(!grouped.contains(&1));
+        });
+    }
+
+    #[test]
+    fn test_info_event_caching() {
+        let storage = MockStorage::new();
+        let mut registry = WalletRegistry::new(storage);
+        let event = Event {
+            id: "id".into(),
+            pubkey: "alice".into(),
+            kind: 13194,
+            tags: vec![],
+            content: "".into(),
+            sig: "sig1".into(),
+            created_at: 1000,
+        };
+        registry.cache_info(event.clone());
+
+        let stored = registry.get_info("alice");
+        assert!(stored.is_some());
+        assert_eq!(stored.unwrap().id, event.id);
+    }
+
+    #[test]
+    fn test_registry_sync() {
+        futures::executor::block_on(async {
+            let storage = MockStorage::new();
+            let mut registry = WalletRegistry::new(storage);
+
+            registry.subscribe(1, "sub1".into(), vec![Filter {
+                authors: Some(vec!["alice".into()]),
+                ..Default::default()
+            }]).await.unwrap();
+
+            let data = registry.storage.data.lock().unwrap();
+            assert!(data.contains_key("conn:1"));
+            assert!(data.contains_key("pk:alice"));
+        });
+    }
+
+    #[test]
+    fn test_registry_terminate() {
+        futures::executor::block_on(async {
+            let storage = MockStorage::new();
+            let mut registry = WalletRegistry::new(storage);
+
+            registry.subscribe(1, "sub1".into(), vec![Filter {
+                authors: Some(vec!["alice".into()]),
+                ..Default::default()
+            }]).await.unwrap();
+
+            registry.on_terminate(1).await;
+
+            let data = registry.storage.data.lock().unwrap();
+            assert!(!data.contains_key("conn:1"));
+            assert!(data.contains_key("pk:alice"));
+            assert!(!registry.has_subscription(1, "sub1"));
+        });
+    }
+
+    #[test]
+    fn test_registry_lazy_deletion() {
+        futures::executor::block_on(async {
+            let storage = MockStorage::new();
+            let mut entries = HashMap::new();
+            entries.insert("pk:stale".to_string(), serde_json::json!(99));
+            storage.put_batch(entries).await;
+
+            let mut registry = WalletRegistry::new(storage);
+
+            let result = registry.load_by_pubkey("stale").await;
+            assert!(result.is_none());
+
+            let data = registry.storage.data.lock().unwrap();
+            assert!(!data.contains_key("pk:stale"));
         });
     }
 }

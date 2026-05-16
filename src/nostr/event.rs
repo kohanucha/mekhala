@@ -3,8 +3,7 @@ use k256::schnorr::signature::hazmat::PrehashVerifier;
 use k256::schnorr::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use crate::nostr::RelayError;
-use crate::nostr::Limits;
+use crate::nostr::{RelayError, Limits, Tag};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Event {
@@ -12,20 +11,33 @@ pub struct Event {
     pub pubkey: String,
     pub created_at: u64,
     pub kind: u64,
-    pub tags: Vec<Vec<serde_json::Value>>,
+    pub tags: Vec<Tag>,
     pub content: String,
     pub sig: String,
 }
 
 impl Event {
+    pub fn compute_id(pubkey: &str, created_at: u64, kind: u64, tags: &[Tag], content: &str) -> Result<(String, Vec<u8>), RelayError> {
+        let serialized = serde_json::to_string(&(
+            0,
+            pubkey,
+            created_at,
+            kind,
+            tags,
+            content,
+        ))
+        .map_err(|e| RelayError::SerializationError(e.to_string()))?;
+
+        let id_bytes = Sha256::digest(serialized.as_bytes());
+        Ok((hex::encode(id_bytes), id_bytes.to_vec()))
+    }
+
     pub fn target_pubkeys(&self) -> HashSet<String> {
         let mut keys = HashSet::new();
         keys.insert(self.pubkey.clone());
         for tag in &self.tags {
-            if tag.len() >= 2 && tag[0].as_str() == Some("p") {
-                if let Some(pk) = tag[1].as_str() {
-                    keys.insert(pk.to_string());
-                }
+            if let Some(pk) = tag.pubkey() {
+                keys.insert(pk.to_string());
             }
         }
         keys
@@ -42,13 +54,13 @@ impl Event {
         // Enforce tags for specific NWC kinds
         match self.kind {
             23195 => {
-                let has_p = self.tags.iter().any(|t| t.len() >= 2 && t[0].as_str() == Some("p"));
-                let has_e = self.tags.iter().any(|t| t.len() >= 2 && t[0].as_str() == Some("e"));
+                let has_p = self.tags.iter().any(|t| t.is_p());
+                let has_e = self.tags.iter().any(|t| t.is_e());
                 if !has_p { return Err(RelayError::MissingTag("p".into())); }
                 if !has_e { return Err(RelayError::MissingTag("e".into())); }
             }
             23196 | 23197 => {
-                let has_p = self.tags.iter().any(|t| t.len() >= 2 && t[0].as_str() == Some("p"));
+                let has_p = self.tags.iter().any(|t| t.is_p());
                 if !has_p { return Err(RelayError::MissingTag("p".into())); }
             }
             _ => {}
@@ -68,22 +80,8 @@ impl Event {
             return Err(RelayError::TimestampTooFar("event creation date is too old".into()));
         }
 
-        let serialized = serde_json::to_string(&(
-            0,
-            &self.pubkey,
-            self.created_at,
-            self.kind,
-            &self.tags,
-            &self.content,
-        ))
-        .map_err(|e| RelayError::SerializationError(e.to_string()))?;
-
-        let mut hasher = Sha256::new();
-        hasher.update(serialized.as_bytes());
-        let id_bytes = hasher.finalize();
-
-        let expected_id_bytes = hex::decode(&self.id)?;
-        if expected_id_bytes != id_bytes.as_ref() as &[u8] {
+        let (computed_id, id_bytes) = Event::compute_id(&self.pubkey, self.created_at, self.kind, &self.tags, &self.content)?;
+        if self.id != computed_id {
             return Err(RelayError::InvalidId);
         }
 
@@ -99,16 +97,16 @@ impl Event {
         verifying_key
             .verify_prehash(&id_bytes, &signature)
             .map_err(|_| RelayError::InvalidSignature)
-            }
-            }
+    }
+}
 
-            #[cfg(test)]
-            mod tests {
-            use super::*;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-            #[test]
-            fn test_target_pubkeys_author_only() {
-            let event = Event {
+    #[test]
+    fn test_target_pubkeys_author_only() {
+        let event = Event {
             id: "id".into(),
             pubkey: "pk1".into(),
             created_at: 0,
@@ -116,52 +114,52 @@ impl Event {
             tags: vec![],
             content: "".into(),
             sig: "".into(),
-            };
-            let keys = event.target_pubkeys();
-            assert_eq!(keys.len(), 1);
-            assert!(keys.contains("pk1"));
-            }
+        };
+        let keys = event.target_pubkeys();
+        assert_eq!(keys.len(), 1);
+        assert!(keys.contains("pk1"));
+    }
 
-            #[test]
-            fn test_target_pubkeys_with_p_tags() {
-            let event = Event {
+    #[test]
+    fn test_target_pubkeys_with_p_tags() {
+        let event = Event {
             id: "id".into(),
             pubkey: "author".into(),
             created_at: 0,
             kind: 1,
             tags: vec![
-                vec!["p".into(), "recipient1".into()],
-                vec!["p".into(), "recipient2".into()],
-                vec!["e".into(), "event_id".into()], // Ignore other tags
+                Tag::p("recipient1"),
+                Tag::p("recipient2"),
+                Tag::e("event_id"),
             ],
             content: "".into(),
             sig: "".into(),
-            };
-            let keys = event.target_pubkeys();
-            assert_eq!(keys.len(), 3);
-            assert!(keys.contains("author"));
-            assert!(keys.contains("recipient1"));
-            assert!(keys.contains("recipient2"));
-            }
+        };
+        let keys = event.target_pubkeys();
+        assert_eq!(keys.len(), 3);
+        assert!(keys.contains("author"));
+        assert!(keys.contains("recipient1"));
+        assert!(keys.contains("recipient2"));
+    }
 
-            #[test]
-            fn test_target_pubkeys_deduplication() {
-            let event = Event {
+    #[test]
+    fn test_target_pubkeys_deduplication() {
+        let event = Event {
             id: "id".into(),
             pubkey: "pk1".into(),
             created_at: 0,
             kind: 1,
             tags: vec![
-                vec!["p".into(), "pk1".into()], // author already in set
-                vec!["p".into(), "pk2".into()],
-                vec!["p".into(), "pk2".into()], // duplicate tag
+                Tag::P("pk1".into(), vec![]),
+                Tag::p("pk2"),
+                Tag::P("pk2".into(), vec![]),
             ],
             content: "".into(),
             sig: "".into(),
-            };
-            let keys = event.target_pubkeys();
-            assert_eq!(keys.len(), 2);
-            assert!(keys.contains("pk1"));
-            assert!(keys.contains("pk2"));
-            }
-            }
+        };
+        let keys = event.target_pubkeys();
+        assert_eq!(keys.len(), 2);
+        assert!(keys.contains("pk1"));
+        assert!(keys.contains("pk2"));
+    }
+}

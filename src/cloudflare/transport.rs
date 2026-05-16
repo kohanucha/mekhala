@@ -109,10 +109,10 @@ impl crate::common::NwcTransport for CloudflareTransport {
     async fn get_wallet_info(&self, pubkey: &str) -> Option<crate::nostr::WalletInfo> {
         let mut engine = self.engine.lock().await;
         let _ = self.load_connection_with_handler(pubkey, &mut engine).await.ok();
-        Some(engine.get_wallet_info(pubkey))
+        engine.get_wallet_info(pubkey)
     }
 
-    async fn execute_nwc_rpc(&self, request: crate::nostr::Event) -> Result<crate::nostr::Event> {
+    async fn execute_nwc_rpc(&self, request: crate::nostr::Event) -> Result<crate::nostr::Event, crate::common::NwcError> {
         let id = self.connections.borrow().next_id().await;
         let (tx, rx) = oneshot::channel();
         self.connections.borrow_mut().add_internal(id, tx);
@@ -122,7 +122,7 @@ impl crate::common::NwcTransport for CloudflareTransport {
 
         // 1. Execute initial actions (Subscribe, Publish)
         for action in machine.start() {
-            self.execute_rpc_action(id, action, &mut engine).await?;
+            self.execute_rpc_action_inner(id, action, &mut engine).await?;
         }
 
         drop(engine); // Release lock while waiting
@@ -137,10 +137,10 @@ impl crate::common::NwcTransport for CloudflareTransport {
             if elapsed >= timeout_sec {
                 let action = machine.handle_timeout();
                 let mut engine = self.engine.lock().await;
-                let _ = self.execute_rpc_action(id, action, &mut engine).await;
+                let _ = self.execute_rpc_action_inner(id, action, &mut engine).await;
                 let _ = engine.on_disconnect(id).await;
                 self.connections.borrow_mut().remove(id);
-                return Err(Error::from("NWC RPC timeout"));
+                return Err(crate::common::NwcError::Timeout);
             }
 
             let delay = Delay::from(std::time::Duration::from_secs(timeout_sec - elapsed)).fuse();
@@ -154,20 +154,20 @@ impl crate::common::NwcTransport for CloudflareTransport {
                 _ => {
                     let action = machine.handle_timeout();
                     let mut engine = self.engine.lock().await;
-                    let _ = self.execute_rpc_action(id, action, &mut engine).await;
+                    let _ = self.execute_rpc_action_inner(id, action, &mut engine).await;
                     let _ = engine.on_disconnect(id).await;
                     self.connections.borrow_mut().remove(id);
-                    return Err(Error::from("NWC RPC timeout"));
+                    return Err(crate::common::NwcError::Timeout);
                 }
             };
 
             // 3. Parse response and transition machine
             let msg = crate::nostr::RelayMessage::from_json(&response_text)
-                .map_err(|e| Error::from(format!("malformed relay response: {}", e)))?;
+                .map_err(|e| crate::common::NwcError::ProtocolError(format!("malformed relay response: {}", e)))?;
             
             if let Some(action) = machine.transition(msg) {
                 let mut engine = self.engine.lock().await;
-                self.execute_rpc_action(id, action, &mut engine).await?;
+                self.execute_rpc_action_inner(id, action, &mut engine).await?;
             }
 
             match machine.state() {
@@ -176,7 +176,7 @@ impl crate::common::NwcTransport for CloudflareTransport {
                     let mut engine = self.engine.lock().await;
                     let _ = engine.on_disconnect(id).await;
                     self.connections.borrow_mut().remove(id);
-                    return Err(Error::from(err.clone()));
+                    return Err(crate::common::NwcError::ProtocolError(err.clone()));
                 }
                 _ => {
                     // Continue waiting, setup next internal channel
@@ -196,21 +196,21 @@ impl crate::common::NwcTransport for CloudflareTransport {
 }
 
 impl CloudflareTransport {
-    async fn execute_rpc_action(&self, conn_id: u32, action: crate::nostr::rpc_machine::RpcAction, engine: &mut NostrEngine<CloudflareStorage>) -> Result<()> {
+    async fn execute_rpc_action_inner(&self, conn_id: u32, action: crate::nostr::rpc_machine::RpcAction, engine: &mut NostrEngine<CloudflareStorage>) -> Result<(), crate::common::NwcError> {
         match action {
             crate::nostr::rpc_machine::RpcAction::Subscribe(sub_id, filter) => {
                 let req_msg = crate::nostr::ClientMessage::Req(sub_id, vec![filter]);
                 let responses = engine.handle_typed(conn_id, req_msg).await;
-                self.process_responses(responses, engine).await?;
+                self.process_responses(responses, engine).await.map_err(|e| crate::common::NwcError::ProtocolError(e.to_string()))?;
             }
             crate::nostr::rpc_machine::RpcAction::Publish(event) => {
                 let event_msg = crate::nostr::ClientMessage::Event(event);
                 let responses = engine.handle_typed(conn_id, event_msg).await;
-                self.process_responses(responses, engine).await?;
+                self.process_responses(responses, engine).await.map_err(|e| crate::common::NwcError::ProtocolError(e.to_string()))?;
             }
             crate::nostr::rpc_machine::RpcAction::Unsubscribe(sub_id) => {
                 let responses = engine.process_close(conn_id, sub_id).await;
-                self.process_responses(responses, engine).await?;
+                self.process_responses(responses, engine).await.map_err(|e| crate::common::NwcError::ProtocolError(e.to_string()))?;
             }
         }
         Ok(())

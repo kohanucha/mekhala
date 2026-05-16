@@ -53,7 +53,7 @@ impl NwcRpcMachine {
                 // Correlation check: ensure this event references our request
                 // In NWC, response should have an 'e' tag pointing to request ID
                 let references_request = event.tags.iter().any(|t| {
-                    t.len() >= 2 && t[0].as_str() == Some("e") && t[1].as_str() == Some(&self.request.id)
+                    matches!(t, crate::nostr::Tag::E(eid, _) if eid == &self.request.id)
                 });
 
                 if references_request {
@@ -115,7 +115,7 @@ mod tests {
 
         // Feed Response EVENT
         let mut resp = mock_event("resp1", "pk2");
-        resp.tags = vec![vec!["e".into(), "req1".into()]];
+        resp.tags = vec![crate::nostr::Tag::e("req1")];
         let action = machine.transition(RelayMessage::Event("rpc_sub".into(), resp.clone()));
 
         assert_eq!(action, Some(RpcAction::Unsubscribe("rpc_sub".into())));

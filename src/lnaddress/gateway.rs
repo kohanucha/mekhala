@@ -1,7 +1,8 @@
-use worker::*;
 use serde_json::Value;
 use sha2::{Sha256, Digest};
+use url::Url;
 use crate::common::NwcTransport;
+use crate::common::NwcError;
 use crate::lnaddress::wallet_connector::NwcSession;
 
 pub struct LnAddressGateway {
@@ -15,40 +16,26 @@ impl LnAddressGateway {
         }
     }
 
-    /// Fetches pay request information for the lightning address.
-    /// Returns LNURL-pay metadata and callback URL.
-    pub async fn get_pay_request_info(&self, env: &Env, request_url: &Url) -> Result<Value> {
-        if self.fetch_nwc_uri(env).await?.is_none() {
-            return Err(Error::from("User not found"));
-        }
-
-        let callback_url = self.build_callback_url(request_url)?;
+    pub fn pay_request_info(&self, request_url: &Url) -> Value {
+        let callback_url = self.build_callback_url(request_url);
         
-        Ok(serde_json::json!({
+        serde_json::json!({
             "callback": callback_url,
             "maxSendable": 100000000,
             "minSendable": 1000,
             "metadata": self.generate_metadata(),
             "tag": "payRequest"
-        }))
+        })
     }
 
-    /// Bridges the LN Address payment request to the wallet via NWC.
-    /// Fetches the NWC URI from KV, calculates metadata hash, and requests an invoice.
     pub async fn create_invoice(
         &self,
-        env: &Env,
         transport: &impl NwcTransport,
+        nwc_uri: &str,
         amount_msat: u64,
-    ) -> Result<String> {
-        let nwc_uri = self
-            .fetch_nwc_uri(env)
-            .await?
-            .ok_or_else(|| Error::from("User not found"))?;
-
+    ) -> Result<String, NwcError> {
         let description_hash = self.get_description_hash();
-
-        let session = NwcSession::new(transport, &nwc_uri)?;
+        let session = NwcSession::new(transport, nwc_uri)?;
         session.make_invoice(amount_msat, description_hash).await
     }
 
@@ -64,15 +51,7 @@ impl LnAddressGateway {
         hex::encode(hash)
     }
 
-    async fn fetch_nwc_uri(&self, env: &Env) -> Result<Option<String>> {
-        let kv = env.kv("MEKHALA_NWC_KV")?;
-        kv.get(&self.username)
-            .text()
-            .await
-            .map_err(|e| Error::from(e.to_string()))
-    }
-
-    fn build_callback_url(&self, request_url: &Url) -> Result<String> {
+    fn build_callback_url(&self, request_url: &Url) -> String {
         let is_local = request_url.host_str() == Some("localhost")
             || request_url.host_str() == Some("127.0.0.1");
         let host = request_url.host_str().unwrap_or_default();
@@ -82,10 +61,10 @@ impl LnAddressGateway {
             .unwrap_or_default();
         let protocol = if is_local { "http" } else { "https" };
 
-        Ok(format!(
+        format!(
             "{}://{}{}/lnaddress/{}/callback",
             protocol, host, port, self.username
-        ))
+        )
     }
 }
 
@@ -103,7 +82,7 @@ mod tests {
     fn test_build_callback_url_local() {
         let gateway = LnAddressGateway::new("alice");
         let url = Url::parse("http://localhost:8787/.well-known/lnurlp/alice").unwrap();
-        let callback = gateway.build_callback_url(&url).unwrap();
+        let callback = gateway.build_callback_url(&url);
         assert_eq!(callback, "http://localhost:8787/lnaddress/alice/callback");
     }
 
@@ -111,7 +90,7 @@ mod tests {
     fn test_build_callback_url_remote() {
         let gateway = LnAddressGateway::new("bob");
         let url = Url::parse("https://relay.com/.well-known/lnurlp/bob").unwrap();
-        let callback = gateway.build_callback_url(&url).unwrap();
+        let callback = gateway.build_callback_url(&url);
         assert_eq!(callback, "https://relay.com/lnaddress/bob/callback");
     }
 
@@ -119,7 +98,7 @@ mod tests {
     fn test_build_callback_url_no_port() {
         let gateway = LnAddressGateway::new("charlie");
         let url = Url::parse("https://relay.com/.well-known/lnurlp/charlie").unwrap();
-        let callback = gateway.build_callback_url(&url).unwrap();
+        let callback = gateway.build_callback_url(&url);
         assert_eq!(callback, "https://relay.com/lnaddress/charlie/callback");
     }
 

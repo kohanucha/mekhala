@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
-use crate::nostr::Event;
-use crate::nostr::Limits;
+use crate::nostr::{Event, Limits};
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Filter {
@@ -34,9 +33,7 @@ impl Filter {
         }
         if let Some(p_tags) = &self.p_tags {
             let has_match = event.tags.iter().any(|t| {
-                t.len() >= 2
-                    && t[0].as_str() == Some("p")
-                    && t[1].as_str().map_or(false, |val| p_tags.iter().any(|s| s == val))
+                t.pubkey().map_or(false, |pk| p_tags.iter().any(|s| s == pk))
             });
             if !has_match {
                 return false;
@@ -44,9 +41,7 @@ impl Filter {
         }
         if let Some(e_tags) = &self.e_tags {
             let has_match = event.tags.iter().any(|t| {
-                t.len() >= 2
-                    && t[0].as_str() == Some("e")
-                    && t[1].as_str().map_or(false, |val| e_tags.iter().any(|s| s == val))
+                t.event_id().map_or(false, |eid| e_tags.iter().any(|s| s == eid))
             });
             if !has_match {
                 return false;
@@ -115,9 +110,9 @@ impl Filter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nostr::Event;
+    use crate::nostr::Tag;
 
-    fn make_event(id: &str, pubkey: &str, kind: u64, tags: Vec<Vec<serde_json::Value>>, created_at: u64) -> Event {
+    fn make_event(id: &str, pubkey: &str, kind: u64, tags: Vec<Tag>, created_at: u64) -> Event {
         Event {
             id: id.into(),
             pubkey: pubkey.into(),
@@ -192,12 +187,12 @@ mod tests {
             ..Default::default()
         };
         let event = make_event("id1", "author1", 1, vec![
-            vec![serde_json::Value::String("p".into()), serde_json::Value::String("pubkey1".into())]
+            Tag::p("pubkey1"),
         ], 1000);
         assert!(filter.matches(&event));
         
         let event = make_event("id1", "author1", 1, vec![
-            vec![serde_json::Value::String("p".into()), serde_json::Value::String("pubkey2".into())]
+            Tag::p("pubkey2"),
         ], 1000);
         assert!(!filter.matches(&event));
     }
@@ -209,12 +204,12 @@ mod tests {
             ..Default::default()
         };
         let event = make_event("id1", "author1", 1, vec![
-            vec![serde_json::Value::String("e".into()), serde_json::Value::String("event1".into())]
+            Tag::e("event1"),
         ], 1000);
         assert!(filter.matches(&event));
         
         let event = make_event("id1", "author1", 1, vec![
-            vec![serde_json::Value::String("e".into()), serde_json::Value::String("event2".into())]
+            Tag::e("event2"),
         ], 1000);
         assert!(!filter.matches(&event));
     }

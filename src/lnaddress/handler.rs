@@ -16,10 +16,14 @@ fn lnaddress_error(reason: &str) -> Result<Response> {
 
 async fn handle_lnaddress_inner(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let username = ctx.param("username").ok_or_else(|| Error::from("Missing username"))?;
-    let gateway = LnAddressGateway::new(username);
-    
-    let info = gateway.get_pay_request_info(&ctx.env, &req.url()?).await?;
+    let gateway = LnAddressGateway::new(&username);
 
+    let nwc_uri = fetch_nwc_uri(&ctx.env, &username).await?;
+    if nwc_uri.is_none() {
+        return Err(Error::from("User not found"));
+    }
+
+    let info = gateway.pay_request_info(&req.url()?);
     create_cors_response(Response::from_json(&info)?)
 }
 
@@ -38,12 +42,25 @@ async fn handle_lnaddress_callback_inner(req: Request, env: &Env, username: &str
         .and_then(|(_, v)| v.parse::<u64>().ok())
         .ok_or_else(|| Error::from("Missing amount"))?;
 
+    let nwc_uri = fetch_nwc_uri(env, username).await?
+        .ok_or_else(|| Error::from("User not found"))?;
+
     let gateway = LnAddressGateway::new(username);
-    let pr = gateway.create_invoice(env, transport, amount_msat).await?;
+    let pr = gateway.create_invoice(transport, &nwc_uri, amount_msat)
+        .await
+        .map_err(|e| Error::from(e.to_string()))?;
     
     let resp = serde_json::json!({
         "pr": pr,
         "routes": []
     });
     create_cors_response(Response::from_json(&resp)?)
+}
+
+async fn fetch_nwc_uri(env: &Env, username: &str) -> Result<Option<String>> {
+    let kv = env.kv("MEKHALA_NWC_KV")?;
+    kv.get(username)
+        .text()
+        .await
+        .map_err(|e| Error::from(e.to_string()))
 }

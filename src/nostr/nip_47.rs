@@ -1,13 +1,31 @@
 use crate::nostr::Event;
+use crate::nostr::Tag;
 use crate::util::now;
 use k256::schnorr::{signature::hazmat::PrehashSigner, SigningKey};
+use k256::{PublicKey as K256PublicKey, SecretKey as K256SecretKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use url::Url;
 use crate::nostr::{RelayError, Result, Limits};
 
 pub const KIND_NWC_REQUEST: u64 = 23194;
+
+fn get_shared_secret(secret_key_hex: &str, public_key_hex: &str) -> Result<Vec<u8>> {
+    let secret_key_bytes = hex::decode(secret_key_hex).map_err(|e| RelayError::MalformedHex(e.to_string()))?;
+    let sk =
+        K256SecretKey::from_slice(&secret_key_bytes).map_err(|e| RelayError::CryptoError(e.to_string()))?;
+
+    let public_key_bytes = hex::decode(public_key_hex).map_err(|e| RelayError::MalformedHex(e.to_string()))?;
+    let mut full_pk_bytes = [0u8; 33];
+    full_pk_bytes[0] = 0x02;
+    full_pk_bytes[1..].copy_from_slice(&public_key_bytes);
+
+    let pk =
+        K256PublicKey::from_sec1_bytes(&full_pk_bytes).map_err(|e| RelayError::CryptoError(e.to_string()))?;
+
+    let shared = k256::ecdh::diffie_hellman(sk.to_nonzero_scalar(), pk.as_affine());
+    Ok(shared.raw_secret_bytes().to_vec())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -46,6 +64,62 @@ impl EncryptionMethod {
             EncryptionMethod::Nip44 => "nip44_v2".to_string(),
         }
     }
+
+    pub fn from_protocol_str(s: &str) -> Option<EncryptionMethod> {
+        match s {
+            "nip04" => Some(EncryptionMethod::Nip04),
+            "nip44_v2" => Some(EncryptionMethod::Nip44),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalletInfo {
+    pub encryption_algorithms: Vec<EncryptionMethod>,
+}
+
+pub fn parse_wallet_info(event: &crate::nostr::Event) -> WalletInfo {
+    let mut encryption = Vec::new();
+    let mut has_encryption_tag = false;
+
+    for tag in &event.tags {
+        if let Some(schemes) = tag.encryption_scheme() {
+            has_encryption_tag = true;
+            for scheme in schemes.split_whitespace() {
+                if let Some(method) = EncryptionMethod::from_protocol_str(scheme) {
+                    if !encryption.contains(&method) {
+                        encryption.push(method);
+                    }
+                }
+            }
+        }
+    }
+
+    if !has_encryption_tag {
+        encryption.push(EncryptionMethod::Nip04);
+    }
+
+    WalletInfo { encryption_algorithms: encryption }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NwcUriError {
+    InvalidUrl(String),
+    InvalidScheme,
+    MissingPubkey,
+    MissingSecret,
+}
+
+impl std::fmt::Display for NwcUriError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidUrl(msg) => write!(f, "error: url failure: {}", msg),
+            Self::InvalidScheme => write!(f, "error: Invalid scheme"),
+            Self::MissingPubkey => write!(f, "error: Missing wallet pubkey"),
+            Self::MissingSecret => write!(f, "error: Missing secret"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -55,21 +129,21 @@ pub struct NwcUri {
 }
 
 impl NwcUri {
-    pub fn from_uri(uri: &str) -> Result<Self> {
-        let url = Url::parse(uri).map_err(|e| RelayError::UrlError(e.to_string()))?;
+    pub fn from_uri(uri: &str) -> std::result::Result<Self, NwcUriError> {
+        let url = Url::parse(uri).map_err(|e| NwcUriError::InvalidUrl(e.to_string()))?;
         if url.scheme() != "nostr+walletconnect" {
-            return Err(RelayError::Generic("Invalid scheme".into()));
+            return Err(NwcUriError::InvalidScheme);
         }
 
         let wallet_pubkey = url
             .host_str()
-            .ok_or_else(|| RelayError::Generic("Missing wallet pubkey".into()))?
+            .ok_or(NwcUriError::MissingPubkey)?
             .to_string();
         let query: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
 
         let secret = query
             .get("secret")
-            .ok_or_else(|| RelayError::Generic("Missing secret".into()))?
+            .ok_or(NwcUriError::MissingSecret)?
             .clone();
 
         Ok(Self {
@@ -90,7 +164,7 @@ pub struct NwcClient {
 
 impl NwcClient {
     pub fn new(uri: NwcUri) -> Result<Self> {
-        let shared_secret = crate::nostr::get_shared_secret(&uri.secret, &uri.wallet_pubkey)?;
+        let shared_secret = get_shared_secret(&uri.secret, &uri.wallet_pubkey)?;
 
         let sk_bytes = hex::decode(&uri.secret).map_err(|e| RelayError::MalformedHex(e.to_string()))?;
         let sk_bytes_arr: [u8; 32] = sk_bytes
@@ -127,28 +201,18 @@ impl NwcClient {
         &self,
         method: NwcMethod,
         params: Value,
-        extra_tags: Vec<Vec<Value>>,
+        extra_tags: Vec<Tag>,
     ) -> Result<(Event, String)> {
         let payload = serde_json::to_value(NwcRequest { method, params })
             .map_err(|e| RelayError::SerializationError(e.to_string()))?;
 
         let mut tags = vec![
-            vec![
-                Value::String("p".into()),
-                Value::String(self.wallet_pubkey.clone()),
-            ],
-            vec![
-                Value::String("expiration".into()),
-                Value::String((now() + 60).to_string()),
-            ],
+            Tag::p(&self.wallet_pubkey),
+            Tag::expiration(now() + 60),
         ];
         tags.extend(extra_tags);
 
-        // Always add encryption tag for clarity in the protocol
-        tags.push(vec![
-            Value::String("encryption".into()),
-            Value::String(self.encryption_method.to_protocol_string()),
-        ]);
+        tags.push(Tag::encryption(self.encryption_method.to_protocol_string()));
 
         let encrypted_content = self.encrypt(&payload)?;
         let event = self.create_event(KIND_NWC_REQUEST, encrypted_content, tags)?;
@@ -164,7 +228,7 @@ impl NwcClient {
         }
 
         let has_e_tag = event.tags.iter().any(|t| {
-            t.len() >= 2 && t[0].as_str() == Some("e") && t[1].as_str() == Some(request_id)
+            t.event_id().map_or(false, |eid| eid == request_id)
         });
 
         if !has_e_tag {
@@ -177,17 +241,10 @@ impl NwcClient {
         Ok(resp_json)
     }
 
-    pub fn create_event(&self, kind: u64, content: String, tags: Vec<Vec<Value>>) -> Result<Event> {
+    pub fn create_event(&self, kind: u64, content: String, tags: Vec<Tag>) -> Result<Event> {
         let created_at = now();
 
-        let serialized =
-            serde_json::to_string(&(0, &self.my_pubkey, created_at, kind, &tags, &content))
-                .map_err(|e| RelayError::SerializationError(e.to_string()))?;
-
-        let mut hasher = Sha256::new();
-        hasher.update(serialized.as_bytes());
-        let id_bytes = hasher.finalize();
-        let id = hex::encode(id_bytes);
+        let (id, id_bytes) = Event::compute_id(&self.my_pubkey, created_at, kind, &tags, &content)?;
 
         let signature = self
             .signing_key
@@ -252,8 +309,8 @@ mod tests {
             created_at: now(),
             kind: 23195,
             tags: vec![
-                vec![Value::String("e".into()), Value::String(request_id.clone())],
-                vec![Value::String("p".into()), Value::String(client.my_pubkey.clone())],
+                Tag::e(&request_id),
+                Tag::p(&client.my_pubkey),
             ],
             content: resp_encrypted,
             sig: "sig".into(), // verify(now()) will fail in test unless we sign it properly, but we'll bypass verification for this unit test if needed or just sign it.
@@ -264,11 +321,7 @@ mod tests {
         let wallet_sk_arr: [u8; 32] = wallet_sk_bytes.try_into().unwrap();
         let wallet_sk = SigningKey::from_bytes(&wallet_sk_arr).unwrap();
         
-        let serialized_resp = serde_json::to_string(&(0, &client.wallet_pubkey, resp_event.created_at, resp_event.kind, &resp_event.tags, &resp_event.content)).unwrap();
-        let mut hasher = Sha256::new();
-        hasher.update(serialized_resp.as_bytes());
-        let resp_id_bytes = hasher.finalize();
-        let resp_id = hex::encode(resp_id_bytes);
+        let (resp_id, resp_id_bytes) = Event::compute_id(&client.wallet_pubkey, resp_event.created_at, resp_event.kind, &resp_event.tags, &resp_event.content).unwrap();
         let resp_sig = hex::encode(wallet_sk.sign_prehash(&resp_id_bytes).unwrap().to_bytes());
         
         let signed_resp_event = Event {
@@ -296,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Invalid scheme")]
+    #[should_panic(expected = "InvalidScheme")]
     fn test_uri_invalid_scheme() {
         let uri = "http://invalid.example.com?secret=0101010101010101010101010101010101010101010101010101010101010101";
         let _ = NwcUri::from_uri(uri).unwrap();

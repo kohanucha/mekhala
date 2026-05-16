@@ -9,6 +9,12 @@ pub use durable_object::get_durable_stub;
 
 use worker::*;
 
+impl From<crate::common::NwcError> for Error {
+    fn from(e: crate::common::NwcError) -> Self {
+        Error::from(e.to_string())
+    }
+}
+
 pub fn apply_security_headers(response: Response) -> Result<Response> {
     let headers = response.headers().clone();
     headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")?;
