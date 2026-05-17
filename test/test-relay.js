@@ -710,12 +710,18 @@ async function testInfoEventCaching() {
         walletSk,
       );
       walletWs.send(JSON.stringify(["EVENT", infoEvent]));
-      // The relay is now silent for kind 13194, so we don't wait for OK.
-      // We'll wait a brief moment to ensure the event is processed.
-      setTimeout(resolve, 500);
     });
+
+    walletWs.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg[0] === "OK" && msg[2] === true) {
+        console.log("✅ Wallet received OK for Info Event (13194).");
+        resolve();
+      }
+    });
+
     walletWs.on("error", reject);
-    // setTimeout(() => reject(new Error("Wallet publish timeout")), 5000);
+    setTimeout(() => reject(new Error("Wallet publish timeout waiting for OK")), 5000);
   });
 
   // 2. App connects and requests Info Event
@@ -1179,8 +1185,8 @@ async function testLimitEnforcement() {
   });
 }
 
-async function testKind13194NoOK() {
-  console.log("\n--- Testing Kind 13194 (Info Event) Produces No OK ---");
+async function testKind13194OK() {
+  console.log("\n--- Testing Kind 13194 (Info Event) Produces OK ---");
   const ws = new WebSocket(RELAY_URL);
   const sk = generateSecretKey();
   const pk = getPublicKey(sk);
@@ -1194,20 +1200,10 @@ async function testKind13194NoOK() {
         kind: 13194,
         created_at: Math.floor(Date.now() / 1000),
         tags: [],
-        content: "no_ok_test"
+        content: "ok_test"
       }, sk);
 
       ws.send(JSON.stringify(["EVENT", infoEvent]));
-
-      setTimeout(() => {
-        if (okReceived) {
-          reject(new Error("Kind 13194 should not produce OK message, but received one."));
-          return;
-        }
-        console.log("✅ Kind 13194 event did not produce OK message.");
-
-        ws.send(JSON.stringify(["REQ", "info-no-ok", { kinds: [13194], authors: [pk] }]));
-      }, 500);
     });
 
     ws.on("message", (data) => {
@@ -1215,27 +1211,22 @@ async function testKind13194NoOK() {
 
       if (msg[0] === "OK" && msg[2] === true) {
         okReceived = true;
+        console.log("✅ Kind 13194 event produced OK message.");
+        ws.send(JSON.stringify(["REQ", "info-ok", { kinds: [13194], authors: [pk] }]));
       }
 
-      if (msg[0] === "EVENT" && msg[1] === "info-no-ok") {
-        if (msg[2].kind === 13194 && msg[2].content === "no_ok_test") {
+      if (msg[0] === "EVENT" && msg[1] === "info-ok") {
+        if (msg[2].kind === 13194 && msg[2].content === "ok_test") {
           eventCached = true;
           console.log("✅ Kind 13194 event was cached and retrievable.");
           ws.close();
           resolve();
         }
       }
-
-      if (msg[0] === "EOSE" && msg[1] === "info-no-ok" && !eventCached) {
-      }
     });
 
     setTimeout(() => {
-      if (!okReceived && eventCached) {
-        resolve();
-      } else {
-        reject(new Error(`Kind 13194 test timeout. OK received: ${okReceived}, Cached: ${eventCached}`));
-      }
+      reject(new Error(`Kind 13194 test timeout. OK received: ${okReceived}, Cached: ${eventCached}`));
     }, 5000);
   });
 }
@@ -1497,7 +1488,7 @@ async function testFilterMatchingAdvanced() {
           content: "pay_invoice"
         }, sk);
         ws.send(JSON.stringify(["EVENT", infoEvent]));
-        // Kind 13194 doesn't produce OK, so wait a bit then subscribe again to retrieve cached
+        // Kind 13194 now produces OK, we wait a bit then subscribe again to retrieve cached
         setTimeout(() => {
           ws.send(JSON.stringify(["CLOSE", "sub-kinds"]));
           ws.send(JSON.stringify(["REQ", "sub-kinds2", { kinds: [13194], authors: [pk] }]));
@@ -1709,7 +1700,7 @@ async function runAll() {
     await testNip44AndFallback();
     await testProtocolErrors();
     await testLimitEnforcement();
-    await testKind13194NoOK();
+    await testKind13194OK();
     await testLnAddressErrors();
     await testFilterMatching();
     await testFilterMatchingAdvanced();

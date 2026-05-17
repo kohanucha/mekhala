@@ -92,8 +92,9 @@ impl<S: Storage> NostrEngine<S> {
                 
                 // 3. Dispatch to engine
                 if event.kind == 13194 {
+                    let id = event.id.clone();
                     self.process_info_event(event).await;
-                    Vec::new()
+                    vec![EngineResponse::send(connection_id, RelayMessage::Ok(id, true, "".into()))]
                 } else {
                     self.process_event(connection_id, event).await
                 }
