@@ -61,12 +61,36 @@ impl Filter {
     }
 
     pub fn is_valid(&self, limits: &Limits) -> bool {
-        
-        // Enforce narrowing (must have at least one of: ids, authors, #p, #e)
-        if self.ids.is_none() && self.authors.is_none() && self.p_tags.is_none() && self.e_tags.is_none() {
-            return false;
+        // NIP-47: Require either kinds with NWC kinds, OR specific narrowing criteria (p_tags, e_tags, ids)
+        // Note: authors alone is NOT sufficient - must have either kinds OR specific narrowing
+        let has_specific_narrowing = self.p_tags.is_some() || self.e_tags.is_some() || self.ids.is_some();
+
+        // If has specific narrowing (p_tags, e_tags, ids), bypass kinds requirement
+        // This allows internal RPC and advanced client queries
+        if has_specific_narrowing {
+            if let Some(kinds) = &self.kinds {
+                if kinds.iter().any(|k| !matches!(k, 13194 | 23194..=23197)) {
+                    return false;
+                }
+            }
+        } else {
+            // No specific narrowing - require valid NWC kinds AND narrowing (for NWC compliance)
+            let kinds = match &self.kinds {
+                Some(k) if !k.is_empty() => k,
+                _ => return false,
+            };
+
+            if kinds.iter().any(|k| !matches!(k, 13194 | 23194..=23197)) {
+                return false;
+            }
+
+            // Also require at least one narrowing criterion (for NWC)
+            if self.ids.is_none() && self.authors.is_none() && self.p_tags.is_none() && self.e_tags.is_none() {
+                return false;
+            }
         }
 
+        // Limit checks
         if let Some(ids) = &self.ids {
             if ids.len() > limits.max_filter_items {
                 return false;
@@ -92,6 +116,7 @@ impl Filter {
                 return false;
             }
         }
+
         true
     }
 
@@ -204,12 +229,12 @@ mod tests {
             ..Default::default()
         };
         let event = make_event("id1", "author1", 1, vec![
-            Tag::e("event1"),
+            Tag::E("event1".into(), vec![]),
         ], 1000);
         assert!(filter.matches(&event));
         
         let event = make_event("id1", "author1", 1, vec![
-            Tag::e("event2"),
+            Tag::E("event2".into(), vec![]),
         ], 1000);
         assert!(!filter.matches(&event));
     }
@@ -253,16 +278,58 @@ mod tests {
         let limits = Limits::default();
         let filter = Filter {
             kinds: Some(vec![13194]),
-            authors: Some(vec!["author1".into()]),
+            p_tags: Some(vec!["author1".into()]),
             ..Default::default()
         };
         assert!(filter.is_valid(&limits));
     }
 
     #[test]
+    fn test_filter_is_valid_requires_kinds() {
+        let limits = Limits::default();
+        let filter = Filter {
+            authors: Some(vec!["author1".into()]),
+            ..Default::default()
+        };
+        assert!(!filter.is_valid(&limits));
+    }
+
+    #[test]
+    fn test_filter_is_valid_rejects_non_nwc_kinds() {
+        let limits = Limits::default();
+        let filter = Filter {
+            kinds: Some(vec![1]),
+            authors: Some(vec!["author1".into()]),
+            ..Default::default()
+        };
+        assert!(!filter.is_valid(&limits));
+
+        let filter = Filter {
+            kinds: Some(vec![13194, 1]),
+            authors: Some(vec!["author1".into()]),
+            ..Default::default()
+        };
+        assert!(!filter.is_valid(&limits));
+    }
+
+    #[test]
+    fn test_filter_is_valid_accepts_nwc_kinds() {
+        let limits = Limits::default();
+        for kind in [13194u64, 23194, 23195, 23196, 23197] {
+            let filter = Filter {
+                kinds: Some(vec![kind]),
+                authors: Some(vec!["author1".into()]),
+                ..Default::default()
+            };
+            assert!(filter.is_valid(&limits), "kind {} should be valid", kind);
+        }
+    }
+
+    #[test]
     fn test_filter_is_valid_ids_exceeds_limit() {
         let limits = Limits { max_filter_items: 100, ..Default::default() };
         let filter = Filter {
+            kinds: Some(vec![23194]),
             ids: Some(vec!["id1".into(); 200]),
             ..Default::default()
         };
@@ -273,6 +340,7 @@ mod tests {
     fn test_filter_is_valid_authors_exceeds_limit() {
         let limits = Limits { max_filter_items: 100, ..Default::default() };
         let filter = Filter {
+            kinds: Some(vec![23194]),
             authors: Some(vec!["author1".into(); 150]),
             ..Default::default()
         };

@@ -62,20 +62,6 @@ impl<S: Storage> NostrEngine<S> {
         }
     }
 
-    pub async fn handle(&mut self, connection_id: u32, message: &str) -> Vec<EngineResponse> {
-        match ClientMessage::from_json(message) {
-            Ok(msg) => self.handle_typed(connection_id, msg).await,
-            Err(e) => {
-                // NIP-20 Compliance: If we can extract the ID, send an OK false instead of a NOTICE
-                if let Some(crate::nostr::nip_01::PartialClientMessage::Event(id)) = crate::nostr::nip_01::PartialClientMessage::from_json(message) {
-                    vec![EngineResponse::send(connection_id, RelayMessage::Ok(id, false, format!("parse failed: {}", e)))]
-                } else {
-                    vec![EngineResponse::send(connection_id, RelayMessage::Notice(format!("parse failed: {}", e)))]
-                }
-            }
-        }
-    }
-
     pub async fn handle_typed(&mut self, connection_id: u32, message: ClientMessage) -> Vec<EngineResponse> {
         match message {
             ClientMessage::Event(event) => self.handle_event(connection_id, event).await,
@@ -84,18 +70,39 @@ impl<S: Storage> NostrEngine<S> {
         }
     }
 
-    async fn handle_event(&mut self, connection_id: u32, event: Event) -> Vec<EngineResponse> {
-        // 1. Kind validation
+    /// Validate an event without routing it. Returns Ok(event_id) if accepted,
+    /// or Err((event_id, error_message)) if rejected.
+    pub fn validate_event(&self, event: &Event) -> Result<(), (String, String)> {
+        let ts = (self.clock)();
         match event.kind {
             13194 | 23194..=23197 => {
-                // 2. Protocol verification
+                event.verify(ts, &self.limits)
+                    .map_err(|e| (event.id.clone(), e.to_string()))
+            }
+            _ => {
+                Err((event.id.clone(), "blocked: event kind not allowed".into()))
+            }
+        }
+    }
+
+    /// Route a pre-verified event. Does NOT send OK — the caller is responsible
+    /// for sending OK immediately upon successful validation (per NIP-01).
+    pub async fn route_verified_event(&mut self, connection_id: u32, event: Event) -> Vec<EngineResponse> {
+        if event.kind == 13194 {
+            self.process_info_event(event.clone()).await;
+        }
+        self.route_event(connection_id, event).await
+    }
+
+    async fn handle_event(&mut self, connection_id: u32, event: Event) -> Vec<EngineResponse> {
+        match event.kind {
+            13194 | 23194..=23197 => {
                 let ts = (self.clock)();
 
                 if let Err(e) = event.verify(ts, &self.limits) {
                     return vec![EngineResponse::send(connection_id, RelayMessage::Ok(event.id, false, e.to_string()))];
                 }
                 
-                // 3. Dispatch to engine
                 if event.kind == 13194 {
                     self.process_info_event(event.clone()).await;
                     self.process_event(connection_id, event).await
@@ -117,12 +124,16 @@ impl<S: Storage> NostrEngine<S> {
         }
     }
 
-    async fn handle_req(&mut self, id: u32, sub_id: String, filters: Vec<Filter>) -> Vec<EngineResponse> {
+    pub async fn handle_req(&mut self, id: u32, sub_id: String, filters: Vec<Filter>) -> Vec<EngineResponse> {
         if filters.iter().any(|f| !f.is_valid(&self.limits)) {
             let message = RelayMessage::Closed(sub_id.clone(), "filter too broad".to_string());
             return vec![EngineResponse::send(id, message)];
         }
 
+        self.process_req(id, sub_id, filters).await
+    }
+
+    pub async fn handle_req_internal(&mut self, id: u32, sub_id: String, filters: Vec<Filter>) -> Vec<EngineResponse> {
         self.process_req(id, sub_id, filters).await
     }
 
@@ -138,10 +149,27 @@ impl<S: Storage> NostrEngine<S> {
     async fn process_event(&mut self, connection_id: u32, event: Event) -> Vec<EngineResponse> {
         let mut responses = Vec::new();
         
-        // Always provide the protocol feedback intent
         responses.push(EngineResponse::send(connection_id, RelayMessage::Ok(event.id.clone(), true, "".into())));
 
-        // Match and route using the deep registry interface
+        let registry_responses = self.registry.match_event(&event).await;
+        for resp in registry_responses {
+            match resp {
+                RegistryResponse::Send { recipient_id, sub_id } => {
+                    responses.push(EngineResponse::send(recipient_id, RelayMessage::Event(sub_id, event.clone())));
+                }
+                RegistryResponse::WakeUp(recipient_id) => {
+                    responses.push(EngineResponse::wake_up(recipient_id));
+                }
+            }
+        }
+
+        responses
+    }
+
+    /// Route event to subscribers without sending OK (caller already sent it).
+    async fn route_event(&mut self, _connection_id: u32, event: Event) -> Vec<EngineResponse> {
+        let mut responses = Vec::new();
+
         let registry_responses = self.registry.match_event(&event).await;
         for resp in registry_responses {
             match resp {
@@ -226,8 +254,9 @@ mod tests {
             let mut engine = NostrEngine::new();
             engine.on_connect(1).await;
 
-            let req = r#"["REQ", "sub1", {"authors": ["pk1"]}]"#;
-            let responses = engine.handle(1, req).await;
+            let req = r#"["REQ", "sub1", {"kinds": [23194], "authors": ["pk1"]}]"#;
+            let msg = ClientMessage::from_json(req).unwrap();
+            let responses = engine.handle_typed(1, msg).await;
 
             assert!(responses.iter().any(|r| {
                 if let EngineResponse::Send { message, .. } = r {
@@ -319,6 +348,7 @@ mod tests {
             engine.on_connect(1).await;
             let wallet_pk = "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f";
             let _ = engine.process_req(1, "sub1".into(), vec![Filter {
+                kinds: Some(vec![23194]),
                 p_tags: Some(vec![wallet_pk.into()]),
                 ..Default::default()
             }]).await;
@@ -333,8 +363,9 @@ mod tests {
             };
             let client = crate::nostr::nip_47::NwcClient::new(uri).unwrap();
 
-            let bridge_req = serde_json::json!(["REQ", "sub_bridge", { "#p": [client.my_pubkey] }]).to_string();
-            let responses = engine.handle(bridge_id, &bridge_req).await;
+            let bridge_req = serde_json::json!(["REQ", "sub_bridge", {"kinds": [23194], "#p": [client.my_pubkey]}]).to_string();
+            let msg = ClientMessage::from_json(&bridge_req).unwrap();
+            let responses = engine.handle_typed(bridge_id, msg).await;
 
             // REQ should return EOSE Send
             assert!(responses.iter().any(|r| matches!(r, EngineResponse::Send { recipient_id: 100, message: RelayMessage::Eose(_) })));
@@ -352,7 +383,8 @@ mod tests {
                 bridge_event
             ]).to_string();
 
-            let responses = engine.handle(bridge_id, &bridge_event_json).await;
+            let msg = ClientMessage::from_json(&bridge_event_json).unwrap();
+            let responses = engine.handle_typed(bridge_id, msg).await;
 
             // Event should be routed to connection 1 as Send
             assert!(responses.iter().any(|r| matches!(r, EngineResponse::Send { recipient_id: 1, .. })));
@@ -370,7 +402,7 @@ mod tests {
             })).unwrap();
             
             let mut wallet_response_event = wallet_response_event;
-            wallet_response_event.tags = vec![super::super::Tag::p(&client.my_pubkey), super::super::Tag::e(&bridge_event.id)];
+            wallet_response_event.tags = vec![super::super::Tag::p(&client.my_pubkey), super::super::Tag::E(bridge_event.id.clone(), vec![])];
 
             // Wallet response comes from connection 1
             let responses = engine.process_event(1, wallet_response_event).await;
@@ -399,6 +431,7 @@ mod tests {
             let id = 100;
             let _ = engine.process_req(id, "sub1".into(), vec![Filter {
                 authors: Some(vec!["alice".into()]),
+                kinds: Some(vec![23194]),
                 ..Default::default()
             }]).await;
 
@@ -442,7 +475,7 @@ mod tests {
             entries.insert(format!("pk:{}", pk), serde_json::json!(id));
             entries.insert(format!("conn:{}", id), serde_json::json!({
                 "subscriptions": {
-                    "sub1": [{"authors": [pk]}]
+                    "sub1": [{"kinds": [23194], "authors": [pk]}]
                 },
                 "info_event": null
             }));
@@ -575,12 +608,13 @@ mod tests {
                 "sig": "badsig"
             }]).to_string();
 
-            let responses = engine.handle(1, &event_json).await;
+            let msg = ClientMessage::from_json(&event_json).unwrap();
+            let responses = engine.handle_typed(1, msg).await;
 
             let ok_response = responses.iter().find_map(|r| {
                 if let EngineResponse::Send { message, .. } = r {
                     if let RelayMessage::Ok(_, success, msg) = message {
-                        Some((*success, msg.clone()))
+                        Some((success, msg.clone()))
                     } else { None }
                 } else { None }
             });
@@ -601,12 +635,13 @@ mod tests {
                 "sig": "badsig"
             }]).to_string();
 
-            let responses = engine.handle(1, &event_json_recent).await;
+            let msg = ClientMessage::from_json(&event_json_recent).unwrap();
+            let responses = engine.handle_typed(1, msg).await;
 
             let ok_response = responses.iter().find_map(|r| {
                 if let EngineResponse::Send { message, .. } = r {
                     if let RelayMessage::Ok(_, success, msg) = message {
-                        Some((*success, msg.clone()))
+                        Some((success, msg.clone()))
                     } else { None }
                 } else { None }
             });

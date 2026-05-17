@@ -130,7 +130,7 @@ mod tests {
             tags: vec![
                 Tag::p("recipient1"),
                 Tag::p("recipient2"),
-                Tag::e("event_id"),
+                Tag::E("event_id".into(), vec![]),
             ],
             content: "".into(),
             sig: "".into(),
