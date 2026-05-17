@@ -18,7 +18,7 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 
 ## Architecture
 - **Durable Object**: `NwcRelay` (lib.rs:75)
-- **Modules**: relay.rs, nwc_client.rs, nwc_relay.rs, lnurl.rs, utils.rs
+- **Modules**: auth.rs, lib.rs, server.rs, cloudflare/, lnaddress/, model/, nostr/, util/
 
 ## Critical Dependencies
 - `worker` 0.8.x runtime
@@ -41,3 +41,17 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 1. **DO state**: Use `self.state.storage()`
 2. **WebSocket tags**: Use `utils::HibernationState` trait
 3. **Panic = Abort**: The project uses `panic = "abort"`. **NEVER** use `unwrap()` or `expect()`. Use `?`, `.get()` for indexing, and checked math to prevent isolate crashes.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues via GitHub MCP. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout. See `docs/agents/domain.md`.

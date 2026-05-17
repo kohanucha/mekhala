@@ -23,10 +23,12 @@ The relay acts as an ephemeral "routing engine" between Lightning wallet applica
 - `.github/workflows/`: CI/CD pipelines.
 - `src/`: Core Rust source code.
     - `lib.rs`: Worker entry point and Durable Object implementation.
-    - `relay.rs`: Core Nostr relay logic, filters, and security limits.
-    - `nwc_client.rs`: NIP-47 client implementation for LN Address flows.
-    - `lnurl.rs`: LUD-06/LUD-16 (LN Address) to NWC bridging logic.
-    - `utils.rs`: Shared utility functions (CORS, Constant-time EQ, etc.).
+    - `server.rs`: Main router and HTTP handlers.
+    - `auth.rs`: Authentication logic.
+    - `cloudflare/`: Cloudflare-specific logic (DO, Hibernation, WebSocket, ConnectionState).
+    - `lnaddress/`: LN Address to NWC bridging logic.
+    - `nostr/`: Nostr protocol implementation (NIPs, Event, Filter, Limits, RelayError).
+    - `util/`: Shared utility functions.
 - `test/`: Integration tests.
     - `setup-kv.js`: Utility to seed KV for testing LN Addresses.
     - `test-relay.js`: Comprehensive integration tests using `nostr-tools`.
@@ -49,7 +51,7 @@ Mekhala is highly configurable via `wrangler.toml`:
 ## Building and Running
 
 ### Key Commands
-- **Test Everything**: `./test.sh`
+- **Test Everything**: `./scripts/test.sh`
   - **MANDATORY**: Run this script after every code change. It verifies Rust unit tests, builds the WASM binary, and runs the Node.js integration suite against a local relay.
 - **Build**: `./build.sh`
 - **Local Development**: `npx wrangler dev`
@@ -59,7 +61,7 @@ Mekhala is highly configurable via `wrangler.toml`:
 ## Development Conventions
 
 ### Coding Standards
-- **Test Before Push**: NEVER commit or push code without a successful `./test.sh` run. This ensures that the Durable Object hibernation recovery logic is verified and no regressions are introduced in the NWC flow.
+- **Test Before Push**: NEVER commit or push code without a successful `./scripts/test.sh` run. This ensures that the Durable Object hibernation recovery logic is verified and no regressions are introduced in the NWC flow.
 - **Strict NWC Enforcement**: Reject any event or subscription not matching NWC kinds (13194, 23194-23197).
 - **Security-Hardened Limits**: Use restrictive limits (20 connections, 10 tags, 16KB content) optimized for personal NWC use to reduce attack surface and DO memory pressure.
 - **Mandatory Filter Narrowing**: All `REQ` filters must include at least one criterion (`ids`, `authors`, `#p`, `#e`) to prevent broad snooping.
@@ -73,6 +75,6 @@ Mekhala is highly configurable via `wrangler.toml`:
   - **Short-Lived State**: Flush critical state to storage frequently to avoid losing data if an isolate crashes.
 
 ### Testing Practices
-- **100% Coverage**: Core business logic in `relay.rs` and `nwc_client.rs` must have full unit test coverage.
+- **100% Coverage**: Core business logic in `nostr/event.rs` and `nostr/nip_47.rs` must have full unit test coverage.
 - **Integration**: Every new feature or protocol restriction must be verified with `test-relay.js`.
 - **Reproducibility**: Bug fixes must include a failing test case in `cargo test` or `test-relay.js` before the fix is applied.

@@ -13,3 +13,9 @@ package-lock.json
 # Build
 /build/
 /target/
+
+# IDE
+.idea/
+
+# Test
+test/wrangler.log

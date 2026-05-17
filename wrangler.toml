@@ -4,14 +4,14 @@ compatibility_date = "2026-04-30"
 
 [vars]
 WALLET_REGION = "apac"
-MAX_CONNECTIONS = "20"
+MAX_CONNECTIONS = "100"
 MAX_FILTER_ITEMS = "10"
 MAX_EVENT_TAGS = "10"
 MAX_CONTENT_LENGTH = "16384"
 
 [[durable_objects.bindings]]
-name = "NWC_RELAY"
-class_name = "NwcRelay"
+name = "MEKHALA_NWC_DO"
+class_name = "CloudflareTransport"
 
 [[kv_namespaces]]
 binding = "MEKHALA_NWC_KV"
@@ -19,7 +19,7 @@ id = "MEKHALA_NWC_KV_ID"
 
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["NwcRelay"]
+new_sqlite_classes = ["CloudflareTransport"]
 
 [build]
 command = "./scripts/build.sh"
