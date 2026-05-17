@@ -98,22 +98,23 @@ WRANGLER_PID=$!
 echo "Waiting for relay to start..."
 MAX_RETRIES=60
 COUNT=0
-while ! lsof -i :$PORT > /dev/null 2>&1; do
+while ! curl -s http://127.0.0.1:$PORT > /dev/null 2>&1; do
     sleep 1
     COUNT=$((COUNT + 1))
     if [ $COUNT -ge $MAX_RETRIES ]; then
         echo "❌ Error: Relay failed to start in time."
         echo "Last wrangler output:"
-        tail -20 "$LOG_FILE"
+        tail -50 "$LOG_FILE"
         exit 1
     fi
 done
 echo "Relay is up!"
+sleep 2
 
 # 5. Run Integration Tests
 echo "Step 4: Running Node.js integration tests..."
 cd test
-npm test
+npm test -- "127.0.0.1:$PORT"
 TEST_RESULT=$?
 cd ..
 
@@ -123,6 +124,9 @@ if [ $TEST_RESULT -eq 0 ]; then
 else
     echo ""
     echo "❌ TESTS FAILED! Check the output above."
+    echo "--- Wrangler Logs ---"
+    cat "$LOG_FILE"
+    echo "---------------------"
 fi
 
 exit $TEST_RESULT
