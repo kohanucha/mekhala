@@ -66,7 +66,12 @@ impl<S: Storage> NostrEngine<S> {
         match ClientMessage::from_json(message) {
             Ok(msg) => self.handle_typed(connection_id, msg).await,
             Err(e) => {
-                vec![EngineResponse::send(connection_id, RelayMessage::Notice(format!("parse failed: {}", e)))]
+                // NIP-20 Compliance: If we can extract the ID, send an OK false instead of a NOTICE
+                if let Some(crate::nostr::nip_01::PartialClientMessage::Event(id)) = crate::nostr::nip_01::PartialClientMessage::from_json(message) {
+                    vec![EngineResponse::send(connection_id, RelayMessage::Ok(id, false, format!("parse failed: {}", e)))]
+                } else {
+                    vec![EngineResponse::send(connection_id, RelayMessage::Notice(format!("parse failed: {}", e)))]
+                }
             }
         }
     }
@@ -92,9 +97,8 @@ impl<S: Storage> NostrEngine<S> {
                 
                 // 3. Dispatch to engine
                 if event.kind == 13194 {
-                    let id = event.id.clone();
-                    self.process_info_event(event).await;
-                    vec![EngineResponse::send(connection_id, RelayMessage::Ok(id, true, "".into()))]
+                    self.process_info_event(event.clone()).await;
+                    self.process_event(connection_id, event).await
                 } else {
                     self.process_event(connection_id, event).await
                 }
@@ -128,7 +132,7 @@ impl<S: Storage> NostrEngine<S> {
     }
 
     async fn process_info_event(&mut self, event: Event) {
-        self.registry.cache_info(event);
+        self.registry.cache_info(event).await;
     }
 
     async fn process_event(&mut self, connection_id: u32, event: Event) -> Vec<EngineResponse> {
@@ -159,7 +163,7 @@ impl<S: Storage> NostrEngine<S> {
 
         for filters_set in filters.iter() {
             for pk in filters_set.pubkeys() {
-                if let Some(info_event) = self.registry.get_info(&pk) {
+                if let Some(info_event) = self.registry.get_info(&pk).await {
                     if filters.iter().any(|f| f.matches(&info_event)) {
                         responses.push(EngineResponse::send(id, RelayMessage::Event(sub_id.clone(), info_event.clone())));
                     }
@@ -186,8 +190,8 @@ impl<S: Storage> NostrEngine<S> {
         Vec::new()
     }
 
-    pub fn get_wallet_info(&self, pubkey: &str) -> Option<super::WalletInfo> {
-        self.registry.get_info(pubkey).map(|event| super::nip_47::parse_wallet_info(&event))
+    pub async fn get_wallet_info(&mut self, pubkey: &str) -> Option<super::WalletInfo> {
+        self.registry.get_info(pubkey).await.map(|event| super::nip_47::parse_wallet_info(&event))
     }
 
     #[cfg(test)]
@@ -255,16 +259,17 @@ mod tests {
 
             engine.process_info_event(event).await;
 
-            assert!(engine.get_wallet_info("pk1").is_some());
-        });
-    }
+            assert!(engine.get_wallet_info("pk1").await.is_some());
+            });
+            }
 
-    #[test]
-    fn test_engine_get_wallet_info_unknown_pubkey() {
-        let engine = NostrEngine::new();
-        assert!(engine.get_wallet_info("pk1").is_none());
-    }
-
+            #[test]
+            fn test_get_wallet_info_none() {
+                let mut engine = NostrEngine::new();
+                futures::executor::block_on(async {
+                    assert!(engine.get_wallet_info("pk1").await.is_none());
+                });
+            }
     #[test]
     fn test_engine_get_wallet_info_with_encryption_tag() {
         futures::executor::block_on(async {
@@ -280,7 +285,7 @@ mod tests {
             };
             engine.process_info_event(event).await;
 
-            let info = engine.get_wallet_info("pk1").unwrap();
+            let info = engine.get_wallet_info("pk1").await.unwrap();
             assert!(info.encryption_algorithms.contains(&super::super::nip_47::EncryptionMethod::Nip44));
             assert!(info.encryption_algorithms.contains(&super::super::nip_47::EncryptionMethod::Nip04));
         });
@@ -301,7 +306,7 @@ mod tests {
             };
             engine.process_info_event(event).await;
 
-            let info = engine.get_wallet_info("pk1").unwrap();
+            let info = engine.get_wallet_info("pk1").await.unwrap();
             assert_eq!(info.encryption_algorithms, vec![super::super::nip_47::EncryptionMethod::Nip04]);
         });
     }

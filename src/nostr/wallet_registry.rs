@@ -284,12 +284,30 @@ impl<S: Storage> WalletRegistry<S> {
         self.storage.delete_batch(vec![format!("conn:{}", id)]).await;
     }
 
-    pub fn cache_info(&mut self, event: Event) {
+    pub async fn cache_info(&mut self, event: Event) {
+        let key = format!("info:{}", event.pubkey);
+        let value = serde_json::to_value(&event).unwrap_or(serde_json::Value::Null);
+        if !value.is_null() {
+            let mut entries = HashMap::new();
+            entries.insert(key, value);
+            self.storage.put_batch(entries).await;
+        }
         self.index.cache_info(event);
     }
 
-    pub fn get_info(&self, pubkey: &str) -> Option<Event> {
-        self.index.get_info(pubkey)
+    pub async fn get_info(&mut self, pubkey: &str) -> Option<Event> {
+        if let Some(event) = self.index.get_info(pubkey) {
+            return Some(event);
+        }
+
+        let key = format!("info:{}", pubkey);
+        if let Some(val) = self.storage.get(&key).await {
+            if let Ok(event) = serde_json::from_value::<Event>(val) {
+                self.index.cache_info(event.clone());
+                return Some(event);
+            }
+        }
+        None
     }
 
     #[cfg(test)]
@@ -472,13 +490,14 @@ pub mod tests {
             assert!(!grouped.contains(&1));
         });
     }
-
-    #[test]
-    fn test_info_event_caching() {
+#[test]
+fn test_info_event_caching() {
+    futures::executor::block_on(async {
         let storage = MockStorage::new();
         let mut registry = WalletRegistry::new(storage);
+
         let event = Event {
-            id: "id".into(),
+            id: "id1".into(),
             pubkey: "alice".into(),
             kind: 13194,
             tags: vec![],
@@ -486,12 +505,13 @@ pub mod tests {
             sig: "sig1".into(),
             created_at: 1000,
         };
-        registry.cache_info(event.clone());
+        registry.cache_info(event.clone()).await;
 
-        let stored = registry.get_info("alice");
+        let stored = registry.get_info("alice").await;
         assert!(stored.is_some());
         assert_eq!(stored.unwrap().id, event.id);
-    }
+    });
+}
 
     #[test]
     fn test_registry_sync() {

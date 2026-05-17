@@ -592,9 +592,8 @@ async function testNip01EdgeCases() {
 
       // 3. Message too large
       console.log("Step 3: Testing message size limit...");
-      const largeContent = "a".repeat(70000);
+      const largeContent = "a".repeat(140000); // Exceeds 128KB network limit
       ws.send(JSON.stringify(["EVENT", { content: largeContent }]));
-
       // 4. Multiple filters in REQ
       console.log("Step 4: Testing multiple filters in REQ...");
       ws.send(
@@ -1129,10 +1128,12 @@ async function testLimitEnforcement() {
     let contentLimitRejected = false;
 
     ws.on("open", () => {
+      // 1. Test Filter Limit (MAX_FILTER_ITEMS = 10)
       const manyPubs = Array.from({ length: 11 }, (_, i) => `${pk}${i}`);
       ws.send(JSON.stringify(["REQ", "limit-sub", { kinds: [23194], "#p": manyPubs }]));
 
-      const manyTags = Array.from({ length: 11 }, (_, i) => ["p", `${pk}${i}`]);
+      // 2. Test Tag Limit (MAX_EVENT_TAGS = 100)
+      const manyTags = Array.from({ length: 101 }, (_, i) => ["p", `${pk}${i}`]);
       const eventTooManyTags = finalizeEvent({
         kind: 23194,
         created_at: Math.floor(Date.now() / 1000),
@@ -1142,8 +1143,9 @@ async function testLimitEnforcement() {
 
       ws.send(JSON.stringify(["EVENT", eventTooManyTags]));
 
+      // 3. Test Content Limit (MAX_CONTENT_LENGTH = 65536)
       setTimeout(() => {
-        const bigContent = "a".repeat(16385);
+        const bigContent = "a".repeat(65537);
         const eventTooLarge = finalizeEvent({
           kind: 23194,
           created_at: Math.floor(Date.now() / 1000),
@@ -1165,10 +1167,10 @@ async function testLimitEnforcement() {
       if (msg[0] === "OK" && msg[2] === false) {
         if (msg[3].includes("too many tags")) {
           tagLimitRejected = true;
-          console.log("✅ Event with >10 tags rejected.");
+          console.log("✅ Event with >100 tags rejected.");
         } else if (msg[3].includes("content too large")) {
           contentLimitRejected = true;
-          console.log("✅ Event with content >16384 bytes rejected.");
+          console.log("✅ Event with >64KB content rejected.");
         }
       }
 
@@ -1180,30 +1182,110 @@ async function testLimitEnforcement() {
     });
 
     setTimeout(() => {
+      ws.close();
       reject(new Error(`Limit enforcement timeout. Filter: ${filterLimitRejected}, Tags: ${tagLimitRejected}, Content: ${contentLimitRejected}`));
     }, 8000);
   });
 }
 
-async function testKind13194OK() {
-  console.log("\n--- Testing Kind 13194 (Info Event) Produces OK ---");
+async function testMalformedEventProducesOK() {
+  console.log("\n--- Testing Malformed Event Produces OK False ---");
   const ws = new WebSocket(RELAY_URL);
+
+  return new Promise((resolve, reject) => {
+    const eventId = "deadbeef".repeat(8);
+    ws.on("open", () => {
+      // Send valid JSON array but malformed event body (missing fields or wrong types)
+      // but include the "id" so the partial parser can find it.
+      ws.send(JSON.stringify(["EVENT", { id: eventId, content: 123 }]));
+    });
+
+    ws.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg[0] === "OK" && msg[1] === eventId && msg[2] === false) {
+        console.log("✅ Malformed event produced OK false with ID.");
+        ws.close();
+        resolve();
+      }
+    });
+
+    setTimeout(() => {
+      ws.close();
+      reject(new Error("Timeout waiting for OK response for malformed event"));
+    }, 5000);
+  });
+}
+
+async function testOversizedEventProducesOK() {
+  console.log("\n--- Testing Oversized Event Produces OK False ---");
+  const ws = new WebSocket(RELAY_URL);
+  const sk = generateSecretKey();
+
+  return new Promise((resolve, reject) => {
+    ws.on("open", () => {
+      const largeEvent = finalizeEvent({
+        kind: 23194,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [],
+        content: "a".repeat(70000) // Exceeds 64KB limit
+      }, sk);
+
+      ws.send(JSON.stringify(["EVENT", largeEvent]));
+    });
+
+    ws.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg[0] === "OK" && msg[2] === false && msg[3].includes("content too large")) {
+        console.log("✅ Oversized event produced OK false with limit error.");
+        ws.close();
+        resolve();
+      }
+    });
+
+    setTimeout(() => {
+      ws.close();
+      reject(new Error("Timeout waiting for OK response for oversized event"));
+    }, 5000);
+  });
+}
+
+async function testKind13194OK() {
+  console.log("\n--- Testing Kind 13194 (Info Event) Produces OK and Broadcast ---");
+  const ws = new WebSocket(RELAY_URL);
+  const subWs = new WebSocket(RELAY_URL);
   const sk = generateSecretKey();
   const pk = getPublicKey(sk);
 
   return new Promise((resolve, reject) => {
     let okReceived = false;
+    let eventBroadcastReceived = false;
     let eventCached = false;
 
-    ws.on("open", () => {
-      const infoEvent = finalizeEvent({
-        kind: 13194,
-        created_at: Math.floor(Date.now() / 1000),
-        tags: [],
-        content: "ok_test"
-      }, sk);
+    subWs.on("open", () => {
+      subWs.send(JSON.stringify(["REQ", "sub-13194", { kinds: [13194], authors: [pk] }]));
+    });
 
-      ws.send(JSON.stringify(["EVENT", infoEvent]));
+    subWs.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg[0] === "EVENT" && msg[1] === "sub-13194") {
+        if (msg[2].kind === 13194 && msg[2].content === "ok_test") {
+          eventBroadcastReceived = true;
+          console.log("✅ Kind 13194 broadcast received by subscriber.");
+        }
+      }
+    });
+
+    ws.on("open", () => {
+      setTimeout(() => {
+        const infoEvent = finalizeEvent({
+          kind: 13194,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [],
+          content: "ok_test"
+        }, sk);
+
+        ws.send(JSON.stringify(["EVENT", infoEvent]));
+      }, 500);
     });
 
     ws.on("message", (data) => {
@@ -1219,15 +1301,21 @@ async function testKind13194OK() {
         if (msg[2].kind === 13194 && msg[2].content === "ok_test") {
           eventCached = true;
           console.log("✅ Kind 13194 event was cached and retrievable.");
-          ws.close();
-          resolve();
         }
+      }
+
+      if (okReceived && eventCached && eventBroadcastReceived) {
+        ws.close();
+        subWs.close();
+        resolve();
       }
     });
 
     setTimeout(() => {
-      reject(new Error(`Kind 13194 test timeout. OK received: ${okReceived}, Cached: ${eventCached}`));
-    }, 5000);
+      ws.close();
+      subWs.close();
+      reject(new Error(`Kind 13194 test timeout. OK: ${okReceived}, Cached: ${eventCached}, Broadcast: ${eventBroadcastReceived}`));
+    }, 8000);
   });
 }
 
@@ -1701,6 +1789,8 @@ async function runAll() {
     await testProtocolErrors();
     await testLimitEnforcement();
     await testKind13194OK();
+    await testMalformedEventProducesOK();
+    await testOversizedEventProducesOK();
     await testLnAddressErrors();
     await testFilterMatching();
     await testFilterMatchingAdvanced();

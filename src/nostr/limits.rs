@@ -20,9 +20,9 @@ impl Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_filter_items: 100,
+            max_filter_items: 10,
             max_event_tags: 100,
-            max_content_length: 32768,
+            max_content_length: 65536,
         }
     }
 }
@@ -34,8 +34,8 @@ mod tests {
     #[test]
     fn test_limits_default() {
         let limits = Limits::default();
-        assert_eq!(limits.max_filter_items, 100);
+        assert_eq!(limits.max_filter_items, 10);
         assert_eq!(limits.max_event_tags, 100);
-        assert_eq!(limits.max_content_length, 32768);
+        assert_eq!(limits.max_content_length, 65536);
     }
 }

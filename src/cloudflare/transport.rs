@@ -86,7 +86,7 @@ impl DurableObject for CloudflareTransport {
         if let WebSocketIncomingMessage::String(text) = message {
             let mut engine = self.engine.lock().await;
 
-            if text.len() > 65536 {
+            if text.len() > 131072 {
                 let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Notice("message too large".into()).to_json());
                 return Ok(());
             }
@@ -117,7 +117,7 @@ impl crate::common::NwcTransport for CloudflareTransport {
     async fn get_wallet_info(&self, pubkey: &str) -> Option<crate::nostr::WalletInfo> {
         let mut engine = self.engine.lock().await;
         let _ = self.load_connection_with_handler(pubkey, &mut engine).await.ok();
-        engine.get_wallet_info(pubkey)
+        engine.get_wallet_info(pubkey).await
     }
 
     async fn execute_nwc_rpc(&self, request: crate::nostr::Event) -> Result<crate::nostr::Event, crate::common::NwcError> {

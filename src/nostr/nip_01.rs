@@ -1,11 +1,35 @@
 use crate::nostr::{Event, Filter};
 use serde_json::value::RawValue;
+use serde::Deserialize;
 
 #[derive(Debug, Clone)]
 pub enum ClientMessage {
     Event(Event),
     Req(String, Vec<Filter>),
     Close(String),
+}
+
+#[derive(Deserialize)]
+struct PartialEvent {
+    id: String,
+}
+
+pub enum PartialClientMessage {
+    Event(String), // Returns the ID if it looks like an event
+}
+
+impl PartialClientMessage {
+    pub fn from_json(text: &str) -> Option<Self> {
+        let arr: Vec<&RawValue> = serde_json::from_str(text).ok()?;
+        if arr.len() < 2 { return None; }
+
+        let msg_type: String = serde_json::from_str(arr[0].get()).ok()?;
+        if msg_type == "EVENT" {
+            let event: PartialEvent = serde_json::from_str(arr[1].get()).ok()?;
+            return Some(Self::Event(event.id));
+        }
+        None
+    }
 }
 
 impl ClientMessage {
