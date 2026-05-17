@@ -169,7 +169,7 @@ mod tests {
             pubkey: "pk2".to_string(),
             created_at: 1001,
             kind: 23194,
-            tags: vec![super::super::Tag::e(request_id)],
+            tags: vec![super::super::Tag::E(request_id.to_string(), vec![])],
             content: "response".to_string(),
             sig: "sig2".to_string(),
         }

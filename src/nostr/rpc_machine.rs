@@ -115,7 +115,7 @@ mod tests {
 
         // Feed Response EVENT
         let mut resp = mock_event("resp1", "pk2");
-        resp.tags = vec![crate::nostr::Tag::e("req1")];
+        resp.tags = vec![crate::nostr::Tag::E("req1".to_string(), vec![])];
         let action = machine.transition(RelayMessage::Event("rpc_sub".into(), resp.clone()));
 
         assert_eq!(action, Some(RpcAction::Unsubscribe("rpc_sub".into())));

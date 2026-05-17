@@ -52,10 +52,10 @@ impl DurableObject for CloudflareTransport {
                 .unwrap_or(10),
             env.var("MAX_EVENT_TAGS")
                 .and_then(|v| v.to_string().parse::<usize>().map_err(|e| Error::from(e.to_string())))
-                .unwrap_or(10),
+                .unwrap_or(100),
             env.var("MAX_CONTENT_LENGTH")
                 .and_then(|v| v.to_string().parse::<usize>().map_err(|e| Error::from(e.to_string())))
-                .unwrap_or(16384),
+                .unwrap_or(65536),
         );
         let engine = NostrEngine::new_with_storage(storage, limits, crate::util::now);
         let kv = CloudflareKvStore::new(env.kv("MEKHALA_NWC_KV").expect("MEKHALA_NWC_KV not configured"));
@@ -84,16 +84,54 @@ impl DurableObject for CloudflareTransport {
 
     async fn websocket_message(&self, websocket: WebSocket, message: WebSocketIncomingMessage) -> Result<()> {
         if let WebSocketIncomingMessage::String(text) = message {
-            let mut engine = self.engine.lock().await;
-
             if text.len() > 131072 {
                 let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Notice("message too large".into()).to_json());
                 return Ok(());
             }
-            let connection_id = self.wake_up_with_handler(&websocket, &mut engine).await.ok_or_else(|| Error::from("Connection not found"))?;
 
-            let responses = engine.handle(connection_id, &text).await;
-            self.process_responses(responses, &mut engine).await?;
+            let parsed = crate::nostr::ClientMessage::from_json(&text);
+
+            // NIP-01: For EVENT messages, validate and send OK immediately
+            // before async storage operations (prevents client timeouts).
+            match &parsed {
+                Ok(crate::nostr::ClientMessage::Event(event)) => {
+                    let mut engine = self.engine.lock().await;
+                    let connection_id = self.wake_up_with_handler(&websocket, &mut engine).await.ok_or_else(|| Error::from("Connection not found"))?;
+
+                    match engine.validate_event(event) {
+                        Ok(()) => {
+                            let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Ok(event.id.clone(), true, "".to_string()).to_json());
+                            let responses = engine.route_verified_event(connection_id, event.clone()).await;
+                            self.process_responses(responses, &mut engine).await?;
+                        }
+                        Err((event_id, error_msg)) => {
+                            let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Ok(event_id, false, error_msg).to_json());
+                        }
+                    }
+                }
+                _ => {
+                    let mut engine = self.engine.lock().await;
+                    let connection_id = self.wake_up_with_handler(&websocket, &mut engine).await.ok_or_else(|| Error::from("Connection not found"))?;
+
+                    let responses = match parsed {
+                        Ok(crate::nostr::ClientMessage::Req(sub_id, filters)) => {
+                            engine.handle_req(connection_id, sub_id, filters).await
+                        }
+                        Ok(crate::nostr::ClientMessage::Close(sub_id)) => {
+                            engine.process_close(connection_id, sub_id).await
+                        }
+                        Ok(crate::nostr::ClientMessage::Event(_)) => unreachable!(),
+                        Err(e) => {
+                            if let Some(crate::nostr::nip_01::PartialClientMessage::Event(id)) = crate::nostr::nip_01::PartialClientMessage::from_json(&text) {
+                                vec![crate::nostr::engine::EngineResponse::send(connection_id, crate::nostr::RelayMessage::Ok(id, false, format!("parse failed: {}", e)))]
+                            } else {
+                                vec![crate::nostr::engine::EngineResponse::send(connection_id, crate::nostr::RelayMessage::Notice(format!("parse failed: {}", e)))]
+                            }
+                        }
+                    };
+                    self.process_responses(responses, &mut engine).await?;
+                }
+            }
 
             Ok(())
         } else {
@@ -176,8 +214,7 @@ impl CloudflareTransport {
     async fn execute_rpc_action_inner(&self, conn_id: u32, action: crate::nostr::rpc_machine::RpcAction, engine: &mut NostrEngine<CloudflareStorage>) -> Result<(), crate::common::NwcError> {
         match action {
             crate::nostr::rpc_machine::RpcAction::Subscribe(sub_id, filter) => {
-                let req_msg = crate::nostr::ClientMessage::Req(sub_id, vec![filter]);
-                let responses = engine.handle_typed(conn_id, req_msg).await;
+                let responses = engine.handle_req_internal(conn_id, sub_id, vec![filter]).await;
                 self.process_responses(responses, engine).await.map_err(|e| crate::common::NwcError::ProtocolError(e.to_string()))?;
             }
             crate::nostr::rpc_machine::RpcAction::Publish(event) => {

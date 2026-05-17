@@ -3,11 +3,11 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tag {
-    P(String, Vec<String>),
-    E(String, Vec<String>),
+    P(String, Vec<Value>),
+    E(String, Vec<Value>),
     Encryption(String),
-    Expiration(u64),
-    Other(String, Vec<String>),
+    Expiration(String),
+    Other(String, Vec<Value>),
 }
 
 impl Tag {
@@ -15,17 +15,12 @@ impl Tag {
         Tag::P(pubkey.into(), vec![])
     }
 
-    #[cfg(test)]
-    pub fn e(event_id: impl Into<String>) -> Self {
-        Tag::E(event_id.into(), vec![])
-    }
-
     pub fn encryption(scheme: impl Into<String>) -> Self {
         Tag::Encryption(scheme.into())
     }
 
     pub fn expiration(ts: u64) -> Self {
-        Tag::Expiration(ts)
+        Tag::Expiration(ts.to_string())
     }
 
     pub fn is_p(&self) -> bool {
@@ -63,29 +58,23 @@ impl Serialize for Tag {
         let arr: Vec<Value> = match self {
             Tag::P(pk, extras) => {
                 let mut v = vec![Value::String("p".into()), Value::String(pk.clone())];
-                for e in extras {
-                    v.push(Value::String(e.clone()));
-                }
+                v.extend(extras.iter().cloned());
                 v
             }
             Tag::E(id, extras) => {
                 let mut v = vec![Value::String("e".into()), Value::String(id.clone())];
-                for e in extras {
-                    v.push(Value::String(e.clone()));
-                }
+                v.extend(extras.iter().cloned());
                 v
             }
             Tag::Encryption(scheme) => {
                 vec![Value::String("encryption".into()), Value::String(scheme.clone())]
             }
             Tag::Expiration(ts) => {
-                vec![Value::String("expiration".into()), Value::String(ts.to_string())]
+                vec![Value::String("expiration".into()), Value::String(ts.clone())]
             }
             Tag::Other(name, values) => {
                 let mut v = vec![Value::String(name.clone())];
-                for val in values {
-                    v.push(Value::String(val.clone()));
-                }
+                v.extend(values.iter().cloned());
                 v
             }
         };
@@ -109,9 +98,7 @@ impl<'de> Deserialize<'de> for Tag {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| serde::de::Error::custom("p-tag requires a pubkey value"))?
                     .to_string();
-                let extras = arr.get(2..)
-                    .map(|slice| slice.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                    .unwrap_or_default();
+                let extras = arr.get(2..).unwrap_or(&[]).to_vec();
                 Ok(Tag::P(pk, extras))
             }
             "e" => {
@@ -119,9 +106,7 @@ impl<'de> Deserialize<'de> for Tag {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| serde::de::Error::custom("e-tag requires an event id value"))?
                     .to_string();
-                let extras = arr.get(2..)
-                    .map(|slice| slice.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                    .unwrap_or_default();
+                let extras = arr.get(2..).unwrap_or(&[]).to_vec();
                 Ok(Tag::E(id, extras))
             }
             "encryption" => {
@@ -132,17 +117,20 @@ impl<'de> Deserialize<'de> for Tag {
                 Ok(Tag::Encryption(scheme))
             }
             "expiration" => {
-                let ts_str = arr.get(1)
-                    .and_then(|v| v.as_str())
+                let ts = arr.get(1)
                     .ok_or_else(|| serde::de::Error::custom("expiration-tag requires a timestamp value"))?;
-                let ts: u64 = ts_str.parse()
+                let ts_str = match ts.as_str() {
+                    Some(s) => s.to_string(),
+                    None => ts.as_u64()
+                        .ok_or_else(|| serde::de::Error::custom("expiration-tag timestamp must be a number or numeric string"))?
+                        .to_string(),
+                };
+                let _: u64 = ts_str.parse()
                     .map_err(|_| serde::de::Error::custom("expiration-tag timestamp must be a number"))?;
-                Ok(Tag::Expiration(ts))
+                Ok(Tag::Expiration(ts_str))
             }
             _ => {
-                let values: Vec<String> = arr.get(1..)
-                    .map(|slice| slice.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                    .unwrap_or_default();
+                let values = arr.get(1..).unwrap_or(&[]).to_vec();
                 Ok(Tag::Other(name.to_string(), values))
             }
         }
@@ -165,17 +153,17 @@ mod tests {
 
     #[test]
     fn test_tag_p_with_extras_roundtrip() {
-        let tag = Tag::P("abc123".into(), vec!["wss://relay.example.com".into(), "petname".into()]);
+        let tag = Tag::P("abc123".into(), vec![Value::String("wss://relay.example.com".into()), Value::String("petname".into())]);
         let json = serde_json::to_value(&tag).unwrap();
         assert_eq!(json, serde_json::json!(["p", "abc123", "wss://relay.example.com", "petname"]));
 
         let deserialized: Tag = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized, Tag::P("abc123".into(), vec!["wss://relay.example.com".into(), "petname".into()]));
+        assert_eq!(deserialized, Tag::P("abc123".into(), vec![Value::String("wss://relay.example.com".into()), Value::String("petname".into())]));
     }
 
     #[test]
     fn test_tag_e_roundtrip() {
-        let tag = Tag::e("event_id_1");
+        let tag = Tag::E("event_id_1".into(), vec![]);
         let json = serde_json::to_value(&tag).unwrap();
         assert_eq!(json, serde_json::json!(["e", "event_id_1"]));
 
@@ -195,22 +183,31 @@ mod tests {
 
     #[test]
     fn test_tag_expiration_roundtrip() {
-        let tag = Tag::expiration(1234567890);
+        let tag = Tag::expiration(1234567890u64);
         let json = serde_json::to_value(&tag).unwrap();
         assert_eq!(json, serde_json::json!(["expiration", "1234567890"]));
 
         let deserialized: Tag = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized, Tag::Expiration(1234567890));
+        assert_eq!(deserialized, Tag::Expiration("1234567890".into()));
+    }
+
+    #[test]
+    fn test_tag_expiration_numeric_json() {
+        let json = serde_json::json!(["expiration", 1234567890u64]);
+        let deserialized: Tag = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized, Tag::Expiration("1234567890".into()));
+        let serialized = serde_json::to_value(&deserialized).unwrap();
+        assert_eq!(serialized, serde_json::json!(["expiration", "1234567890"]));
     }
 
     #[test]
     fn test_tag_other_roundtrip() {
-        let tag = Tag::Other("custom".into(), vec!["value1".into(), "value2".into()]);
+        let tag = Tag::Other("custom".into(), vec![Value::String("value1".into()), Value::String("value2".into())]);
         let json = serde_json::to_value(&tag).unwrap();
         assert_eq!(json, serde_json::json!(["custom", "value1", "value2"]));
 
         let deserialized: Tag = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized, Tag::Other("custom".into(), vec!["value1".into(), "value2".into()]));
+        assert_eq!(deserialized, Tag::Other("custom".into(), vec![Value::String("value1".into()), Value::String("value2".into())]));
     }
 
     #[test]
@@ -222,7 +219,7 @@ mod tests {
         assert_eq!(p.event_id(), None);
         assert_eq!(p.encryption_scheme(), None);
 
-        let e = Tag::e("eid1");
+        let e = Tag::E("eid1".into(), vec![]);
         assert!(!e.is_p());
         assert!(e.is_e());
         assert_eq!(e.event_id(), Some("eid1"));
@@ -232,7 +229,7 @@ mod tests {
         assert_eq!(enc.encryption_scheme(), Some("nip04"));
         assert_eq!(enc.pubkey(), None);
 
-        let exp = Tag::expiration(999);
+        let exp = Tag::expiration(999u64);
         assert_eq!(exp.pubkey(), None);
         assert_eq!(exp.event_id(), None);
     }
@@ -254,5 +251,23 @@ mod tests {
         assert_eq!(event.tags[0], Tag::P("wallet_pk".into(), vec![]));
         assert_eq!(event.tags[1], Tag::E("event1".into(), vec![]));
         assert_eq!(event.tags[2], Tag::Encryption("nip44_v2 nip04".into()));
+    }
+
+    #[test]
+    fn test_tag_preserves_non_string_values() {
+        let json = serde_json::json!(["p", "abc123", "wss://relay.example.com", "petname"]);
+        let tag: Tag = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(tag, Tag::P("abc123".into(), vec![Value::String("wss://relay.example.com".into()), Value::String("petname".into())]));
+        let serialized = serde_json::to_value(&tag).unwrap();
+        assert_eq!(serialized, json);
+    }
+
+    #[test]
+    fn test_expiration_tag_preserves_string_form() {
+        let json_in = serde_json::json!(["expiration", "1700000000"]);
+        let tag: Tag = serde_json::from_value(json_in.clone()).unwrap();
+        assert_eq!(tag, Tag::Expiration("1700000000".into()));
+        let json_out = serde_json::to_value(&tag).unwrap();
+        assert_eq!(json_out, json_in);
     }
 }

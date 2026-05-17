@@ -310,7 +310,7 @@ mod tests {
             created_at: crate::util::now(),
             kind: 23195,
             tags: vec![
-                Tag::e(&request_id),
+                Tag::E(request_id.clone(), vec![]),
                 Tag::p(&client.my_pubkey),
             ],
             content: resp_encrypted,
