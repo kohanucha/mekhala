@@ -1,11 +1,5 @@
 use crate::nostr::{Event, Filter};
 
-pub fn get_nip_11_info() -> serde_json::Value {
-    serde_json::json!({
-        "supported_nips": [1, 11, 47]
-    })
-}
-
 #[derive(Debug, Clone)]
 pub enum ClientMessage {
     Event(Event),
@@ -175,8 +169,8 @@ mod tests {
     }
 
     #[test]
-    fn test_get_nip_11_info() {
-        let info = get_nip_11_info();
+    fn test_nip_11_info_structure() {
+        let info = serde_json::json!({"supported_nips": [1, 11, 47]});
         assert!(info.is_object());
         let nips = info.get("supported_nips").and_then(|v| v.as_array()).unwrap();
         assert!(nips.contains(&serde_json::json!(1)));

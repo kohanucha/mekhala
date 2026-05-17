@@ -3,7 +3,22 @@ use super::{Filter, Event, RelayMessage, ClientMessage, Limits};
 use super::wallet_registry::{WalletRegistry, Storage, RegistryResponse};
 
 #[cfg(test)]
-use crate::util::now;
+use std::cell::Cell;
+
+#[cfg(test)]
+thread_local! {
+    static TEST_TIME: Cell<u64> = Cell::new(1700000000);
+}
+
+#[cfg(test)]
+fn test_now() -> u64 {
+    TEST_TIME.with(|t| t.get())
+}
+
+#[cfg(test)]
+fn set_test_time(t: u64) {
+    TEST_TIME.with(|c| c.set(t));
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum EngineResponse {
@@ -24,6 +39,7 @@ impl EngineResponse {
 pub struct NostrEngine<S: Storage> {
     registry: WalletRegistry<S>,
     limits: Limits,
+    clock: fn() -> u64,
 }
 
 #[cfg(test)]
@@ -32,15 +48,17 @@ impl NostrEngine<super::wallet_registry::tests::MockStorage> {
         Self {
             registry: WalletRegistry::new(super::wallet_registry::tests::MockStorage::new()),
             limits: Limits::default(),
+            clock: test_now,
         }
     }
 }
 
 impl<S: Storage> NostrEngine<S> {
-    pub fn new_with_storage(storage: S, limits: Limits) -> Self {
+    pub fn new_with_storage(storage: S, limits: Limits, clock: fn() -> u64) -> Self {
         Self {
             registry: WalletRegistry::new(storage),
             limits,
+            clock,
         }
     }
 
@@ -66,10 +84,7 @@ impl<S: Storage> NostrEngine<S> {
         match event.kind {
             13194 | 23194..=23197 => {
                 // 2. Protocol verification
-                #[cfg(not(test))]
-                let ts = crate::util::now();
-                #[cfg(test)]
-                let ts = now();
+                let ts = (self.clock)();
 
                 if let Err(e) = event.verify(ts, &self.limits) {
                     return vec![EngineResponse::send(connection_id, RelayMessage::Ok(event.id, false, e.to_string()))];
@@ -84,10 +99,7 @@ impl<S: Storage> NostrEngine<S> {
                 }
             }
             _ => {
-                #[cfg(not(test))]
-                let ts = crate::util::now();
-                #[cfg(test)]
-                let ts = now();
+                let ts = (self.clock)();
 
                 let message = if let Err(e) = event.verify(ts, &self.limits) {
                     RelayMessage::Ok(event.id, false, e.to_string())
@@ -114,11 +126,11 @@ impl<S: Storage> NostrEngine<S> {
         Vec::new()
     }
 
-    pub async fn process_info_event(&mut self, event: Event) {
+    async fn process_info_event(&mut self, event: Event) {
         self.registry.cache_info(event);
     }
 
-    pub async fn process_event(&mut self, connection_id: u32, event: Event) -> Vec<EngineResponse> {
+    async fn process_event(&mut self, connection_id: u32, event: Event) -> Vec<EngineResponse> {
         let mut responses = Vec::new();
         
         // Always provide the protocol feedback intent
@@ -140,7 +152,7 @@ impl<S: Storage> NostrEngine<S> {
         responses
     }
 
-    pub async fn process_req(&mut self, id: u32, sub_id: String, filters: Vec<Filter>) -> Vec<EngineResponse> {
+    async fn process_req(&mut self, id: u32, sub_id: String, filters: Vec<Filter>) -> Vec<EngineResponse> {
         let mut responses = Vec::new();
         let _ = self.registry.subscribe(id, sub_id.clone(), filters.clone()).await;
 
@@ -182,10 +194,6 @@ impl<S: Storage> NostrEngine<S> {
         self.registry.has_subscription(conn_id, sub_id)
     }
 
-    pub fn error_message(&self, msg: &str) -> String {
-        RelayMessage::Notice(msg.to_string()).to_json()
-    }
-
     pub async fn add_connection(&mut self, id: u32, subscriptions: HashMap<String, Vec<Filter>>) {
         for (sub_id, filters) in subscriptions {
             let _ = self.registry.subscribe(id, sub_id, filters).await;
@@ -205,6 +213,7 @@ impl<S: Storage> NostrEngine<S> {
 mod tests {
     use super::*;
     use super::super::wallet_registry::tests::MockStorage;
+    use super::super::RelayError;
 
     #[test]
     fn test_engine_req_storage() {
@@ -299,6 +308,7 @@ mod tests {
     #[test]
     fn test_bridge_signaling() {
         futures::executor::block_on(async {
+            set_test_time(crate::util::now());
             let mut engine = NostrEngine::new();
             engine.on_connect(1).await;
             let wallet_pk = "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f";
@@ -346,7 +356,7 @@ mod tests {
             let wallet_response_event: Event = serde_json::from_value(serde_json::json!({
                 "id": "resp1",
                 "pubkey": "wallet_pk",
-                "created_at": now(),
+                "created_at": test_now(),
                 "kind": 23194,
                 "tags": [["p", "bridge"], ["e", "event1"]],
                 "content": "",
@@ -389,7 +399,7 @@ mod tests {
             let event = Event {
                 id: "event1".into(),
                 pubkey: "alice".into(),
-                created_at: now(),
+                created_at: test_now(),
                 kind: 23194,
                 tags: vec![],
                 content: "test".into(),
@@ -432,13 +442,13 @@ mod tests {
             }));
             storage.put_batch(entries).await;
             
-            let mut engine = NostrEngine::new_with_storage(storage, Limits::default());
+            let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
 
             // 2. Handle an event that targets the hibernated pubkey
             let event = Event {
                 id: "event1".into(),
                 pubkey: pk.into(),
-                created_at: now(),
+                created_at: test_now(),
                 kind: 23194,
                 tags: vec![super::super::Tag::p(pk)],
                 content: "wake up!".into(),
@@ -452,6 +462,153 @@ mod tests {
             
             // 4. Verify that a Data response was ALSO returned (since matching happens after loading)
             assert!(responses.iter().any(|r| matches!(r, EngineResponse::Send { recipient_id: 42, .. })));
+        });
+    }
+
+    #[test]
+    fn test_event_rejects_future_beyond_tolerance() {
+        let now = 1700000000u64;
+        let event = Event {
+            id: "id1".into(),
+            pubkey: "pk1".into(),
+            created_at: now + 901,
+            kind: 13194,
+            tags: vec![],
+            content: "".into(),
+            sig: "sig1".into(),
+        };
+
+        let result = event.verify(now, &Limits::default());
+        match result {
+            Err(RelayError::TimestampTooFar(_)) => {},
+            Err(e) => panic!("expected TimestampTooFar, got {:?}", e),
+            Ok(_) => panic!("event 901s in the future should be rejected"),
+        }
+    }
+
+    #[test]
+    fn test_event_accepts_future_within_tolerance() {
+        let now = 1700000000u64;
+        let event = Event {
+            id: "id1".into(),
+            pubkey: "pk1".into(),
+            created_at: now + 800,
+            kind: 13194,
+            tags: vec![],
+            content: "".into(),
+            sig: "sig1".into(),
+        };
+
+        let result = event.verify(now, &Limits::default());
+        match result {
+            Err(RelayError::TimestampTooFar(_)) => panic!("event within 900s future should not fail timestamp check"),
+            Err(RelayError::InvalidId) | Err(RelayError::InvalidSignature) => {},
+            Err(e) => panic!("expected id/sig error, got {:?}", e),
+            Ok(_) => panic!("expected error (id mismatch)"),
+        }
+    }
+
+    #[test]
+    fn test_event_rejects_past_beyond_tolerance() {
+        let now = 1700000000u64;
+        let event = Event {
+            id: "id1".into(),
+            pubkey: "pk1".into(),
+            created_at: now - 31_536_001,
+            kind: 13194,
+            tags: vec![],
+            content: "".into(),
+            sig: "sig1".into(),
+        };
+
+        let result = event.verify(now, &Limits::default());
+        match result {
+            Err(RelayError::TimestampTooFar(_)) => {},
+            Err(e) => panic!("expected TimestampTooFar, got {:?}", e),
+            Ok(_) => panic!("event over 1 year old should be rejected"),
+        }
+    }
+
+    #[test]
+    fn test_event_accepts_past_within_tolerance() {
+        let now = 1700000000u64;
+        let event = Event {
+            id: "id1".into(),
+            pubkey: "pk1".into(),
+            created_at: now - 100000,
+            kind: 13194,
+            tags: vec![],
+            content: "".into(),
+            sig: "sig1".into(),
+        };
+
+        let result = event.verify(now, &Limits::default());
+        match result {
+            Err(RelayError::TimestampTooFar(_)) => panic!("event within 1 year should not be rejected for timestamp"),
+            Err(RelayError::InvalidId) | Err(RelayError::InvalidSignature) => {},
+            Err(e) => panic!("expected id/sig error, got {:?}", e),
+            Ok(_) => panic!("expected error (id mismatch)"),
+        }
+    }
+
+    #[test]
+    fn test_engine_uses_clock_for_event_verification() {
+        futures::executor::block_on(async {
+            let now = 1700000000u64;
+            set_test_time(now);
+            let mut engine = NostrEngine::new();
+            engine.on_connect(1).await;
+
+            let event_json = serde_json::json!(["EVENT", {
+                "id": "fake_id",
+                "pubkey": "pk1",
+                "created_at": now + 901,
+                "kind": 23194,
+                "tags": [],
+                "content": "test",
+                "sig": "badsig"
+            }]).to_string();
+
+            let responses = engine.handle(1, &event_json).await;
+
+            let ok_response = responses.iter().find_map(|r| {
+                if let EngineResponse::Send { message, .. } = r {
+                    if let RelayMessage::Ok(_, success, msg) = message {
+                        Some((*success, msg.clone()))
+                    } else { None }
+                } else { None }
+            });
+
+            assert!(ok_response.is_some(), "should get an OK response");
+            let (success, msg) = ok_response.unwrap();
+            assert!(!success, "event too far in future should be rejected");
+            assert!(msg.contains("too far"), "expected timestamp rejection, got: {}", msg);
+
+            set_test_time(now + 901);
+            let event_json_recent = serde_json::json!(["EVENT", {
+                "id": "fake_id2",
+                "pubkey": "pk1",
+                "created_at": now + 901,
+                "kind": 23194,
+                "tags": [],
+                "content": "test",
+                "sig": "badsig"
+            }]).to_string();
+
+            let responses = engine.handle(1, &event_json_recent).await;
+
+            let ok_response = responses.iter().find_map(|r| {
+                if let EngineResponse::Send { message, .. } = r {
+                    if let RelayMessage::Ok(_, success, msg) = message {
+                        Some((*success, msg.clone()))
+                    } else { None }
+                } else { None }
+            });
+
+            assert!(ok_response.is_some(), "should get an OK response");
+            let (success, msg) = ok_response.unwrap();
+            assert!(msg.contains("invalid"), "event within tolerance should fail for id/sig, not timestamp, got: {}", msg);
+            assert!(!success);
         });
     }
 

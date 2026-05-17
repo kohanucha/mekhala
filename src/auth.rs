@@ -13,16 +13,16 @@ pub struct AccessPolicy {
 }
 
 impl AccessPolicy {
-    pub fn from_env(env: &Env) -> Self {
-        let expected_secret = env.var("RELAY_SECRET").map(|v| v.to_string()).ok();
-        
-        // Treat an empty secret as None (Public Mode)
+    pub fn new(expected_secret: Option<String>) -> Self {
         let expected_secret = match expected_secret {
             Some(s) if !s.is_empty() => Some(s),
             _ => None,
         };
-
         Self { expected_secret }
+    }
+
+    pub fn from_env(env: &Env) -> Self {
+        Self::new(env.var("RELAY_SECRET").map(|v| v.to_string()).ok())
     }
 
     /// Checks if the provided secret matches the expected policy.

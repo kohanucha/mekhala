@@ -2,10 +2,12 @@ pub mod transport;
 pub mod hibernation;
 pub mod durable_object;
 pub mod connection;
+pub mod kv;
 
-pub use transport::{CloudflareTransport};
+pub use transport::CloudflareTransport;
 pub use hibernation::HibernationState;
 pub use durable_object::get_durable_stub;
+pub use kv::CloudflareKvStore;
 
 use worker::*;
 

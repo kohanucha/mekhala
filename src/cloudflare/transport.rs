@@ -1,12 +1,17 @@
 use std::cell::RefCell;
+use std::time::Duration;
 use futures::channel::oneshot;
 use futures::lock::Mutex;
+use futures_util::FutureExt;
 use worker::*;
 use crate::nostr::engine::{NostrEngine, EngineResponse};
 use crate::nostr::wallet_registry::Storage;
 use crate::nostr::Limits;
+use crate::nostr::rpc_machine::RpcAction;
+use crate::nostr::rpc_orchestrator::{RpcContext, RpcReceiveError};
 use crate::cloudflare::create_cors_response;
-use crate::cloudflare::connection::ConnectionRegistry;
+use crate::cloudflare::connection::{WebSocketRegistry, InternalConnectionMap};
+use crate::cloudflare::kv::CloudflareKvStore;
 
 pub struct CloudflareStorage {
     storage: worker::Storage,
@@ -33,7 +38,9 @@ impl Storage for CloudflareStorage {
 pub struct CloudflareTransport {
     env: Env,
     engine: Mutex<NostrEngine<CloudflareStorage>>,
-    connections: RefCell<ConnectionRegistry>,
+    websockets: RefCell<WebSocketRegistry>,
+    internal: RefCell<InternalConnectionMap>,
+    kv: CloudflareKvStore,
 }
 
 impl DurableObject for CloudflareTransport {
@@ -50,12 +57,15 @@ impl DurableObject for CloudflareTransport {
                 .and_then(|v| v.to_string().parse::<usize>().map_err(|e| Error::from(e.to_string())))
                 .unwrap_or(16384),
         );
-        let engine = NostrEngine::new_with_storage(storage, limits);
+        let engine = NostrEngine::new_with_storage(storage, limits, crate::util::now);
+        let kv = CloudflareKvStore::new(env.kv("MEKHALA_NWC_KV").expect("MEKHALA_NWC_KV not configured"));
 
         Self {
             env,
             engine: Mutex::new(engine),
-            connections: RefCell::new(ConnectionRegistry::new(state)),
+            websockets: RefCell::new(WebSocketRegistry::new(state)),
+            internal: RefCell::new(InternalConnectionMap::new()),
+            kv,
         }
     }
 
@@ -63,10 +73,10 @@ impl DurableObject for CloudflareTransport {
         let url = req.url()?;
         let path = url.path();
 
-        // Handle delegated LN Address callback
         if path.starts_with("/lnaddress/") && path.ends_with("/callback") {
             let username = path.strip_prefix("/lnaddress/").and_then(|s| s.strip_suffix("/callback")).unwrap_or("");
-            return crate::lnaddress::handle_lnaddress_callback(req, &self.env, username, self).await;
+            let handler = crate::lnaddress::LnAddressHandler::new(&self.kv);
+            return handler.handle_callback(req, username, self).await;
         }
 
         self.accept_new_connection().await
@@ -77,7 +87,7 @@ impl DurableObject for CloudflareTransport {
             let mut engine = self.engine.lock().await;
 
             if text.len() > 65536 {
-                let _ = websocket.send_with_str(&engine.error_message("message too large"));
+                let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Notice("message too large".into()).to_json());
                 return Ok(());
             }
             let connection_id = self.wake_up_with_handler(&websocket, &mut engine).await.ok_or_else(|| Error::from("Connection not found"))?;
@@ -87,8 +97,8 @@ impl DurableObject for CloudflareTransport {
 
             Ok(())
         } else {
-            let engine = self.engine.lock().await;
-            let _ = websocket.send_with_str(&engine.error_message("binary not supported"));
+            let _engine = self.engine.lock().await;
+            let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Notice("binary not supported".into()).to_json());
             Ok(())
         }
     }
@@ -102,8 +112,6 @@ impl DurableObject for CloudflareTransport {
     }
 }
 
-use futures_util::FutureExt;
-
 #[async_trait::async_trait(?Send)]
 impl crate::common::NwcTransport for CloudflareTransport {
     async fn get_wallet_info(&self, pubkey: &str) -> Option<crate::nostr::WalletInfo> {
@@ -113,89 +121,58 @@ impl crate::common::NwcTransport for CloudflareTransport {
     }
 
     async fn execute_nwc_rpc(&self, request: crate::nostr::Event) -> Result<crate::nostr::Event, crate::common::NwcError> {
-        let id = self.connections.borrow().next_id().await;
+        crate::nostr::rpc_orchestrator::execute_nwc_rpc(self, request).await
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl RpcContext for CloudflareTransport {
+    fn now(&self) -> u64 {
+        crate::util::now()
+    }
+
+    async fn allocate_connection_id(&self) -> u32 {
+        self.websockets.borrow().next_id().await
+    }
+
+    async fn execute_action(&self, conn_id: u32, action: RpcAction) -> Result<(), crate::common::NwcError> {
+        let mut engine = self.engine.lock().await;
+        self.execute_rpc_action_inner(conn_id, action, &mut engine).await
+    }
+
+    async fn receive_response(&self, conn_id: u32, remaining_secs: u64) -> Result<String, RpcReceiveError> {
         let (tx, rx) = oneshot::channel();
-        self.connections.borrow_mut().add_internal(id, tx);
+        self.internal.borrow_mut().add(conn_id, tx);
 
-        let mut machine = crate::nostr::rpc_machine::NwcRpcMachine::new(request);
-        let mut engine = self.engine.lock().await;
+        let delay = Delay::from(Duration::from_secs(remaining_secs)).fuse();
+        let pinned_rx = rx.fuse();
+        futures_util::pin_mut!(pinned_rx, delay);
 
-        // 1. Execute initial actions (Subscribe, Publish)
-        for action in machine.start() {
-            self.execute_rpc_action_inner(id, action, &mut engine).await?;
+        match futures_util::future::select(pinned_rx, delay).await {
+            futures_util::future::Either::Left((Ok(resp), _)) => Ok(resp),
+            futures_util::future::Either::Left((Err(_), _)) => Err(RpcReceiveError::ChannelClosed),
+            futures_util::future::Either::Right(_) => {
+                self.internal.borrow_mut().remove(conn_id);
+                Err(RpcReceiveError::Timeout)
+            }
         }
+    }
 
-        drop(engine); // Release lock while waiting
-
-        // 2. Await response with timeout
-        let start_time = crate::util::now();
-        let timeout_sec = 10;
-        let mut rx = rx;
-        
-        let result_event = loop {
-            let elapsed = crate::util::now() - start_time;
-            if elapsed >= timeout_sec {
-                let action = machine.handle_timeout();
-                let mut engine = self.engine.lock().await;
-                let _ = self.execute_rpc_action_inner(id, action, &mut engine).await;
-                let _ = engine.on_disconnect(id).await;
-                self.connections.borrow_mut().remove(id);
-                return Err(crate::common::NwcError::Timeout);
-            }
-
-            let delay = Delay::from(std::time::Duration::from_secs(timeout_sec - elapsed)).fuse();
-            let (new_tx, new_rx) = oneshot::channel();
-            
-            let pinned_rx = rx;
-            futures_util::pin_mut!(pinned_rx, delay);
-
-            let response_text = match futures_util::future::select(pinned_rx, delay).await {
-                futures_util::future::Either::Left((Ok(resp), _)) => resp,
-                _ => {
-                    let action = machine.handle_timeout();
-                    let mut engine = self.engine.lock().await;
-                    let _ = self.execute_rpc_action_inner(id, action, &mut engine).await;
-                    let _ = engine.on_disconnect(id).await;
-                    self.connections.borrow_mut().remove(id);
-                    return Err(crate::common::NwcError::Timeout);
-                }
-            };
-
-            // 3. Parse response and transition machine
-            let msg = crate::nostr::RelayMessage::from_json(&response_text)
-                .map_err(|e| crate::common::NwcError::ProtocolError(format!("malformed relay response: {}", e)))?;
-            
-            if let Some(action) = machine.transition(msg) {
-                let mut engine = self.engine.lock().await;
-                self.execute_rpc_action_inner(id, action, &mut engine).await?;
-            }
-
-            match machine.state() {
-                crate::nostr::rpc_machine::RpcState::Success(event) => break event.clone(),
-                crate::nostr::rpc_machine::RpcState::Failed(err) => {
-                    let mut engine = self.engine.lock().await;
-                    let _ = engine.on_disconnect(id).await;
-                    self.connections.borrow_mut().remove(id);
-                    return Err(crate::common::NwcError::ProtocolError(err.clone()));
-                }
-                _ => {
-                    // Continue waiting, setup next internal channel
-                    self.connections.borrow_mut().add_internal(id, new_tx);
-                    rx = new_rx;
-                }
-            }
-        };
-
-        // 4. Final Cleanup
+    async fn disconnect(&self, conn_id: u32) {
         let mut engine = self.engine.lock().await;
-        let _ = engine.on_disconnect(id).await;
-        self.connections.borrow_mut().remove(id);
-
-        Ok(result_event)
+        let _ = engine.on_disconnect(conn_id).await;
+        self.internal.borrow_mut().remove(conn_id);
     }
 }
 
 impl CloudflareTransport {
+    fn route_send(&self, id: u32, message: String) -> bool {
+        if self.websockets.borrow_mut().send(id, message.clone()) {
+            return true;
+        }
+        self.internal.borrow_mut().send(id, message)
+    }
+
     async fn execute_rpc_action_inner(&self, conn_id: u32, action: crate::nostr::rpc_machine::RpcAction, engine: &mut NostrEngine<CloudflareStorage>) -> Result<(), crate::common::NwcError> {
         match action {
             crate::nostr::rpc_machine::RpcAction::Subscribe(sub_id, filter) => {
@@ -218,14 +195,13 @@ impl CloudflareTransport {
 
     async fn load_connection_with_handler(&self, pubkey: &str, engine: &mut NostrEngine<CloudflareStorage>) -> Result<Option<u32>> {
         if let Some(id) = engine.load_by_pubkey(pubkey).await {
-            let ws = self.connections.borrow().find_by_id(id);
+            let ws = self.websockets.borrow().find_by_id(id);
             if let Some(ws) = ws {
                 let _ = self.wake_up_with_handler(&ws, engine).await;
                 return Ok(Some(id));
             }
 
-            // Fallback: search all sockets if tagged one failed to wake up
-            let all_ws = self.connections.borrow().get_all_websockets();
+            let all_ws = self.websockets.borrow().get_all_websockets();
             for ws in all_ws {
                 if let Some(actual_id) = self.wake_up_with_handler(&ws, engine).await {
                     if actual_id == id {
@@ -239,13 +215,11 @@ impl CloudflareTransport {
     }
 
     async fn wake_up_with_handler(&self, ws: &WebSocket, engine: &mut NostrEngine<CloudflareStorage>) -> Option<u32> {
-        let id = self.connections.borrow().identify(ws)?;
+        let id = self.websockets.borrow().identify(ws)?;
 
-        // Attempt to load state, but don't fail if there is no state yet (e.g. new connection)
         let _ = engine.load(id).await;
-        
-        // Ensure it's in memory as an active connection
-        self.connections.borrow_mut().add_active(id, ws.clone());
+
+        self.websockets.borrow_mut().add_active(id, ws.clone());
         Some(id)
     }
 
@@ -254,22 +228,22 @@ impl CloudflareTransport {
             .and_then(|v| v.to_string().parse::<usize>().map_err(|e| Error::from(e.to_string())))
             .unwrap_or(20);
 
-        if self.connections.borrow().len() >= max_connections {
+        if self.websockets.borrow().len() >= max_connections {
             return Response::error("Too Many Requests", 429);
         }
 
         let WebSocketPair { client, server } = WebSocketPair::new()?;
-        
+
         {
-            let connections = self.connections.borrow();
-            connections.accept_web_socket(&server);
+            let websockets = self.websockets.borrow();
+            websockets.accept_web_socket(&server);
         }
 
         let mut engine = self.engine.lock().await;
-        let connection_id = self.connections.borrow().next_id().await;
+        let connection_id = self.websockets.borrow().next_id().await;
         let responses = engine.on_connect(connection_id).await;
-        
-        self.connections.borrow_mut().register_active(connection_id, server);
+
+        self.websockets.borrow_mut().register_active(connection_id, server);
 
         self.process_responses(responses, &mut engine).await?;
 
@@ -281,7 +255,7 @@ impl CloudflareTransport {
         if let Some(id) = self.wake_up_with_handler(ws, &mut engine).await {
             let responses = engine.on_terminate(id).await;
             self.process_responses(responses, &mut engine).await?;
-            self.connections.borrow_mut().remove(id);
+            self.websockets.borrow_mut().remove(id);
         }
         Ok(())
     }
@@ -290,10 +264,10 @@ impl CloudflareTransport {
         for resp in responses {
             match resp {
                 EngineResponse::Send { recipient_id, message } => {
-                    self.connections.borrow_mut().send(recipient_id, message.to_json());
+                    self.route_send(recipient_id, message.to_json());
                 }
                 EngineResponse::WakeUp { connection_id } => {
-                    let ws = self.connections.borrow().find_by_id(connection_id);
+                    let ws = self.websockets.borrow().find_by_id(connection_id);
                     if let Some(ws) = ws {
                         let _ = self.wake_up_with_handler(&ws, engine).await;
                     }

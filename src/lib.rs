@@ -8,8 +8,6 @@ mod nostr;
 mod lnaddress;
 mod util;
 
-use server::Server;
-
 pub use cloudflare::CloudflareTransport;
 
 pub fn set_panic_hook() {
@@ -19,5 +17,5 @@ pub fn set_panic_hook() {
 #[event(fetch)]
 pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     set_panic_hook();
-    Server::run(req, env).await
+    server::run(req, env).await
 }

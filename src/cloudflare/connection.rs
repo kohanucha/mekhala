@@ -5,34 +5,25 @@ use worker::*;
 use wasm_bindgen::JsCast;
 use crate::cloudflare::HibernationState;
 
-pub enum Connection<W> {
-    Active(W),
-    Internal(oneshot::Sender<String>),
-}
-
-pub struct ConnectionRegistry {
+pub struct WebSocketRegistry {
     state: State,
-    connections: HashMap<u32, Connection<WebSocket>>,
+    websockets: HashMap<u32, WebSocket>,
     current_id: Cell<u32>,
     id_limit: Cell<u32>,
 }
 
-impl ConnectionRegistry {
+impl WebSocketRegistry {
     pub fn new(state: State) -> Self {
         Self {
             state,
-            connections: HashMap::new(),
+            websockets: HashMap::new(),
             current_id: Cell::new(0),
             id_limit: Cell::new(0),
         }
     }
 
     pub fn add_active(&mut self, id: u32, ws: WebSocket) {
-        self.connections.insert(id, Connection::Active(ws));
-    }
-
-    pub fn add_internal(&mut self, id: u32, sender: oneshot::Sender<String>) {
-        self.connections.insert(id, Connection::Internal(sender));
+        self.websockets.insert(id, ws);
     }
 
     pub fn register_active(&mut self, id: u32, ws: WebSocket) {
@@ -42,16 +33,12 @@ impl ConnectionRegistry {
     }
 
     pub fn identify(&self, ws: &WebSocket) -> Option<u32> {
-        // 1. Check in-memory active connections
-        for (id, conn) in &self.connections {
-            if let Connection::Active(h) = conn {
-                if js_sys::Object::is(h.as_ref(), ws.as_ref()) {
-                    return Some(*id);
-                }
+        for (id, registered) in &self.websockets {
+            if js_sys::Object::is(registered.as_ref(), ws.as_ref()) {
+                return Some(*id);
             }
         }
 
-        // 2. Fallback to tags (hibernation recovery)
         let tags = self.state.get_tags(ws);
         let id_tag = tags.iter().find(|t| t.starts_with("id:"))?;
         id_tag.strip_prefix("id:")?.parse().ok()
@@ -62,17 +49,15 @@ impl ConnectionRegistry {
         let limit = self.id_limit.get();
 
         if current >= limit {
-            // Buffer exhausted or not yet initialized
             let storage = self.state.storage();
             let last_limit = storage.get::<u32>("id_counter").await.ok().flatten().unwrap_or(0);
-            
-            // Sync with current time to ensure monotonicity after long periods of inactivity or DO move
+
             let now = crate::util::now() as u32;
             let start = std::cmp::max(last_limit, now);
-            
+
             let new_limit = start + 1000;
             let _ = storage.put("id_counter", new_limit).await;
-            
+
             self.current_id.set(start + 1);
             self.id_limit.set(new_limit);
             start + 1
@@ -84,19 +69,14 @@ impl ConnectionRegistry {
     }
 
     pub fn get_active(&self, id: u32) -> Option<WebSocket> {
-        match self.connections.get(&id) {
-            Some(Connection::Active(ws)) => Some(ws.clone()),
-            _ => None,
-        }
+        self.websockets.get(&id).cloned()
     }
 
     pub fn find_by_id(&self, id: u32) -> Option<WebSocket> {
-        // 1. Check in-memory
         if let Some(ws) = self.get_active(id) {
             return Some(ws);
         }
 
-        // 2. Search all sockets for the tag
         let tag = format!("id:{}", id);
         self.get_websockets_with_tag(&tag).into_iter().next()
     }
@@ -116,20 +96,11 @@ impl ConnectionRegistry {
     }
 
     pub fn send(&mut self, id: u32, message: String) -> bool {
-        match self.connections.get_mut(&id) {
-            Some(Connection::Active(ws)) => {
-                let _ = ws.send_with_str(message);
-                true
-            }
-            Some(Connection::Internal(_)) => {
-                if let Some(Connection::Internal(sender)) = self.connections.remove(&id) {
-                    let _ = sender.send(message);
-                    true
-                } else {
-                    false
-                }
-            }
-            None => false,
+        if let Some(ws) = self.websockets.get(&id) {
+            let _ = ws.send_with_str(&message);
+            true
+        } else {
+            false
         }
     }
 
@@ -145,7 +116,36 @@ impl ConnectionRegistry {
         self.state.get_websockets()
     }
 
-    pub fn remove(&mut self, id: u32) -> Option<Connection<WebSocket>> {
-        self.connections.remove(&id)
+    pub fn remove(&mut self, id: u32) -> Option<WebSocket> {
+        self.websockets.remove(&id)
+    }
+}
+
+pub struct InternalConnectionMap {
+    channels: HashMap<u32, oneshot::Sender<String>>,
+}
+
+impl InternalConnectionMap {
+    pub fn new() -> Self {
+        Self {
+            channels: HashMap::new(),
+        }
+    }
+
+    pub fn add(&mut self, id: u32, sender: oneshot::Sender<String>) {
+        self.channels.insert(id, sender);
+    }
+
+    pub fn send(&mut self, id: u32, message: String) -> bool {
+        if let Some(sender) = self.channels.remove(&id) {
+            let _ = sender.send(message);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn remove(&mut self, id: u32) {
+        self.channels.remove(&id);
     }
 }

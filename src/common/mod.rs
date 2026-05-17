@@ -45,3 +45,8 @@ pub trait NwcTransport {
 
     async fn execute_nwc_rpc(&self, request: Event) -> Result<Event, NwcError>;
 }
+
+#[async_trait::async_trait(?Send)]
+pub trait UserStore {
+    async fn get_nwc_uri(&self, username: &str) -> Option<String>;
+}

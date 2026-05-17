@@ -7,11 +7,12 @@ pub mod wallet_registry;
 pub mod event;
 pub mod filter;
 pub mod rpc_machine;
+pub mod rpc_orchestrator;
 pub mod tag;
 pub mod error;
 pub mod limits;
 
-pub use nip_01::{RelayMessage, ClientMessage, get_nip_11_info};
+pub use nip_01::{RelayMessage, ClientMessage};
 pub use event::Event;
 pub use filter::Filter;
 pub use nip_47::WalletInfo;

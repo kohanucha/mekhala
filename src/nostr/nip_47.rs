@@ -1,6 +1,5 @@
 use crate::nostr::Event;
 use crate::nostr::Tag;
-use crate::util::now;
 use k256::schnorr::{signature::hazmat::PrehashSigner, SigningKey};
 use k256::{PublicKey as K256PublicKey, SecretKey as K256SecretKey};
 use serde::{Deserialize, Serialize};
@@ -160,6 +159,7 @@ pub struct NwcClient {
     signing_key: SigningKey,
     pub my_pubkey: String,
     pub encryption_method: EncryptionMethod,
+    clock: fn() -> u64,
 }
 
 impl NwcClient {
@@ -179,7 +179,8 @@ impl NwcClient {
             shared_secret,
             signing_key,
             my_pubkey,
-            encryption_method: EncryptionMethod::Nip04, // Default to NIP-04
+            encryption_method: EncryptionMethod::Nip04,
+            clock: crate::util::now,
         })
     }
 
@@ -208,7 +209,7 @@ impl NwcClient {
 
         let mut tags = vec![
             Tag::p(&self.wallet_pubkey),
-            Tag::expiration(now() + 60),
+            Tag::expiration((self.clock)() + 60),
         ];
         tags.extend(extra_tags);
 
@@ -221,7 +222,7 @@ impl NwcClient {
     }
 
     pub fn parse_response_event(&self, event: &Event, request_id: &str) -> Result<Value> {
-        event.verify(now(), &Limits::default())?;
+        event.verify((self.clock)(), &Limits::default())?;
 
         if event.pubkey != self.wallet_pubkey {
             return Err(RelayError::Generic("Response pubkey mismatch".into()));
@@ -242,7 +243,7 @@ impl NwcClient {
     }
 
     pub fn create_event(&self, kind: u64, content: String, tags: Vec<Tag>) -> Result<Event> {
-        let created_at = now();
+        let created_at = (self.clock)();
 
         let (id, id_bytes) = Event::compute_id(&self.my_pubkey, created_at, kind, &tags, &content)?;
 
@@ -306,7 +307,7 @@ mod tests {
         let resp_event = Event {
             id: "resp_id".into(),
             pubkey: client.wallet_pubkey.clone(),
-            created_at: now(),
+            created_at: crate::util::now(),
             kind: 23195,
             tags: vec![
                 Tag::e(&request_id),
