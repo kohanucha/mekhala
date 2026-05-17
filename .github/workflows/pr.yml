@@ -21,9 +21,6 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Run Unit Tests
-        run: cargo test
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -35,16 +32,14 @@ jobs:
         working-directory: test
         run: npm install
 
-      - name: Build Worker
-        run: |
-          if ! command -v worker-build &> /dev/null; then
-            cargo install worker-build
-          fi
-          worker-build --release
+      - name: Cache worker-build
+        id: cache-worker-build
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/worker-build
+          key: ${{ runner.os }}-worker-build
 
-      - name: Run Integration Tests
+      - name: Run Full Test Suite
         run: |
-          npx wrangler dev --port 8787 &
-          # Wait for Miniflare to start
-          timeout 30s bash -c 'until curl -s http://localhost:8787 > /dev/null; do sleep 1; done'
-          cd test && npm test
+          chmod +x scripts/*.sh
+          ./scripts/test.sh
