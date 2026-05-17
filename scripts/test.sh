@@ -36,6 +36,55 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+# 2.5. Check port availability
+echo "Checking port $PORT..."
+PIDS=$(lsof -ti :$PORT 2>/dev/null)
+if [ ! -z "$PIDS" ]; then
+    KILL_PIDS=""
+    BLOCKED_PIDS=""
+    for PID in $PIDS; do
+        CMD=$(ps -p $PID -o command= 2>/dev/null)
+        if echo "$CMD" | grep -qi "wrangler"; then
+            KILL_PIDS="$KILL_PIDS $PID"
+        else
+            BLOCKED_PIDS="$BLOCKED_PIDS $PID"
+        fi
+    done
+
+    if [ ! -z "$BLOCKED_PIDS" ]; then
+        echo "❌ Port $PORT is in use by non-wrangler process(es):"
+        lsof -i :$PORT 2>/dev/null
+        echo ""
+        echo "To free the port, run:"
+        echo "  kill -9$BLOCKED_PIDS"
+        exit 1
+    fi
+
+    if [ ! -z "$KILL_PIDS" ]; then
+        echo "Killing stale wrangler process(es) on port $PORT (PID$KILL_PIDS)..."
+        for PID in $KILL_PIDS; do
+            kill -9 $PID 2>/dev/null
+        done
+        echo "Waiting for port $PORT to be released..."
+        RETRY=0
+        while [ $RETRY -lt 5 ]; do
+            if lsof -ti :$PORT 2>/dev/null | grep -q .; then
+                sleep 1
+                RETRY=$((RETRY + 1))
+            else
+                break
+            fi
+        done
+        PIDS_AFTER=$(lsof -ti :$PORT 2>/dev/null)
+        if [ ! -z "$PIDS_AFTER" ]; then
+            echo "❌ Port $PORT still occupied after killing wrangler:"
+            lsof -i :$PORT 2>/dev/null
+            exit 1
+        fi
+        echo "Port $PORT is now free."
+    fi
+fi
+
 # 3. Start Local Relay (redirect output to log file)
 echo "Step 3: Starting local relay on port $PORT..."
 npx wrangler dev --port $PORT --ip 127.0.0.1 > "$LOG_FILE" 2>&1 &
