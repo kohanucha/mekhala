@@ -2,7 +2,7 @@
 
 # --- Configuration ---
 PORT=8787
-LOG_FILE=$(mktemp)
+LOG_FILE="test/wrangler.log"
 
 # --- Cleanup Function ---
 cleanup() {
@@ -11,6 +11,10 @@ cleanup() {
     PID=$(lsof -ti :$PORT)
     if [ ! -z "$PID" ]; then
         kill -9 -$PID 2>/dev/null || kill -9 $PID 2>/dev/null
+    fi
+    PID2=$(lsof -ti :8788 2>/dev/null)
+    if [ ! -z "$PID2" ]; then
+        kill -9 $PID2 2>/dev/null
     fi
     echo "Cleanup complete."
     echo "Wrangler logs saved to: $LOG_FILE"

@@ -13,3 +13,6 @@ package-lock.json
 # Build
 /build/
 /target/
+
+# Test
+test/wrangler.log

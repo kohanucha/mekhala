@@ -1,4 +1,5 @@
 use crate::nostr::{Event, Filter};
+use serde_json::value::RawValue;
 
 #[derive(Debug, Clone)]
 pub enum ClientMessage {
@@ -9,32 +10,33 @@ pub enum ClientMessage {
 
 impl ClientMessage {
     pub fn from_json(text: &str) -> Result<Self, String> {
-        let arr: Vec<serde_json::Value> = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let arr: Vec<&RawValue> = serde_json::from_str(text).map_err(|e| e.to_string())?;
 
         if arr.is_empty() {
             return Err("empty message".to_string());
         }
 
-        match arr[0].as_str() {
-            Some("EVENT") if arr.len() >= 2 => {
-                let event: Event = serde_json::from_value(arr[1].clone()).map_err(|e| e.to_string())?;
+        let msg_type: String = serde_json::from_str(arr[0].get()).map_err(|e| e.to_string())?;
+
+        match msg_type.as_str() {
+            "EVENT" if arr.len() >= 2 => {
+                let event: Event = serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
                 Ok(Self::Event(event))
             }
-            Some("REQ") if arr.len() >= 3 => {
-                let sub_id = arr[1].as_str().ok_or("invalid sub_id")?.to_string();
+            "REQ" if arr.len() >= 3 => {
+                let sub_id: String = serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
                 let mut filters = Vec::new();
                 for value in &arr[2..] {
-                    let filter: Filter = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+                    let filter: Filter = serde_json::from_str(value.get()).map_err(|e| e.to_string())?;
                     filters.push(filter);
                 }
                 Ok(Self::Req(sub_id, filters))
             }
-            Some("CLOSE") if arr.len() >= 2 => {
-                let sub_id = arr[1].as_str().ok_or("invalid sub_id")?.to_string();
+            "CLOSE" if arr.len() >= 2 => {
+                let sub_id: String = serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
                 Ok(Self::Close(sub_id))
             }
-            Some(v) => Err(format!("unknown message type: {}", v)),
-            None => Err("missing message type".to_string()),
+            v => Err(format!("unknown message type: {}", v)),
         }
     }
 }
@@ -50,39 +52,40 @@ pub enum RelayMessage {
 
 impl RelayMessage {
     pub fn from_json(text: &str) -> Result<Self, String> {
-        let arr: Vec<serde_json::Value> = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let arr: Vec<&RawValue> = serde_json::from_str(text).map_err(|e| e.to_string())?;
 
         if arr.is_empty() {
             return Err("empty message".to_string());
         }
 
-        match arr[0].as_str() {
-            Some("OK") if arr.len() >= 4 => {
-                let id = arr[1].as_str().ok_or("invalid id")?.to_string();
-                let ok = arr[2].as_bool().ok_or("invalid ok")?;
-                let msg = arr[3].as_str().ok_or("invalid message")?.to_string();
+        let msg_type: String = serde_json::from_str(arr[0].get()).map_err(|e| e.to_string())?;
+
+        match msg_type.as_str() {
+            "OK" if arr.len() >= 4 => {
+                let id: String = serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
+                let ok: bool = serde_json::from_str(arr[2].get()).map_err(|e| e.to_string())?;
+                let msg: String = serde_json::from_str(arr[3].get()).map_err(|e| e.to_string())?;
                 Ok(Self::Ok(id, ok, msg))
             }
-            Some("EVENT") if arr.len() >= 3 => {
-                let sub_id = arr[1].as_str().ok_or("invalid sub_id")?.to_string();
-                let event: crate::nostr::Event = serde_json::from_value(arr[2].clone()).map_err(|e| e.to_string())?;
+            "EVENT" if arr.len() >= 3 => {
+                let sub_id: String = serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
+                let event: crate::nostr::Event = serde_json::from_str(arr[2].get()).map_err(|e| e.to_string())?;
                 Ok(Self::Event(sub_id, event))
             }
-            Some("EOSE") if arr.len() >= 2 => {
-                let sub_id = arr[1].as_str().ok_or("invalid sub_id")?.to_string();
+            "EOSE" if arr.len() >= 2 => {
+                let sub_id: String = serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
                 Ok(Self::Eose(sub_id))
             }
-            Some("NOTICE") if arr.len() >= 2 => {
-                let msg = arr[1].as_str().ok_or("invalid message")?.to_string();
+            "NOTICE" if arr.len() >= 2 => {
+                let msg: String = serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
                 Ok(Self::Notice(msg))
             }
-            Some("CLOSED") if arr.len() >= 3 => {
-                let sub_id = arr[1].as_str().ok_or("invalid sub_id")?.to_string();
-                let msg = arr[2].as_str().ok_or("invalid message")?.to_string();
+            "CLOSED" if arr.len() >= 3 => {
+                let sub_id: String = serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
+                let msg: String = serde_json::from_str(arr[2].get()).map_err(|e| e.to_string())?;
                 Ok(Self::Closed(sub_id, msg))
             }
-            Some(v) => Err(format!("unknown message type: {}", v)),
-            None => Err("missing message type".to_string()),
+            v => Err(format!("unknown message type: {}", v)),
         }
     }
 

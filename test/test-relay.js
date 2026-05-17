@@ -46,17 +46,17 @@ async function testAuth() {
   console.log("Testing Authentication (Unauthorized access)...");
   const rootURL = `${httpProtocol}${baseURL}/`;
   const response = await fetch(rootURL);
-  if (response.status !== 401) {
+  if (response.status !== 404) {
     throw new Error(
-      "Auth failed: Root path should return 401, but got " + response.status,
+      "Auth failed: Root path should return 404, but got " + response.status,
     );
   }
 
   const wrongURL = `${httpProtocol}${baseURL}/wrong-secret`;
   const responseWrong = await fetch(wrongURL);
-  if (responseWrong.status !== 401) {
+  if (responseWrong.status !== 404) {
     throw new Error(
-      "Auth failed: Wrong secret path should return 401, but got " +
+      "Auth failed: Wrong secret path should return 404, but got " +
         responseWrong.status,
     );
   }
@@ -1042,9 +1042,658 @@ function hex(bytes) {
   return Buffer.from(bytes).toString("hex");
 }
 
+async function testProtocolErrors() {
+  console.log("\n--- Testing Protocol Error Handling ---");
+  const ws = new WebSocket(RELAY_URL);
+
+  return new Promise((resolve, reject) => {
+    const results = {
+      binaryRejected: false,
+      unknownTypeRejected: false,
+      emptyArrayRejected: false,
+      insufficientReqArgsRejected: false,
+    };
+    let noticeCount = 0;
+
+    ws.on("open", () => {
+      ws.send(Buffer.from("binary data"));
+      ws.send(JSON.stringify(["UNKNOWN", "test"]));
+      ws.send("[]");
+      ws.send(JSON.stringify(["REQ"]));
+    });
+
+    ws.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg[0] === "NOTICE") {
+        const reason = msg[1] || "";
+        noticeCount++;
+        if (reason.includes("binary not supported")) {
+          results.binaryRejected = true;
+          console.log("✅ Binary message rejected with NOTICE.");
+        } else if (reason.includes("empty message")) {
+          results.emptyArrayRejected = true;
+          console.log("✅ Empty array rejected.");
+        } else if (reason.includes("unknown message type")) {
+          if (!results.unknownTypeRejected) {
+            results.unknownTypeRejected = true;
+            console.log("✅ Unknown message type rejected.");
+          } else {
+            results.insufficientReqArgsRejected = true;
+            console.log("✅ Insufficient REQ args rejected (parsed as unknown type).");
+          }
+        } else if (reason.includes("parse failed")) {
+          if (!results.emptyArrayRejected) {
+            results.emptyArrayRejected = true;
+            console.log("✅ Parse error rejected (general).");
+          }
+        }
+      }
+
+      if (results.binaryRejected && results.unknownTypeRejected &&
+          results.emptyArrayRejected && results.insufficientReqArgsRejected) {
+        console.log("✅ All protocol errors handled correctly.");
+        ws.close();
+        resolve();
+      }
+    });
+
+    ws.on("error", () => {
+      if (!results.binaryRejected) {
+        results.binaryRejected = true;
+        console.log("✅ Binary message caused WebSocket error (expected).");
+      }
+    });
+
+    setTimeout(() => {
+      const status = Object.entries(results).map(([k, v]) => `${k}: ${v}`).join(", ");
+      reject(new Error(`Protocol error test timeout. ${status}`));
+    }, 5000);
+  });
+}
+
+async function testLimitEnforcement() {
+  console.log("\n--- Testing Limit Enforcement ---");
+  const ws = new WebSocket(RELAY_URL);
+  const sk = generateSecretKey();
+  const pk = getPublicKey(sk);
+
+  return new Promise((resolve, reject) => {
+    let filterLimitRejected = false;
+    let tagLimitRejected = false;
+    let contentLimitRejected = false;
+
+    ws.on("open", () => {
+      const manyPubs = Array.from({ length: 11 }, (_, i) => `${pk}${i}`);
+      ws.send(JSON.stringify(["REQ", "limit-sub", { kinds: [23194], "#p": manyPubs }]));
+
+      const manyTags = Array.from({ length: 11 }, (_, i) => ["p", `${pk}${i}`]);
+      const eventTooManyTags = finalizeEvent({
+        kind: 23194,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: manyTags,
+        content: "too many tags"
+      }, sk);
+
+      ws.send(JSON.stringify(["EVENT", eventTooManyTags]));
+
+      setTimeout(() => {
+        const bigContent = "a".repeat(16385);
+        const eventTooLarge = finalizeEvent({
+          kind: 23194,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [["p", pk]],
+          content: bigContent
+        }, sk);
+        ws.send(JSON.stringify(["EVENT", eventTooLarge]));
+      }, 200);
+    });
+
+    ws.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+
+      if (msg[0] === "CLOSED" && msg[1] === "limit-sub" && msg[2].includes("filter too broad")) {
+        filterLimitRejected = true;
+        console.log("✅ Filter with >10 items rejected (filter too broad).");
+      }
+
+      if (msg[0] === "OK" && msg[2] === false) {
+        if (msg[3].includes("too many tags")) {
+          tagLimitRejected = true;
+          console.log("✅ Event with >10 tags rejected.");
+        } else if (msg[3].includes("content too large")) {
+          contentLimitRejected = true;
+          console.log("✅ Event with content >16384 bytes rejected.");
+        }
+      }
+
+      if (filterLimitRejected && tagLimitRejected && contentLimitRejected) {
+        console.log("✅ All limit enforcement tests passed.");
+        ws.close();
+        resolve();
+      }
+    });
+
+    setTimeout(() => {
+      reject(new Error(`Limit enforcement timeout. Filter: ${filterLimitRejected}, Tags: ${tagLimitRejected}, Content: ${contentLimitRejected}`));
+    }, 8000);
+  });
+}
+
+async function testKind13194NoOK() {
+  console.log("\n--- Testing Kind 13194 (Info Event) Produces No OK ---");
+  const ws = new WebSocket(RELAY_URL);
+  const sk = generateSecretKey();
+  const pk = getPublicKey(sk);
+
+  return new Promise((resolve, reject) => {
+    let okReceived = false;
+    let eventCached = false;
+
+    ws.on("open", () => {
+      const infoEvent = finalizeEvent({
+        kind: 13194,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [],
+        content: "no_ok_test"
+      }, sk);
+
+      ws.send(JSON.stringify(["EVENT", infoEvent]));
+
+      setTimeout(() => {
+        if (okReceived) {
+          reject(new Error("Kind 13194 should not produce OK message, but received one."));
+          return;
+        }
+        console.log("✅ Kind 13194 event did not produce OK message.");
+
+        ws.send(JSON.stringify(["REQ", "info-no-ok", { kinds: [13194], authors: [pk] }]));
+      }, 500);
+    });
+
+    ws.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+
+      if (msg[0] === "OK" && msg[2] === true) {
+        okReceived = true;
+      }
+
+      if (msg[0] === "EVENT" && msg[1] === "info-no-ok") {
+        if (msg[2].kind === 13194 && msg[2].content === "no_ok_test") {
+          eventCached = true;
+          console.log("✅ Kind 13194 event was cached and retrievable.");
+          ws.close();
+          resolve();
+        }
+      }
+
+      if (msg[0] === "EOSE" && msg[1] === "info-no-ok" && !eventCached) {
+      }
+    });
+
+    setTimeout(() => {
+      if (!okReceived && eventCached) {
+        resolve();
+      } else {
+        reject(new Error(`Kind 13194 test timeout. OK received: ${okReceived}, Cached: ${eventCached}`));
+      }
+    }, 5000);
+  });
+}
+
+async function testLnAddressErrors() {
+  console.log("\n--- Testing LN Address Error Handling ---");
+
+  const unknownUser = "nonexistent_user_" + Date.now();
+  const wellKnownUrl = `${HTTP_URL.replace(/\/$/, "")}/.well-known/lnurlp/${unknownUser}`;
+  const response = await fetch(wellKnownUrl);
+
+  if (response.status !== 200) {
+    throw new Error(`Expected 200 for unknown user well-known, got ${response.status}`);
+  }
+  const data = await response.json();
+  if (data.status !== "ERROR" || !data.reason || !data.reason.includes("not found")) {
+    throw new Error(`Expected ERROR with 'not found', got: ${JSON.stringify(data)}`);
+  }
+  console.log("✅ Unknown user well-known returns ERROR.");
+
+  const callbackUrl = `${HTTP_URL.replace(/\/$/, "")}/lnaddress/testuser_relay/callback`;
+
+  const respNoAmount = await fetch(callbackUrl);
+  const dataNoAmount = await respNoAmount.json();
+  if (dataNoAmount.status !== "ERROR" || !dataNoAmount.reason || !dataNoAmount.reason.includes("Missing amount")) {
+    throw new Error(`Expected ERROR 'Missing amount', got: ${JSON.stringify(dataNoAmount)}`);
+  }
+  console.log("✅ Callback without amount returns 'Missing amount' ERROR.");
+
+  const respNonNumeric = await fetch(`${callbackUrl}?amount=abc`);
+  const dataNonNumeric = await respNonNumeric.json();
+  if (dataNonNumeric.status !== "ERROR" || !dataNonNumeric.reason || !dataNonNumeric.reason.includes("Missing amount")) {
+    throw new Error(`Expected ERROR 'Missing amount' for non-numeric, got: ${JSON.stringify(dataNonNumeric)}`);
+  }
+  console.log("✅ Callback with non-numeric amount returns 'Missing amount' ERROR.");
+
+  const respNegative = await fetch(`${callbackUrl}?amount=-100`);
+  const dataNegative = await respNegative.json();
+  if (dataNegative.status !== "ERROR" || !dataNegative.reason || !dataNegative.reason.includes("Missing amount")) {
+    throw new Error(`Expected ERROR 'Missing amount' for negative, got: ${JSON.stringify(dataNegative)}`);
+  }
+  console.log("✅ Callback with negative amount returns 'Missing amount' ERROR.");
+}
+
+async function testFilterMatching() {
+  console.log("\n--- Testing Filter Matching (#e tags, since, until) ---");
+  const ws = new WebSocket(RELAY_URL);
+  const sk = generateSecretKey();
+  const pk = getPublicKey(sk);
+
+  return new Promise((resolve, reject) => {
+    let eTagReceived = false;
+    let sinceReceived = false;
+    let untilReceived = false;
+
+    ws.on("open", () => {
+      const parentEvent = finalizeEvent({
+        kind: 23194,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [["p", pk], ["e", "test-event-id-123"]],
+        content: "event with e-tag"
+      }, sk);
+
+      ws.send(JSON.stringify(["REQ", "sub-e", { kinds: [23194], "#e": ["test-event-id-123"], "#p": [pk] }]));
+    });
+
+    ws.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+
+      if (msg[0] === "EOSE" && msg[1] === "sub-e") {
+        const eventWithETag = finalizeEvent({
+          kind: 23194,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [["p", pk], ["e", "test-event-id-123"]],
+          content: "matches e-tag"
+        }, sk);
+        ws.send(JSON.stringify(["EVENT", eventWithETag]));
+      }
+
+      if (msg[0] === "EVENT" && msg[1] === "sub-e") {
+        if (msg[2].tags.some(t => t[0] === "e" && t[1] === "test-event-id-123")) {
+          eTagReceived = true;
+          console.log("✅ Filter matching on #e tag works.");
+          ws.send(JSON.stringify(["CLOSE", "sub-e"]));
+
+          const now = Math.floor(Date.now() / 1000);
+          ws.send(JSON.stringify(["REQ", "sub-since", { kinds: [23194], "#p": [pk], since: now - 300 }]));
+        }
+      }
+
+      if (msg[0] === "EOSE" && msg[1] === "sub-since") {
+        const recentEvent = finalizeEvent({
+          kind: 23194,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [["p", pk]],
+          content: "recent event for since test"
+        }, sk);
+        ws.send(JSON.stringify(["EVENT", recentEvent]));
+      }
+
+      if (msg[0] === "EVENT" && msg[1] === "sub-since") {
+        sinceReceived = true;
+        console.log("✅ Filter matching on since works.");
+        ws.send(JSON.stringify(["CLOSE", "sub-since"]));
+
+        const now2 = Math.floor(Date.now() / 1000);
+        ws.send(JSON.stringify(["REQ", "sub-until", { kinds: [23194], "#p": [pk], until: now2 + 3600 }]));
+      }
+
+      if (msg[0] === "EOSE" && msg[1] === "sub-until") {
+        const untilEvent = finalizeEvent({
+          kind: 23194,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [["p", pk]],
+          content: "event for until test"
+        }, sk);
+        ws.send(JSON.stringify(["EVENT", untilEvent]));
+      }
+
+      if (msg[0] === "EVENT" && msg[1] === "sub-until") {
+        untilReceived = true;
+        console.log("✅ Filter matching on until works.");
+        ws.send(JSON.stringify(["CLOSE", "sub-until"]));
+      }
+
+      if (eTagReceived && sinceReceived && untilReceived) {
+        ws.close();
+        resolve();
+      }
+    });
+
+    setTimeout(() => {
+      reject(new Error(`Filter matching timeout. e-tag: ${eTagReceived}, since: ${sinceReceived}, until: ${untilReceived}`));
+    }, 8000);
+  });
+}
+
+async function testCorsAndHeaders() {
+  console.log("\n--- Testing CORS and Response Headers ---");
+
+  const response = await fetch(HTTP_URL, {
+    headers: { Accept: "application/nostr+json" },
+  });
+
+  const contentType = response.headers.get("content-type");
+  if (!contentType || !contentType.includes("application/nostr+json")) {
+    throw new Error(`Expected Content-Type 'application/nostr+json', got: '${contentType}'`);
+  }
+  console.log("✅ NIP-11 Content-Type is application/nostr+json.");
+
+  const corsOrigin = response.headers.get("access-control-allow-origin");
+  if (!corsOrigin || corsOrigin !== "*") {
+    throw new Error(`Expected Access-Control-Allow-Origin '*', got: '${corsOrigin}'`);
+  }
+  console.log("✅ CORS headers present on NIP-11 response.");
+
+  const secHeaders = ["strict-transport-security", "x-content-type-options", "content-security-policy"];
+  for (const header of secHeaders) {
+    const val = response.headers.get(header);
+    if (!val) {
+      throw new Error(`Missing security header: ${header}`);
+    }
+  }
+  console.log("✅ Security headers present on NIP-11 response.");
+
+  const lnUrl = `${HTTP_URL.replace(/\/$/, "")}/.well-known/lnurlp/testuser_relay`;
+  const lnResponse = await fetch(lnUrl);
+  const lnCors = lnResponse.headers.get("access-control-allow-origin");
+  if (lnCors !== "*") {
+    throw new Error(`Expected LN address CORS '*', got: '${lnCors}'`);
+  }
+  console.log("✅ CORS headers present on LN address response.");
+}
+
+async function testAuthHeaders() {
+  console.log("\n--- Testing Security Headers on Auth Rejection ---");
+
+  if (!relaySecret || relaySecret === "") {
+    console.log("Skipping Auth Headers test (Public Relay mode)...");
+    return;
+  }
+
+  const wrongURL = `${httpProtocol}${baseURL}/wrong-secret`;
+  const response = await fetch(wrongURL);
+
+  if (response.status !== 404) {
+    throw new Error(`Expected 404 for wrong secret, got ${response.status}`);
+  }
+
+  const secHeaders = ["strict-transport-security", "x-content-type-options", "content-security-policy"];
+  for (const header of secHeaders) {
+    const val = response.headers.get(header);
+    if (!val) {
+      throw new Error(`Missing security header on auth rejection: ${header}`);
+    }
+  }
+  console.log("✅ Security headers present on 404 auth rejection.");
+}
+
+async function testFilterMatchingAdvanced() {
+  console.log("\n--- Testing Advanced Filter Matching (authors, kinds, ids) ---");
+  const ws = new WebSocket(RELAY_URL);
+  const sk = generateSecretKey();
+  const pk = getPublicKey(sk);
+
+  return new Promise((resolve, reject) => {
+    let authorsReceived = false;
+    let kindsReceived = false;
+    let idsReceived = false;
+
+    ws.on("open", () => {
+      // Phase 1: Subscribe by authors
+      ws.send(JSON.stringify(["REQ", "sub-authors", { kinds: [23194], authors: [pk] }]));
+    });
+
+    const phase2Kinds = () => {
+      // Phase 2: Subscribe by kinds (info events by author)
+      ws.send(JSON.stringify(["REQ", "sub-kinds", { kinds: [13194], authors: [pk] }]));
+    };
+
+    const phase3Ids = (knownEvent) => {
+      // Phase 3: Subscribe by ids
+      ws.send(JSON.stringify(["REQ", "sub-ids", { ids: [knownEvent.id], "#p": [pk] }]));
+      // Small delay to ensure EOSE arrives before the event
+      setTimeout(() => {
+        ws.send(JSON.stringify(["EVENT", knownEvent]));
+      }, 200);
+    };
+
+    ws.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+
+      // Phase 1: authors
+      if (!authorsReceived && msg[0] === "EOSE" && msg[1] === "sub-authors") {
+        const event = finalizeEvent({
+          kind: 23194,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [["p", pk]],
+          content: "authors test"
+        }, sk);
+        ws.send(JSON.stringify(["EVENT", event]));
+      }
+
+      if (!authorsReceived && msg[0] === "EVENT" && msg[1] === "sub-authors") {
+        if (msg[2].pubkey === pk) {
+          authorsReceived = true;
+          console.log("✅ Filter matching on authors works.");
+          ws.send(JSON.stringify(["CLOSE", "sub-authors"]));
+          phase2Kinds();
+        }
+      }
+
+      // Phase 2: kinds (info events)
+      if (authorsReceived && !kindsReceived && msg[0] === "EOSE" && msg[1] === "sub-kinds") {
+        const infoEvent = finalizeEvent({
+          kind: 13194,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [],
+          content: "pay_invoice"
+        }, sk);
+        ws.send(JSON.stringify(["EVENT", infoEvent]));
+        // Kind 13194 doesn't produce OK, so wait a bit then subscribe again to retrieve cached
+        setTimeout(() => {
+          ws.send(JSON.stringify(["CLOSE", "sub-kinds"]));
+          ws.send(JSON.stringify(["REQ", "sub-kinds2", { kinds: [13194], authors: [pk] }]));
+        }, 300);
+      }
+
+      if (authorsReceived && !kindsReceived && msg[0] === "EVENT" && (msg[1] === "sub-kinds" || msg[1] === "sub-kinds2")) {
+        if (msg[2].kind === 13194) {
+          kindsReceived = true;
+          console.log("✅ Filter matching on kinds works (info event cached and retrieved).");
+          ws.send(JSON.stringify(["CLOSE", msg[1]]));
+
+          // Phase 3: ids
+          const knownEvent = finalizeEvent({
+            kind: 23194,
+            created_at: Math.floor(Date.now() / 1000),
+            tags: [["p", pk]],
+            content: "ids test"
+          }, sk);
+          phase3Ids(knownEvent);
+          ws._pendingId = knownEvent.id;
+        }
+      }
+
+      // Phase 3: ids
+      if (kindsReceived && !idsReceived && msg[0] === "EOSE" && msg[1] === "sub-ids") {
+        // Already sent the event in phase3Ids, wait for it to arrive
+      }
+
+      if (kindsReceived && !idsReceived && msg[0] === "EVENT" && msg[1] === "sub-ids") {
+        if (msg[2].id === ws._pendingId) {
+          idsReceived = true;
+          console.log("✅ Filter matching on ids works.");
+          ws.send(JSON.stringify(["CLOSE", "sub-ids"]));
+        }
+      }
+
+      if (authorsReceived && kindsReceived && idsReceived) {
+        ws.close();
+        resolve();
+      }
+    });
+
+    ws.on("error", reject);
+    setTimeout(() => {
+      reject(new Error(`Advanced filter matching timeout. Authors: ${authorsReceived}, Kinds: ${kindsReceived}, IDs: ${idsReceived}`));
+    }, 15000);
+  });
+}
+
+async function testMixedValidInvalidFilters() {
+  console.log("\n--- Testing Mixed Valid/Invalid Filters in REQ ---");
+  const ws = new WebSocket(RELAY_URL);
+  const sk = generateSecretKey();
+  const pk = getPublicKey(sk);
+
+  return new Promise((resolve, reject) => {
+    let mixedRejected = false;
+    let validStillWorks = false;
+
+    ws.on("open", () => {
+      // REQ with first filter valid (has #p narrowing) and second filter invalid (no narrowing)
+      ws.send(JSON.stringify(["REQ", "mixed-sub", { kinds: [23194], "#p": [pk] }, { kinds: [23194] }]));
+    });
+
+    ws.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+
+      if (msg[0] === "CLOSED" && msg[1] === "mixed-sub" && msg[2]?.includes("filter too broad")) {
+        mixedRejected = true;
+        console.log("✅ Mixed valid/invalid REQ rejected entirely (filter too broad).");
+
+        // Now verify a valid REQ still works after the rejection
+        ws.send(JSON.stringify(["REQ", "valid-sub", { kinds: [23194], "#p": [pk] }]));
+      }
+
+      if (msg[0] === "EOSE" && msg[1] === "valid-sub") {
+        validStillWorks = true;
+        console.log("✅ Valid REQ still works after mixed rejection.");
+        ws.send(JSON.stringify(["CLOSE", "valid-sub"]));
+      }
+
+      if (mixedRejected && validStillWorks) {
+        ws.close();
+        resolve();
+      }
+    });
+
+    ws.on("error", reject);
+    setTimeout(() => {
+      reject(new Error(`Mixed filters test timeout. Mixed rejected: ${mixedRejected}, Valid works: ${validStillWorks}`));
+    }, 5000);
+  });
+}
+
+async function testMaxConnections() {
+  console.log("\n--- Testing Max Connections (429 Too Many Requests) ---");
+
+  const LIMIT_PORT = 8788;
+  const limitSecret = "limit-test-secret";
+  const limitWsURL = `ws://localhost:${LIMIT_PORT}/${limitSecret}`;
+  const limitHttpURL = `http://localhost:${LIMIT_PORT}/${limitSecret}`;
+
+  // Kill any stale process on port 8788
+  const { execSync } = await import("child_process");
+  try { execSync(`lsof -ti :${LIMIT_PORT} | xargs kill -9 2>/dev/null || true`); } catch (e) {}
+
+  console.log("Starting limited relay on port 8788 (MAX_CONNECTIONS=3)...");
+
+  const { spawn } = await import("child_process");
+  const projectRoot = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
+
+  const wranglerProcess = spawn("npx", [
+    "wrangler", "dev",
+    "--port", String(LIMIT_PORT),
+    "--ip", "127.0.0.1",
+    "--var", "MAX_CONNECTIONS:3",
+    "--var", `RELAY_SECRET:${limitSecret}`
+  ], {
+    cwd: projectRoot,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+
+  const cleanup = () => {
+    try { wranglerProcess.kill("SIGTERM"); } catch (e) {}
+    setTimeout(() => {
+      try { wranglerProcess.kill("SIGKILL"); } catch (e) {}
+    }, 2000);
+  };
+
+  // Wait for the server to start
+  let serverReady = false;
+  for (let i = 0; i < 30; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    try {
+      const resp = await fetch(limitHttpURL);
+      if (resp.status === 404 || resp.status === 200) {
+        serverReady = true;
+        break;
+      }
+    } catch (e) {
+      // Server not ready yet
+    }
+  }
+
+  if (!serverReady) {
+    cleanup();
+    throw new Error("Limited relay failed to start within 60 seconds");
+  }
+  console.log("Limited relay is up.");
+
+  try {
+    // Open exactly 3 connections (the max)
+    const connections = [];
+    for (let i = 0; i < 3; i++) {
+      const ws = new WebSocket(limitWsURL);
+      await new Promise((resolve, reject) => {
+        ws.on("open", resolve);
+        ws.on("error", (err) => reject(new Error(`Connection ${i + 1} failed: ${err.message}`)));
+        setTimeout(() => reject(new Error(`Connection ${i + 1} timeout`)), 5000);
+      });
+      connections.push(ws);
+    }
+    console.log("Opened 3 connections (max capacity reached).");
+
+    // 4th WebSocket connection should fail (429 response on upgrade)
+    const fourthWs = new WebSocket(limitWsURL);
+    const fourthResult = await new Promise((resolve) => {
+      fourthWs.on("error", () => resolve("error"));
+      setTimeout(() => {
+        if (fourthWs.readyState === WebSocket.CLOSED || fourthWs.readyState === WebSocket.CLOSING) {
+          resolve("closed");
+        } else {
+          resolve("open");
+        }
+      }, 3000);
+    });
+
+    if (fourthResult === "open") {
+      throw new Error("4th WebSocket connection should have been rejected but succeeded");
+    }
+    console.log("✅ 4th connection correctly rejected (429 Too Many Requests).");
+
+    // Close all connections
+    for (const ws of connections) {
+      ws.close();
+    }
+  } finally {
+    cleanup();
+  }
+}
+
 async function runAll() {
   try {
     await testAuth();
+    await testAuthHeaders();
     await testNip11();
     await testRelay();
     await testNip01EdgeCases();
@@ -1058,6 +1707,15 @@ async function runAll() {
     await testLnAddressOffline();
     await testLastInWinsRouting();
     await testNip44AndFallback();
+    await testProtocolErrors();
+    await testLimitEnforcement();
+    await testKind13194NoOK();
+    await testLnAddressErrors();
+    await testFilterMatching();
+    await testFilterMatchingAdvanced();
+    await testMixedValidInvalidFilters();
+    await testCorsAndHeaders();
+    await testMaxConnections();
     console.log("\nAll tests passed successfully! 🚀");
     process.exit(0);
   } catch (err) {

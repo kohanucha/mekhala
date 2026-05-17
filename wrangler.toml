@@ -10,7 +10,7 @@ MAX_EVENT_TAGS = "10"
 MAX_CONTENT_LENGTH = "16384"
 
 [[durable_objects.bindings]]
-name = "NWC_RELAY"
+name = "MEKHALA_NWC_DO"
 class_name = "CloudflareTransport"
 
 [[kv_namespaces]]

@@ -1,4 +1,5 @@
 use worker::Env;
+use sha2::{Sha256, Digest};
 
 #[derive(Debug, PartialEq)]
 pub enum AuthError {
@@ -43,13 +44,14 @@ impl AccessPolicy {
 }
 
 /// Constant-time string comparison to prevent timing attacks.
-/// Moved from utils.rs to keep security logic localized.
+/// Hashes inputs to ensure comparison time is independent of input lengths.
 fn constant_time_eq(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.bytes()
-        .zip(b.bytes())
+    let hash_a = Sha256::digest(a.as_bytes());
+    let hash_b = Sha256::digest(b.as_bytes());
+
+    hash_a
+        .iter()
+        .zip(hash_b.iter())
         .fold(0, |acc, (x, y)| acc | (x ^ y))
         == 0
 }
