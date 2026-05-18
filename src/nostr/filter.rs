@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use crate::nostr::{Event, Limits};
+use crate::nostr::Event;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Filter {
@@ -12,6 +12,7 @@ pub struct Filter {
     pub e_tags: Option<Vec<String>>,
     pub since: Option<u64>,
     pub until: Option<u64>,
+    pub limit: Option<u64>,
 }
 
 impl Filter {
@@ -60,13 +61,9 @@ impl Filter {
         true
     }
 
-    pub fn is_valid(&self, limits: &Limits) -> bool {
-        // NIP-47: Require either kinds with NWC kinds, OR specific narrowing criteria (p_tags, e_tags, ids)
-        // Note: authors alone is NOT sufficient - must have either kinds OR specific narrowing
+    pub fn is_valid(&self) -> bool {
         let has_specific_narrowing = self.p_tags.is_some() || self.e_tags.is_some() || self.ids.is_some();
 
-        // If has specific narrowing (p_tags, e_tags, ids), bypass kinds requirement
-        // This allows internal RPC and advanced client queries
         if has_specific_narrowing {
             if let Some(kinds) = &self.kinds {
                 if kinds.iter().any(|k| !matches!(k, 13194 | 23194..=23197)) {
@@ -74,7 +71,6 @@ impl Filter {
                 }
             }
         } else {
-            // No specific narrowing - require valid NWC kinds AND narrowing (for NWC compliance)
             let kinds = match &self.kinds {
                 Some(k) if !k.is_empty() => k,
                 _ => return false,
@@ -84,35 +80,7 @@ impl Filter {
                 return false;
             }
 
-            // Also require at least one narrowing criterion (for NWC)
             if self.ids.is_none() && self.authors.is_none() && self.p_tags.is_none() && self.e_tags.is_none() {
-                return false;
-            }
-        }
-
-        // Limit checks
-        if let Some(ids) = &self.ids {
-            if ids.len() > limits.max_filter_items {
-                return false;
-            }
-        }
-        if let Some(authors) = &self.authors {
-            if authors.len() > limits.max_filter_items {
-                return false;
-            }
-        }
-        if let Some(kinds) = &self.kinds {
-            if kinds.len() > limits.max_filter_items {
-                return false;
-            }
-        }
-        if let Some(p_tags) = &self.p_tags {
-            if p_tags.len() > limits.max_filter_items {
-                return false;
-            }
-        }
-        if let Some(e_tags) = &self.e_tags {
-            if e_tags.len() > limits.max_filter_items {
                 return false;
             }
         }
@@ -268,83 +236,77 @@ mod tests {
 
     #[test]
     fn test_filter_is_valid_requires_narrowing() {
-        let limits = Limits::default();
         let filter = Filter::default();
-        assert!(!filter.is_valid(&limits));
+        assert!(!filter.is_valid());
     }
 
     #[test]
     fn test_filter_is_valid_with_narrowing() {
-        let limits = Limits::default();
         let filter = Filter {
             kinds: Some(vec![13194]),
             p_tags: Some(vec!["author1".into()]),
             ..Default::default()
         };
-        assert!(filter.is_valid(&limits));
+        assert!(filter.is_valid());
     }
 
     #[test]
     fn test_filter_is_valid_requires_kinds() {
-        let limits = Limits::default();
         let filter = Filter {
             authors: Some(vec!["author1".into()]),
             ..Default::default()
         };
-        assert!(!filter.is_valid(&limits));
+        assert!(!filter.is_valid());
     }
 
     #[test]
     fn test_filter_is_valid_rejects_non_nwc_kinds() {
-        let limits = Limits::default();
         let filter = Filter {
             kinds: Some(vec![1]),
             authors: Some(vec!["author1".into()]),
             ..Default::default()
         };
-        assert!(!filter.is_valid(&limits));
+        assert!(!filter.is_valid());
 
         let filter = Filter {
             kinds: Some(vec![13194, 1]),
             authors: Some(vec!["author1".into()]),
             ..Default::default()
         };
-        assert!(!filter.is_valid(&limits));
+        assert!(!filter.is_valid());
     }
 
     #[test]
     fn test_filter_is_valid_accepts_nwc_kinds() {
-        let limits = Limits::default();
         for kind in [13194u64, 23194, 23195, 23196, 23197] {
             let filter = Filter {
                 kinds: Some(vec![kind]),
                 authors: Some(vec!["author1".into()]),
                 ..Default::default()
             };
-            assert!(filter.is_valid(&limits), "kind {} should be valid", kind);
+            assert!(filter.is_valid(), "kind {} should be valid", kind);
         }
     }
 
     #[test]
-    fn test_filter_is_valid_ids_exceeds_limit() {
-        let limits = Limits { max_filter_items: 100, ..Default::default() };
+    fn test_filter_is_valid_with_p_tags_only() {
         let filter = Filter {
-            kinds: Some(vec![23194]),
-            ids: Some(vec!["id1".into(); 200]),
+            p_tags: Some(vec!["pubkey1".into()]),
             ..Default::default()
         };
-        assert!(!filter.is_valid(&limits));
+        assert!(filter.is_valid());
     }
 
     #[test]
-    fn test_filter_is_valid_authors_exceeds_limit() {
-        let limits = Limits { max_filter_items: 100, ..Default::default() };
-        let filter = Filter {
-            kinds: Some(vec![23194]),
-            authors: Some(vec!["author1".into(); 150]),
-            ..Default::default()
-        };
-        assert!(!filter.is_valid(&limits));
+    fn test_filter_limit_deserialization() {
+        let json = r#"{"kinds": [23194], "limit": 1}"#;
+        let filter: Filter = serde_json::from_str(json).unwrap();
+        assert_eq!(filter.limit, Some(1));
+        assert_eq!(filter.kinds, Some(vec![23194]));
+
+        let json_no_limit = r#"{"kinds": [23194], "authors": ["pk1"]}"#;
+        let filter_no_limit: Filter = serde_json::from_str(json_no_limit).unwrap();
+        assert_eq!(filter_no_limit.limit, None);
     }
 
     #[test]

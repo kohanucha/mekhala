@@ -5,8 +5,6 @@ compatibility_date = "2026-04-30"
 [vars]
 WALLET_REGION = "apac"
 MAX_CONNECTIONS = "100"
-MAX_FILTER_ITEMS = "10"
-MAX_EVENT_TAGS = "100"
 MAX_CONTENT_LENGTH = "65536"
 
 [[durable_objects.bindings]]

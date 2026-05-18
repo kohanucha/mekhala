@@ -125,7 +125,7 @@ impl<S: Storage> NostrEngine<S> {
     }
 
     pub async fn handle_req(&mut self, id: u32, sub_id: String, filters: Vec<Filter>) -> Vec<EngineResponse> {
-        if filters.iter().any(|f| !f.is_valid(&self.limits)) {
+        if filters.iter().any(|f| !f.is_valid()) {
             let message = RelayMessage::Closed(sub_id.clone(), "filter too broad".to_string());
             return vec![EngineResponse::send(id, message)];
         }
@@ -189,6 +189,8 @@ impl<S: Storage> NostrEngine<S> {
         let mut responses = Vec::new();
         let _ = self.registry.subscribe(id, sub_id.clone(), filters.clone()).await;
 
+        let global_limit = filters.iter().filter_map(|f| f.limit).min();
+
         for filters_set in filters.iter() {
             for pk in filters_set.pubkeys() {
                 if let Some(info_event) = self.registry.get_info(&pk).await {
@@ -196,6 +198,14 @@ impl<S: Storage> NostrEngine<S> {
                         responses.push(EngineResponse::send(id, RelayMessage::Event(sub_id.clone(), info_event.clone())));
                     }
                 }
+            }
+        }
+
+        if let Some(limit) = global_limit {
+            let event_count = responses.iter().filter(|r| matches!(r, EngineResponse::Send { message: RelayMessage::Event(..), .. })).count();
+            if event_count >= limit as usize {
+                responses.push(EngineResponse::send(id, RelayMessage::Eose(sub_id)));
+                return responses;
             }
         }
 

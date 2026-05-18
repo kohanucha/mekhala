@@ -66,9 +66,6 @@ impl Event {
             _ => {}
         }
 
-        if self.tags.len() > limits.max_event_tags {
-            return Err(RelayError::LimitExceeded(format!("too many tags (max {})", limits.max_event_tags)));
-        }
         if self.content.len() > limits.max_content_length {
             return Err(RelayError::LimitExceeded(format!("content too large (max {} bytes)", limits.max_content_length)));
         }
