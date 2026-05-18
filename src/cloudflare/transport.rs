@@ -12,6 +12,11 @@ use crate::nostr::rpc_orchestrator::{RpcContext, RpcReceiveError};
 use crate::cloudflare::create_cors_response;
 use crate::cloudflare::connection::{WebSocketRegistry, InternalConnectionMap};
 use crate::cloudflare::kv::CloudflareKvStore;
+use crate::util::short;
+use crate::log_info;
+use crate::log_debug;
+use crate::log_warn;
+use crate::log_error;
 
 pub struct CloudflareStorage {
     storage: worker::Storage,
@@ -79,27 +84,34 @@ impl DurableObject for CloudflareTransport {
     async fn websocket_message(&self, websocket: WebSocket, message: WebSocketIncomingMessage) -> Result<()> {
         if let WebSocketIncomingMessage::String(text) = message {
             if text.len() > 131072 {
+                log_warn!("message too large: {} bytes", text.len());
                 let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Notice("message too large".into()).to_json());
                 return Ok(());
             }
 
             let parsed = crate::nostr::ClientMessage::from_json(&text);
 
-            // NIP-01: For EVENT messages, validate and send OK immediately
-            // before async storage operations (prevents client timeouts).
             match &parsed {
                 Ok(crate::nostr::ClientMessage::Event(event)) => {
                     let mut engine = self.engine.lock().await;
                     let connection_id = self.wake_up_with_handler(&websocket, &mut engine).await.ok_or_else(|| Error::from("Connection not found"))?;
 
+                    log_info!("← conn={} RECV EVENT kind={} pk={} id={}", connection_id, event.kind, short(&event.pubkey, 8), short(&event.id, 8));
+
                     match engine.validate_event(event) {
                         Ok(()) => {
-                            let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Ok(event.id.clone(), true, "".to_string()).to_json());
+                            log_debug!("✓ EVENT accepted kind={} pk={} id={}", event.kind, short(&event.pubkey, 8), short(&event.id, 8));
+                            let ok_msg = crate::nostr::RelayMessage::Ok(event.id.clone(), true, "".to_string()).to_json();
+                            log_info!("→ conn={} SEND {}", connection_id, ok_msg);
+                            let _ = websocket.send_with_str(&ok_msg);
                             let responses = engine.route_verified_event(connection_id, event.clone()).await;
                             self.process_responses(responses, &mut engine).await?;
                         }
                         Err((event_id, error_msg)) => {
-                            let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Ok(event_id, false, error_msg).to_json());
+                            log_warn!("✗ EVENT rejected id={}: {}", short(&event_id, 8), error_msg);
+                            let fail_msg = crate::nostr::RelayMessage::Ok(event_id, false, error_msg).to_json();
+                            log_info!("→ conn={} SEND {}", connection_id, fail_msg);
+                            let _ = websocket.send_with_str(&fail_msg);
                         }
                     }
                 }
@@ -109,13 +121,22 @@ impl DurableObject for CloudflareTransport {
 
                     let responses = match parsed {
                         Ok(crate::nostr::ClientMessage::Req(sub_id, filters)) => {
+                            log_info!("← conn={} RECV REQ sub={}", connection_id, sub_id);
+                            for (i, f) in filters.iter().enumerate() {
+                                let kinds = f.kinds.as_ref().map(|k| format!("{:?}", k)).unwrap_or_else(|| "any".into());
+                                let auths = f.authors.as_ref().map(|a| a.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(",")).unwrap_or_else(|| "".into());
+                                let pts = f.p_tags.as_ref().map(|p| p.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(",")).unwrap_or_else(|| "".into());
+                                log_info!("  filter[{}]: kinds={} authors={} #p={}", i, kinds, auths, pts);
+                            }
                             engine.handle_req(connection_id, sub_id, filters).await
                         }
                         Ok(crate::nostr::ClientMessage::Close(sub_id)) => {
+                            log_info!("← conn={} RECV CLOSE sub={}", connection_id, sub_id);
                             engine.process_close(connection_id, sub_id).await
                         }
                         Ok(crate::nostr::ClientMessage::Event(_)) => unreachable!(),
                         Err(e) => {
+                            log_error!("✗ parse failed: {}", e);
                             if let Some(crate::nostr::nip_01::PartialClientMessage::Event(id)) = crate::nostr::nip_01::PartialClientMessage::from_json(&text) {
                                 vec![crate::nostr::engine::EngineResponse::send(connection_id, crate::nostr::RelayMessage::Ok(id, false, format!("parse failed: {}", e)))]
                             } else {
@@ -130,6 +151,7 @@ impl DurableObject for CloudflareTransport {
             Ok(())
         } else {
             let _engine = self.engine.lock().await;
+            log_warn!("binary message not supported");
             let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Notice("binary not supported".into()).to_json());
             Ok(())
         }
@@ -199,10 +221,15 @@ impl RpcContext for CloudflareTransport {
 
 impl CloudflareTransport {
     fn route_send(&self, id: u32, message: String) -> bool {
+        log_info!("→ conn={} SEND {}", id, message);
         if self.websockets.borrow_mut().send(id, message.clone()) {
-            return true;
+            true
+        } else if self.internal.borrow_mut().send(id, message) {
+            true
+        } else {
+            log_warn!("✗ send failed: conn={} not found", id);
+            false
         }
-        self.internal.borrow_mut().send(id, message)
     }
 
     async fn execute_rpc_action_inner(&self, conn_id: u32, action: crate::nostr::rpc_machine::RpcAction, engine: &mut NostrEngine<CloudflareStorage>) -> Result<(), crate::common::NwcError> {
@@ -251,6 +278,7 @@ impl CloudflareTransport {
         let _ = engine.load(id).await;
 
         self.websockets.borrow_mut().add_active(id, ws.clone());
+        log_debug!("↻ wake conn={}", id);
         Some(id)
     }
 
@@ -260,6 +288,7 @@ impl CloudflareTransport {
             .unwrap_or(20);
 
         if self.websockets.borrow().len() >= max_connections {
+            log_warn!("✗ connection rejected: max={} connections reached", max_connections);
             return Response::error("Too Many Requests", 429);
         }
 
@@ -276,6 +305,8 @@ impl CloudflareTransport {
 
         self.websockets.borrow_mut().register_active(connection_id, server);
 
+        log_info!("+ conn={} accepted count={}/{}", connection_id, self.websockets.borrow().len(), max_connections);
+
         self.process_responses(responses, &mut engine).await?;
 
         Ok(Response::from_websocket(client)?)
@@ -284,6 +315,7 @@ impl CloudflareTransport {
     async fn handle_disconnect(&self, ws: &WebSocket) -> Result<()> {
         let mut engine = self.engine.lock().await;
         if let Some(id) = self.wake_up_with_handler(ws, &mut engine).await {
+            log_info!("- conn={} disconnected", id);
             let responses = engine.on_terminate(id).await;
             self.process_responses(responses, &mut engine).await?;
             self.websockets.borrow_mut().remove(id);
