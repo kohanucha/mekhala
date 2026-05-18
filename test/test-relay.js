@@ -1123,58 +1123,31 @@ async function testLimitEnforcement() {
   const pk = getPublicKey(sk);
 
   return new Promise((resolve, reject) => {
-    let filterLimitRejected = false;
-    let tagLimitRejected = false;
     let contentLimitRejected = false;
 
     ws.on("open", () => {
-      // 1. Test Filter Limit (MAX_FILTER_ITEMS = 10)
-      const manyPubs = Array.from({ length: 11 }, (_, i) => `${pk}${i}`);
-      ws.send(JSON.stringify(["REQ", "limit-sub", { kinds: [23194], "#p": manyPubs }]));
-
-      // 2. Test Tag Limit (MAX_EVENT_TAGS = 100)
-      const manyTags = Array.from({ length: 101 }, (_, i) => ["p", `${pk}${i}`]);
-      const eventTooManyTags = finalizeEvent({
+      // Test Content Limit (MAX_CONTENT_LENGTH = 65536)
+      const bigContent = "a".repeat(65537);
+      const eventTooLarge = finalizeEvent({
         kind: 23194,
         created_at: Math.floor(Date.now() / 1000),
-        tags: manyTags,
-        content: "too many tags"
+        tags: [["p", pk]],
+        content: bigContent
       }, sk);
-
-      ws.send(JSON.stringify(["EVENT", eventTooManyTags]));
-
-      // 3. Test Content Limit (MAX_CONTENT_LENGTH = 65536)
-      setTimeout(() => {
-        const bigContent = "a".repeat(65537);
-        const eventTooLarge = finalizeEvent({
-          kind: 23194,
-          created_at: Math.floor(Date.now() / 1000),
-          tags: [["p", pk]],
-          content: bigContent
-        }, sk);
-        ws.send(JSON.stringify(["EVENT", eventTooLarge]));
-      }, 200);
+      ws.send(JSON.stringify(["EVENT", eventTooLarge]));
     });
 
     ws.on("message", (data) => {
       const msg = JSON.parse(data.toString());
 
-      if (msg[0] === "CLOSED" && msg[1] === "limit-sub" && msg[2].includes("filter too broad")) {
-        filterLimitRejected = true;
-        console.log("✅ Filter with >10 items rejected (filter too broad).");
-      }
-
       if (msg[0] === "OK" && msg[2] === false) {
-        if (msg[3].includes("too many tags")) {
-          tagLimitRejected = true;
-          console.log("✅ Event with >100 tags rejected.");
-        } else if (msg[3].includes("content too large")) {
+        if (msg[3].includes("content too large")) {
           contentLimitRejected = true;
           console.log("✅ Event with >64KB content rejected.");
         }
       }
 
-      if (filterLimitRejected && tagLimitRejected && contentLimitRejected) {
+      if (contentLimitRejected) {
         console.log("✅ All limit enforcement tests passed.");
         ws.close();
         resolve();
@@ -1183,7 +1156,7 @@ async function testLimitEnforcement() {
 
     setTimeout(() => {
       ws.close();
-      reject(new Error(`Limit enforcement timeout. Filter: ${filterLimitRejected}, Tags: ${tagLimitRejected}, Content: ${contentLimitRejected}`));
+      reject(new Error(`Limit enforcement timeout. Content: ${contentLimitRejected}`));
     }, 8000);
   });
 }

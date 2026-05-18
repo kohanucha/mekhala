@@ -47,12 +47,6 @@ impl DurableObject for CloudflareTransport {
     fn new(state: State, env: Env) -> Self {
         let storage = CloudflareStorage { storage: state.storage() };
         let limits = Limits::new(
-            env.var("MAX_FILTER_ITEMS")
-                .and_then(|v| v.to_string().parse::<usize>().map_err(|e| Error::from(e.to_string())))
-                .unwrap_or(10),
-            env.var("MAX_EVENT_TAGS")
-                .and_then(|v| v.to_string().parse::<usize>().map_err(|e| Error::from(e.to_string())))
-                .unwrap_or(100),
             env.var("MAX_CONTENT_LENGTH")
                 .and_then(|v| v.to_string().parse::<usize>().map_err(|e| Error::from(e.to_string())))
                 .unwrap_or(65536),
