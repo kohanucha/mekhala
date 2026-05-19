@@ -317,7 +317,7 @@ impl CloudflareTransport {
     }
 
     async fn wake_up_with_handler(&self, ws: &WebSocket, engine: &mut NostrEngine<CloudflareStorage>) -> Option<u32> {
-        let id = match self.websockets.borrow().identify(&self.state, ws) {
+        let id = match self.websockets.borrow().identify(ws) {
             Some(id) => id,
             None => {
                 log_warn!("wake_up: identify failed for ws");
@@ -352,7 +352,7 @@ impl CloudflareTransport {
             websockets.accept_and_register(&self.state, connection_id, &server);
         }
 
-        // 3. NOW safe to await — WS is tagged and in HashMap
+        // 3. NOW safe to await — WS is accepted and in HashMap
         let mut engine = self.engine.lock().await;
         let responses = engine.on_connect(connection_id).await;
 
