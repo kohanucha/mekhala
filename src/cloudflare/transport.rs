@@ -39,12 +39,19 @@ impl Storage for CloudflareStorage {
     }
 }
 
+struct IdCounterState {
+    current_id: u32,
+    id_limit: u32,
+}
+
 #[durable_object]
 pub struct CloudflareTransport {
     env: Env,
+    state: State,
     engine: Mutex<NostrEngine<CloudflareStorage>>,
     websockets: RefCell<WebSocketRegistry>,
     internal: RefCell<InternalConnectionMap>,
+    id_counter: Mutex<IdCounterState>,
     kv: CloudflareKvStore,
 }
 
@@ -61,9 +68,11 @@ impl DurableObject for CloudflareTransport {
 
         Self {
             env,
+            state,
             engine: Mutex::new(engine),
-            websockets: RefCell::new(WebSocketRegistry::new(state)),
+            websockets: RefCell::new(WebSocketRegistry::new()),
             internal: RefCell::new(InternalConnectionMap::new()),
+            id_counter: Mutex::new(IdCounterState { current_id: 0, id_limit: 0 }),
             kv,
         }
     }
@@ -94,7 +103,14 @@ impl DurableObject for CloudflareTransport {
             match &parsed {
                 Ok(crate::nostr::ClientMessage::Event(event)) => {
                     let mut engine = self.engine.lock().await;
-                    let connection_id = self.wake_up_with_handler(&websocket, &mut engine).await.ok_or_else(|| Error::from("Connection not found"))?;
+                    let connection_id = match self.wake_up_with_handler(&websocket, &mut engine).await {
+                        Some(id) => id,
+                        None => {
+                            log_error!("connection not found for incoming EVENT, sending reconnect notice");
+                            let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Notice("connection lost: please reconnect".into()).to_json());
+                            return Ok(());
+                        }
+                    };
 
                     log_info!("← conn={} RECV EVENT kind={} pk={} id={}", connection_id, event.kind, short(&event.pubkey, 8), short(&event.id, 8));
 
@@ -117,7 +133,14 @@ impl DurableObject for CloudflareTransport {
                 }
                 _ => {
                     let mut engine = self.engine.lock().await;
-                    let connection_id = self.wake_up_with_handler(&websocket, &mut engine).await.ok_or_else(|| Error::from("Connection not found"))?;
+                    let connection_id = match self.wake_up_with_handler(&websocket, &mut engine).await {
+                        Some(id) => id,
+                        None => {
+                            log_error!("connection not found for incoming message, sending reconnect notice");
+                            let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Notice("connection lost: please reconnect".into()).to_json());
+                            return Ok(());
+                        }
+                    };
 
                     let responses = match parsed {
                         Ok(crate::nostr::ClientMessage::Req(sub_id, filters)) => {
@@ -186,7 +209,7 @@ impl RpcContext for CloudflareTransport {
     }
 
     async fn allocate_connection_id(&self) -> u32 {
-        self.websockets.borrow().next_id().await
+        self.allocate_id().await
     }
 
     async fn execute_action(&self, conn_id: u32, action: RpcAction) -> Result<(), crate::common::NwcError> {
@@ -220,6 +243,27 @@ impl RpcContext for CloudflareTransport {
 }
 
 impl CloudflareTransport {
+    async fn allocate_id(&self) -> u32 {
+        let mut counter = self.id_counter.lock().await;
+        let current = counter.current_id;
+        let limit = counter.id_limit;
+
+        if current >= limit {
+            let storage = self.state.storage();
+            let last_limit = storage.get::<u32>("id_counter").await.ok().flatten().unwrap_or(0);
+            let now = crate::util::now() as u32;
+            let start = std::cmp::max(last_limit, now);
+            let new_limit = start + 1000;
+            let _ = storage.put("id_counter", new_limit).await;
+            counter.current_id = start + 1;
+            counter.id_limit = new_limit;
+            counter.current_id
+        } else {
+            counter.current_id = current + 1;
+            counter.current_id
+        }
+    }
+
     fn route_send(&self, id: u32, message: String) -> bool {
         log_info!("→ conn={} SEND {}", id, message);
         if self.websockets.borrow_mut().send(id, message.clone()) {
@@ -253,13 +297,13 @@ impl CloudflareTransport {
 
     async fn load_connection_with_handler(&self, pubkey: &str, engine: &mut NostrEngine<CloudflareStorage>) -> Result<Option<u32>> {
         if let Some(id) = engine.load_by_pubkey(pubkey).await {
-            let ws = self.websockets.borrow().find_by_id(id);
+            let ws = self.websockets.borrow().find_by_id(&self.state, id);
             if let Some(ws) = ws {
                 let _ = self.wake_up_with_handler(&ws, engine).await;
                 return Ok(Some(id));
             }
 
-            let all_ws = self.websockets.borrow().get_all_websockets();
+            let all_ws = self.websockets.borrow().get_all_websockets(&self.state);
             for ws in all_ws {
                 if let Some(actual_id) = self.wake_up_with_handler(&ws, engine).await {
                     if actual_id == id {
@@ -273,7 +317,13 @@ impl CloudflareTransport {
     }
 
     async fn wake_up_with_handler(&self, ws: &WebSocket, engine: &mut NostrEngine<CloudflareStorage>) -> Option<u32> {
-        let id = self.websockets.borrow().identify(ws)?;
+        let id = match self.websockets.borrow().identify(&self.state, ws) {
+            Some(id) => id,
+            None => {
+                log_warn!("wake_up: identify failed for ws");
+                return None;
+            }
+        };
 
         let _ = engine.load(id).await;
 
@@ -287,25 +337,26 @@ impl CloudflareTransport {
             .and_then(|v| v.to_string().parse::<usize>().map_err(|e| Error::from(e.to_string())))
             .unwrap_or(20);
 
-        if self.websockets.borrow().len() >= max_connections {
-            log_warn!("✗ connection rejected: max={} connections reached", max_connections);
-            return Response::error("Too Many Requests", 429);
-        }
-
         let WebSocketPair { client, server } = WebSocketPair::new()?;
 
+        // 1. Allocate ID without holding any RefCell borrow across await
+        let connection_id = self.allocate_id().await;
+
+        // 2. Accept + register atomically with count re-check inside borrow_mut
         {
-            let websockets = self.websockets.borrow();
-            websockets.accept_web_socket(&server);
+            let mut websockets = self.websockets.borrow_mut();
+            if websockets.len(&self.state) >= max_connections {
+                log_warn!("✗ connection rejected: max={} connections reached", max_connections);
+                return Response::error("Too Many Requests", 429);
+            }
+            websockets.accept_and_register(&self.state, connection_id, &server);
         }
 
+        // 3. NOW safe to await — WS is tagged and in HashMap
         let mut engine = self.engine.lock().await;
-        let connection_id = self.websockets.borrow().next_id().await;
         let responses = engine.on_connect(connection_id).await;
 
-        self.websockets.borrow_mut().register_active(connection_id, server);
-
-        log_info!("+ conn={} accepted count={}/{}", connection_id, self.websockets.borrow().len(), max_connections);
+        log_info!("+ conn={} accepted count={}/{}", connection_id, self.websockets.borrow().len(&self.state), max_connections);
 
         self.process_responses(responses, &mut engine).await?;
 
@@ -330,7 +381,7 @@ impl CloudflareTransport {
                     self.route_send(recipient_id, message.to_json());
                 }
                 EngineResponse::WakeUp { connection_id } => {
-                    let ws = self.websockets.borrow().find_by_id(connection_id);
+                    let ws = self.websockets.borrow().find_by_id(&self.state, connection_id);
                     if let Some(ws) = ws {
                         let _ = self.wake_up_with_handler(&ws, engine).await;
                     }
