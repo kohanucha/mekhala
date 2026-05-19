@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use futures::channel::oneshot;
 use worker::*;
-use wasm_bindgen::JsCast;
-use crate::cloudflare::HibernationState;
 
 pub struct WebSocketRegistry {
     websockets: HashMap<u32, WebSocket>,
@@ -20,10 +18,11 @@ impl WebSocketRegistry {
     }
 
     pub fn accept_and_register(&mut self, state: &State, id: u32, ws: &WebSocket) {
-        state.accept_web_socket(ws);
         let tag = format!("id:{}", id);
-        state.set_tags(ws, vec![tag]);
+        state.accept_websocket_with_tags(ws, &[tag.as_str()]);
         self.add_active(id, ws.clone());
+        let persisted = state.get_tags(ws);
+        crate::log_debug!("✓ conn={} registered, tags={:?}", id, persisted);
     }
 
     pub fn identify(&self, state: &State, ws: &WebSocket) -> Option<u32> {
@@ -52,21 +51,7 @@ impl WebSocketRegistry {
         }
 
         let tag = format!("id:{}", id);
-        self.get_websockets_with_tag(state, &tag).into_iter().next()
-    }
-
-    fn get_websockets_with_tag(&self, state: &State, tag: &str) -> Vec<WebSocket> {
-        let state_js: &worker::wasm_bindgen::JsValue = unsafe { std::mem::transmute(state) };
-        let state_ext: &crate::cloudflare::hibernation::DurableObjectStateExt = state_js.unchecked_ref();
-        let js_array = state_ext.get_websockets_raw(Some(tag));
-        let mut result = Vec::new();
-        for i in 0..js_array.length() {
-            let ws_js = js_array.get(i);
-            let web_sys_ws: worker::web_sys::WebSocket = ws_js.unchecked_into();
-            let ws: WebSocket = web_sys_ws.into();
-            result.push(ws);
-        }
-        result
+        state.get_websockets_with_tag(&tag).into_iter().next()
     }
 
     pub fn send(&mut self, id: u32, message: String) -> bool {
