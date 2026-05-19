@@ -18,26 +18,23 @@ impl WebSocketRegistry {
     }
 
     pub fn accept_and_register(&mut self, state: &State, id: u32, ws: &WebSocket) {
-        let tag = format!("id:{}", id);
-        state.accept_websocket_with_tags(ws, &[tag.as_str()]);
+        state.accept_web_socket(ws);
         self.add_active(id, ws.clone());
-        let persisted = state.get_tags(ws);
-        crate::log_debug!("✓ conn={} registered, tags={:?}", id, persisted);
+        if let Err(e) = ws.serialize_attachment(&id) {
+            crate::log_warn!("serialize_attachment failed for conn={}: {}", id, e);
+        }
+        crate::log_debug!("✓ conn={} registered, attachment verified", id);
     }
 
-    pub fn identify(&self, state: &State, ws: &WebSocket) -> Option<u32> {
+    pub fn identify(&self, ws: &WebSocket) -> Option<u32> {
         for (id, registered) in &self.websockets {
             if js_sys::Object::is(registered.as_ref(), ws.as_ref()) {
                 return Some(*id);
             }
         }
 
-        let tags = state.get_tags(ws);
-        crate::log_debug!("identify: in-memory miss, tags={:?}", tags);
-        let id_tag = tags.iter().find(|t| t.starts_with("id:"))?;
-        let id_str = id_tag.strip_prefix("id:")?;
-        let id = id_str.parse::<u32>().ok()?;
-        crate::log_debug!("identify: recovered conn={} from hibernation tags", id);
+        let id: u32 = ws.deserialize_attachment::<u32>().ok().flatten()?;
+        crate::log_debug!("identify: recovered conn={} from hibernation attachment", id);
         Some(id)
     }
 
@@ -50,8 +47,14 @@ impl WebSocketRegistry {
             return Some(ws);
         }
 
-        let tag = format!("id:{}", id);
-        state.get_websockets_with_tag(&tag).into_iter().next()
+        for ws in state.get_websockets() {
+            if let Ok(Some(attachment_id)) = ws.deserialize_attachment::<u32>() {
+                if attachment_id == id {
+                    return Some(ws);
+                }
+            }
+        }
+        None
     }
 
     pub fn send(&mut self, id: u32, message: String) -> bool {
