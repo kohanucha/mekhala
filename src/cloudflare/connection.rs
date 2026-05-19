@@ -26,10 +26,11 @@ impl WebSocketRegistry {
         self.websockets.insert(id, ws);
     }
 
-    pub fn register_active(&mut self, id: u32, ws: WebSocket) {
+    pub fn accept_and_register(&mut self, id: u32, ws: &WebSocket) {
+        self.state.accept_web_socket(ws);
         let tag = format!("id:{}", id);
-        self.state.set_tags(&ws, vec![tag]);
-        self.add_active(id, ws);
+        self.state.set_tags(ws, vec![tag]);
+        self.add_active(id, ws.clone());
     }
 
     pub fn identify(&self, ws: &WebSocket) -> Option<u32> {
@@ -40,8 +41,12 @@ impl WebSocketRegistry {
         }
 
         let tags = self.state.get_tags(ws);
+        crate::log_debug!("identify: in-memory miss, tags={:?}", tags);
         let id_tag = tags.iter().find(|t| t.starts_with("id:"))?;
-        id_tag.strip_prefix("id:")?.parse().ok()
+        let id_str = id_tag.strip_prefix("id:")?;
+        let id = id_str.parse::<u32>().ok()?;
+        crate::log_debug!("identify: recovered conn={} from hibernation tags", id);
+        Some(id)
     }
 
     pub async fn next_id(&self) -> u32 {

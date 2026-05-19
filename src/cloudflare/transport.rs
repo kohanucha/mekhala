@@ -94,7 +94,14 @@ impl DurableObject for CloudflareTransport {
             match &parsed {
                 Ok(crate::nostr::ClientMessage::Event(event)) => {
                     let mut engine = self.engine.lock().await;
-                    let connection_id = self.wake_up_with_handler(&websocket, &mut engine).await.ok_or_else(|| Error::from("Connection not found"))?;
+                    let connection_id = match self.wake_up_with_handler(&websocket, &mut engine).await {
+                        Some(id) => id,
+                        None => {
+                            log_error!("connection not found for incoming EVENT, sending reconnect notice");
+                            let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Notice("connection lost: please reconnect".into()).to_json());
+                            return Ok(());
+                        }
+                    };
 
                     log_info!("← conn={} RECV EVENT kind={} pk={} id={}", connection_id, event.kind, short(&event.pubkey, 8), short(&event.id, 8));
 
@@ -117,7 +124,14 @@ impl DurableObject for CloudflareTransport {
                 }
                 _ => {
                     let mut engine = self.engine.lock().await;
-                    let connection_id = self.wake_up_with_handler(&websocket, &mut engine).await.ok_or_else(|| Error::from("Connection not found"))?;
+                    let connection_id = match self.wake_up_with_handler(&websocket, &mut engine).await {
+                        Some(id) => id,
+                        None => {
+                            log_error!("connection not found for incoming message, sending reconnect notice");
+                            let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Notice("connection lost: please reconnect".into()).to_json());
+                            return Ok(());
+                        }
+                    };
 
                     let responses = match parsed {
                         Ok(crate::nostr::ClientMessage::Req(sub_id, filters)) => {
@@ -273,7 +287,13 @@ impl CloudflareTransport {
     }
 
     async fn wake_up_with_handler(&self, ws: &WebSocket, engine: &mut NostrEngine<CloudflareStorage>) -> Option<u32> {
-        let id = self.websockets.borrow().identify(ws)?;
+        let id = match self.websockets.borrow().identify(ws) {
+            Some(id) => id,
+            None => {
+                log_warn!("wake_up: identify failed for ws");
+                return None;
+            }
+        };
 
         let _ = engine.load(id).await;
 
@@ -294,16 +314,18 @@ impl CloudflareTransport {
 
         let WebSocketPair { client, server } = WebSocketPair::new()?;
 
+        // 1. Allocate ID first (may need async storage access for counter)
+        let connection_id = self.websockets.borrow().next_id().await;
+
+        // 2. Accept + register ATOMICALLY — no await gap between them
         {
-            let websockets = self.websockets.borrow();
-            websockets.accept_web_socket(&server);
+            let mut websockets = self.websockets.borrow_mut();
+            websockets.accept_and_register(connection_id, &server);
         }
 
+        // 3. NOW safe to await — WS is tagged and in HashMap
         let mut engine = self.engine.lock().await;
-        let connection_id = self.websockets.borrow().next_id().await;
         let responses = engine.on_connect(connection_id).await;
-
-        self.websockets.borrow_mut().register_active(connection_id, server);
 
         log_info!("+ conn={} accepted count={}/{}", connection_id, self.websockets.borrow().len(), max_connections);
 
