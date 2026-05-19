@@ -91,6 +91,7 @@ impl DurableObject for CloudflareTransport {
     }
 
     async fn websocket_message(&self, websocket: WebSocket, message: WebSocketIncomingMessage) -> Result<()> {
+        log_debug!("→ websocket_message handler invoked");
         if let WebSocketIncomingMessage::String(text) = message {
             if text.len() > 131072 {
                 log_warn!("message too large: {} bytes", text.len());
@@ -180,11 +181,13 @@ impl DurableObject for CloudflareTransport {
         }
     }
 
-    async fn websocket_close(&self, ws: WebSocket, _: usize, _: String, _: bool) -> Result<()> {
+    async fn websocket_close(&self, ws: WebSocket, code: usize, reason: String, was_clean: bool) -> Result<()> {
+        log_debug!("→ websocket_close handler invoked code={} reason={} clean={}", code, reason, was_clean);
         self.handle_disconnect(&ws).await
     }
 
-    async fn websocket_error(&self, ws: WebSocket, _: Error) -> Result<()> {
+    async fn websocket_error(&self, ws: WebSocket, error: Error) -> Result<()> {
+        log_debug!("→ websocket_error handler invoked err={}", error);
         self.handle_disconnect(&ws).await
     }
 }
