@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use async_trait::async_trait;
 use serde_json::Value;
+use crate::log_debug;
 use crate::nostr::{Filter, Event};
+use crate::util::short;
 
 #[async_trait(?Send)]
 pub trait Storage {
@@ -268,6 +270,7 @@ impl<S: Storage> WalletRegistry<S> {
                 if self.load(id).await {
                     return Some(id);
                 } else {
+                    log_debug!("stale pubkey index cleaned: pk={}", short(pubkey, 8));
                     self.storage.delete_batch(vec![key]).await;
                 }
             }
@@ -281,10 +284,12 @@ impl<S: Storage> WalletRegistry<S> {
 
     pub async fn on_terminate(&mut self, id: u32) {
         self.index.disconnect(id);
+        log_debug!("deleted conn state: conn={}", id);
         self.storage.delete_batch(vec![format!("conn:{}", id)]).await;
     }
 
     pub async fn cache_info(&mut self, event: Event) {
+        log_debug!("persist info: pk={}", short(&event.pubkey, 8));
         let key = format!("info:{}", event.pubkey);
         let value = serde_json::to_value(&event).unwrap_or(serde_json::Value::Null);
         if !value.is_null() {
@@ -303,6 +308,7 @@ impl<S: Storage> WalletRegistry<S> {
         let key = format!("info:{}", pubkey);
         if let Some(val) = self.storage.get(&key).await {
             if let Ok(event) = serde_json::from_value::<Event>(val) {
+                log_debug!("info restored from storage: pk={}", short(pubkey, 8));
                 self.index.cache_info(event.clone());
                 return Some(event);
             }

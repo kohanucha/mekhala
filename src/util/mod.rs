@@ -11,3 +11,47 @@ pub fn now() -> u64 {
         }
     }
 }
+
+pub fn short(s: &str, len: usize) -> &str {
+    if s.len() <= len { s } else { &s[..len] }
+}
+
+#[macro_export]
+macro_rules! log_info {
+    ($($arg:tt)*) => {
+        #[cfg(target_arch = "wasm32")]
+        { worker::console_log!($($arg)*); }
+        #[cfg(not(target_arch = "wasm32"))]
+        { let _ = format_args!($($arg)*); }
+    };
+}
+
+#[macro_export]
+macro_rules! log_debug {
+    ($($arg:tt)*) => {
+        #[cfg(target_arch = "wasm32")]
+        { worker::console_debug!($($arg)*); }
+        #[cfg(not(target_arch = "wasm32"))]
+        { let _ = format_args!($($arg)*); }
+    };
+}
+
+#[macro_export]
+macro_rules! log_warn {
+    ($($arg:tt)*) => {
+        #[cfg(target_arch = "wasm32")]
+        { worker::console_warn!($($arg)*); }
+        #[cfg(not(target_arch = "wasm32"))]
+        { let _ = format_args!($($arg)*); }
+    };
+}
+
+#[macro_export]
+macro_rules! log_error {
+    ($($arg:tt)*) => {
+        #[cfg(target_arch = "wasm32")]
+        { worker::console_error!($($arg)*); }
+        #[cfg(not(target_arch = "wasm32"))]
+        { let _ = format_args!($($arg)*); }
+    };
+}

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use super::{Filter, Event, RelayMessage, ClientMessage, Limits};
 use super::wallet_registry::{WalletRegistry, Storage, RegistryResponse};
+use crate::util::short;
+use crate::{log_info, log_debug, log_warn};
 
 #[cfg(test)]
 use std::cell::Cell;
@@ -80,6 +82,7 @@ impl<S: Storage> NostrEngine<S> {
                     .map_err(|e| (event.id.clone(), e.to_string()))
             }
             _ => {
+                log_warn!("event rejected: kind={} reason=kind not allowed", event.kind);
                 Err((event.id.clone(), "blocked: event kind not allowed".into()))
             }
         }
@@ -89,6 +92,7 @@ impl<S: Storage> NostrEngine<S> {
     /// for sending OK immediately upon successful validation (per NIP-01).
     pub async fn route_verified_event(&mut self, connection_id: u32, event: Event) -> Vec<EngineResponse> {
         if event.kind == 13194 {
+            log_info!("info cached: pk={}", short(&event.pubkey, 8));
             self.process_info_event(event.clone()).await;
         }
         self.route_event(connection_id, event).await
@@ -138,11 +142,13 @@ impl<S: Storage> NostrEngine<S> {
     }
 
     pub async fn on_connect(&mut self, id: u32) -> Vec<EngineResponse> {
+        log_debug!("connect conn={}", id);
         self.add_connection(id, HashMap::new()).await;
         Vec::new()
     }
 
     async fn process_info_event(&mut self, event: Event) {
+        log_debug!("persist info: pk={}", short(&event.pubkey, 8));
         self.registry.cache_info(event).await;
     }
 
@@ -171,6 +177,7 @@ impl<S: Storage> NostrEngine<S> {
         let mut responses = Vec::new();
 
         let registry_responses = self.registry.match_event(&event).await;
+        log_debug!("event kind={} pk={} → {} subscribers", event.kind, short(&event.pubkey, 8), registry_responses.len());
         for resp in registry_responses {
             match resp {
                 RegistryResponse::Send { recipient_id, sub_id } => {
@@ -195,8 +202,11 @@ impl<S: Storage> NostrEngine<S> {
             for pk in filters_set.pubkeys() {
                 if let Some(info_event) = self.registry.get_info(&pk).await {
                     if filters.iter().any(|f| f.matches(&info_event)) {
+                        log_debug!("info hit: pk={} sub={}", short(&pk, 8), sub_id);
                         responses.push(EngineResponse::send(id, RelayMessage::Event(sub_id.clone(), info_event.clone())));
                     }
+                } else {
+                    log_debug!("info miss: pk={} sub={}", short(&pk, 8), sub_id);
                 }
             }
         }
@@ -214,6 +224,7 @@ impl<S: Storage> NostrEngine<S> {
     }
 
     pub async fn process_close(&mut self, id: u32, sub_id: String) -> Vec<EngineResponse> {
+        log_debug!("close conn={} sub={}", id, sub_id);
         let _ = self.registry.unsubscribe(id, sub_id).await;
         Vec::new()
     }
@@ -224,6 +235,7 @@ impl<S: Storage> NostrEngine<S> {
     }
 
     pub async fn on_terminate(&mut self, id: u32) -> Vec<EngineResponse> {
+        log_debug!("terminate conn={}", id);
         self.registry.on_terminate(id).await;
         Vec::new()
     }
