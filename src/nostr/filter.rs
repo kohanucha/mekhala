@@ -66,7 +66,7 @@ impl Filter {
 
         if has_specific_narrowing {
             if let Some(kinds) = &self.kinds {
-                if kinds.iter().any(|k| !matches!(k, 13194 | 23194..=23197)) {
+                if kinds.iter().any(|k| !matches!(k, 5 | 13194 | 23194..=23197)) {
                     return false;
                 }
             }
@@ -76,7 +76,7 @@ impl Filter {
                 _ => return false,
             };
 
-            if kinds.iter().any(|k| !matches!(k, 13194 | 23194..=23197)) {
+            if kinds.iter().any(|k| !matches!(k, 5 | 13194 | 23194..=23197)) {
                 return false;
             }
 
@@ -278,7 +278,7 @@ mod tests {
 
     #[test]
     fn test_filter_is_valid_accepts_nwc_kinds() {
-        for kind in [13194u64, 23194, 23195, 23196, 23197] {
+        for kind in [5u64, 13194, 23194, 23195, 23196, 23197] {
             let filter = Filter {
                 kinds: Some(vec![kind]),
                 authors: Some(vec!["author1".into()]),
@@ -286,6 +286,16 @@ mod tests {
             };
             assert!(filter.is_valid(), "kind {} should be valid", kind);
         }
+    }
+
+    #[test]
+    fn test_filter_is_valid_accepts_kind_5() {
+        let filter = Filter {
+            kinds: Some(vec![5]),
+            authors: Some(vec!["author1".into()]),
+            ..Default::default()
+        };
+        assert!(filter.is_valid());
     }
 
     #[test]

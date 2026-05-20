@@ -21,6 +21,7 @@ pub struct SavedState {
 struct WalletIndex {
     subscription_index: HashMap<(String, Vec<Filter>), Vec<u32>>,
     pk_index: HashMap<String, (HashSet<(String, Vec<Filter>)>, Option<Event>)>,
+    info_id_index: HashMap<String, String>,
     reverse_index: HashMap<u32, HashMap<String, Vec<Filter>>>,
 }
 
@@ -29,6 +30,7 @@ impl WalletIndex {
         Self {
             subscription_index: HashMap::new(),
             pk_index: HashMap::new(),
+            info_id_index: HashMap::new(),
             reverse_index: HashMap::new(),
         }
     }
@@ -100,11 +102,35 @@ impl WalletIndex {
 
     fn cache_info(&mut self, event: Event) {
         let entry = self.pk_index.entry(event.pubkey.clone()).or_insert_with(|| (HashSet::new(), None));
+        self.info_id_index.insert(event.id.clone(), event.pubkey.clone());
         entry.1 = Some(event);
     }
 
     fn get_info(&self, pubkey: &str) -> Option<Event> {
         self.pk_index.get(pubkey).and_then(|e| e.1.clone())
+    }
+
+    fn delete_info(&mut self, pubkey: &str) -> Option<Event> {
+        let removed = if let Some(entry) = self.pk_index.get_mut(pubkey) {
+            let old = entry.1.take();
+            if let Some(ref event) = old {
+                self.info_id_index.remove(&event.id);
+            }
+            old
+        } else {
+            None
+        };
+        // Clean up pk_index entry if both subscriptions and info are gone
+        if let Some(entry) = self.pk_index.get(pubkey) {
+            if entry.0.is_empty() && entry.1.is_none() {
+                self.pk_index.remove(pubkey);
+            }
+        }
+        removed
+    }
+
+    fn find_info_pubkey_by_id(&self, event_id: &str) -> Option<String> {
+        self.info_id_index.get(event_id).cloned()
     }
 
     fn match_event<'a>(&'a self, event: &'a Event) -> Box<dyn Iterator<Item = (String, Vec<u32>)> + 'a> {
@@ -364,6 +390,19 @@ impl<S: Storage> WalletRegistry<S> {
         None
     }
 
+    pub async fn delete_info(&mut self, pubkey: &str) {
+        let removed = self.index.delete_info(pubkey);
+        if removed.is_some() {
+            log_debug!("info deleted: pk={}", short(pubkey, 8));
+            let key = format!("info:{}", pubkey);
+            self.storage.delete_batch(vec![key]).await;
+        }
+    }
+
+    pub fn find_info_pubkey_by_id(&self, event_id: &str) -> Option<String> {
+        self.index.find_info_pubkey_by_id(event_id)
+    }
+
     #[cfg(test)]
     pub fn has_subscription(&self, conn_id: u32, sub_id: &str) -> bool {
         self.index.get_subscriptions(conn_id).contains_key(sub_id)
@@ -583,6 +622,95 @@ fn test_info_event_caching() {
         assert_eq!(stored.unwrap().id, event.id);
     });
 }
+
+    #[test]
+    fn test_info_id_index() {
+        futures::executor::block_on(async {
+            let storage = MockStorage::new();
+            let mut registry = WalletRegistry::new(storage);
+
+            let event = Event {
+                id: "id1".into(),
+                pubkey: "alice".into(),
+                kind: 13194,
+                tags: vec![],
+                content: "".into(),
+                sig: "sig1".into(),
+                created_at: 1000,
+            };
+            registry.cache_info(event.clone()).await;
+
+            let pk = registry.find_info_pubkey_by_id("id1");
+            assert_eq!(pk, Some("alice".into()));
+
+            let pk_missing = registry.find_info_pubkey_by_id("nonexistent");
+            assert_eq!(pk_missing, None);
+        });
+    }
+
+    #[test]
+    fn test_delete_info() {
+        futures::executor::block_on(async {
+            let storage = MockStorage::new();
+            let mut registry = WalletRegistry::new(storage);
+
+            let event = Event {
+                id: "id1".into(),
+                pubkey: "alice".into(),
+                kind: 13194,
+                tags: vec![],
+                content: "".into(),
+                sig: "sig1".into(),
+                created_at: 1000,
+            };
+            registry.cache_info(event.clone()).await;
+
+            // Verify it's there
+            assert!(registry.get_info("alice").await.is_some());
+            assert_eq!(registry.find_info_pubkey_by_id("id1"), Some("alice".into()));
+
+            // Delete it
+            registry.delete_info("alice").await;
+
+            // Verify it's gone from index and storage
+            assert!(registry.get_info("alice").await.is_none());
+            assert_eq!(registry.find_info_pubkey_by_id("id1"), None);
+
+            let data = registry.storage.data.lock().unwrap();
+            assert!(!data.contains_key("info:alice"));
+        });
+    }
+
+    #[test]
+    fn test_delete_info_preserves_subscriptions() {
+        futures::executor::block_on(async {
+            let storage = MockStorage::new();
+            let mut registry = WalletRegistry::new(storage);
+
+            registry.subscribe(1, "sub1".into(), vec![Filter {
+                authors: Some(vec!["alice".into()]),
+                ..Default::default()
+            }]).await.unwrap();
+
+            let event = Event {
+                id: "id1".into(),
+                pubkey: "alice".into(),
+                kind: 13194,
+                tags: vec![],
+                content: "".into(),
+                sig: "sig1".into(),
+                created_at: 1000,
+            };
+            registry.cache_info(event.clone()).await;
+
+            // Delete info but keep subscriptions
+            registry.delete_info("alice").await;
+
+            // Info should be gone but subscriptions remain
+            assert!(registry.get_info("alice").await.is_none());
+            assert!(registry.has_subscription(1, "sub1"));
+        });
+    }
 
     #[test]
     fn test_registry_sync() {

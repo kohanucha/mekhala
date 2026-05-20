@@ -75,6 +75,6 @@ async fn handle_upgrade(req: Request, ctx: &RouteContext<()>) -> Result<Response
 }
 
 fn handle_nip11() -> Result<Response> {
-    let info = serde_json::json!({"supported_nips": [1, 11, 47]});
+    let info = serde_json::json!({"supported_nips": [1, 9, 11, 47]});
     crate::cloudflare::transport::create_response(info, "application/nostr+json")
 }

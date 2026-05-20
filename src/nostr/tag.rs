@@ -51,6 +51,19 @@ impl Tag {
             _ => None,
         }
     }
+
+    pub fn kind_value(&self) -> Option<u64> {
+        match self {
+            Tag::Other(name, values) if name == "k" => {
+                values.first().and_then(|v| {
+                    v.as_u64().or_else(|| {
+                        v.as_str().and_then(|s| s.parse::<u64>().ok())
+                    })
+                })
+            }
+            _ => None,
+        }
+    }
 }
 
 impl Serialize for Tag {
@@ -269,5 +282,28 @@ mod tests {
         assert_eq!(tag, Tag::Expiration("1700000000".into()));
         let json_out = serde_json::to_value(&tag).unwrap();
         assert_eq!(json_out, json_in);
+    }
+
+    #[test]
+    fn test_tag_kind_value_numeric() {
+        let json = serde_json::json!(["k", 13194]);
+        let tag: Tag = serde_json::from_value(json).unwrap();
+        assert_eq!(tag.kind_value(), Some(13194));
+    }
+
+    #[test]
+    fn test_tag_kind_value_string() {
+        let json = serde_json::json!(["k", "13194"]);
+        let tag: Tag = serde_json::from_value(json).unwrap();
+        assert_eq!(tag.kind_value(), Some(13194));
+    }
+
+    #[test]
+    fn test_tag_kind_value_non_k_tag() {
+        let tag = Tag::p("pk1");
+        assert_eq!(tag.kind_value(), None);
+
+        let tag = Tag::E("event1".into(), vec![]);
+        assert_eq!(tag.kind_value(), None);
     }
 }
