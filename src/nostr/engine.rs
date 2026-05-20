@@ -77,7 +77,7 @@ impl<S: Storage> NostrEngine<S> {
     pub fn validate_event(&self, event: &Event) -> Result<(), (String, String)> {
         let ts = (self.clock)();
         match event.kind {
-            13194 | 23194..=23197 => {
+            5 | 13194 | 23194..=23197 => {
                 event.verify(ts, &self.limits)
                     .map_err(|e| (event.id.clone(), e.to_string()))
             }
@@ -94,13 +94,15 @@ impl<S: Storage> NostrEngine<S> {
         if event.kind == 13194 {
             log_info!("info cached: pk={}", short(&event.pubkey, 8));
             self.process_info_event(event.clone()).await;
+        } else if event.kind == 5 {
+            self.process_deletion_event(&event).await;
         }
         self.route_event(connection_id, event).await
     }
 
     async fn handle_event(&mut self, connection_id: u32, event: Event) -> Vec<EngineResponse> {
         match event.kind {
-            13194 | 23194..=23197 => {
+            5 | 13194 | 23194..=23197 => {
                 let ts = (self.clock)();
 
                 if let Err(e) = event.verify(ts, &self.limits) {
@@ -109,6 +111,9 @@ impl<S: Storage> NostrEngine<S> {
                 
                 if event.kind == 13194 {
                     self.process_info_event(event.clone()).await;
+                    self.process_event(connection_id, event).await
+                } else if event.kind == 5 {
+                    self.process_deletion_event(&event).await;
                     self.process_event(connection_id, event).await
                 } else {
                     self.process_event(connection_id, event).await
@@ -150,6 +155,33 @@ impl<S: Storage> NostrEngine<S> {
     async fn process_info_event(&mut self, event: Event) {
         log_debug!("persist info: pk={}", short(&event.pubkey, 8));
         self.registry.cache_info(event).await;
+    }
+
+    async fn process_deletion_event(&mut self, event: &Event) {
+        let author = &event.pubkey;
+        let e_tag_ids: Vec<String> = event.tags.iter()
+            .filter_map(|t| t.event_id().map(|s| s.to_string()))
+            .collect();
+
+        if !e_tag_ids.is_empty() {
+            for event_id in &e_tag_ids {
+                if let Some(info_pk) = self.registry.find_info_pubkey_by_id(event_id) {
+                    if info_pk == *author {
+                        log_info!("info deleted by e-tag: pk={} event_id={}", short(&info_pk, 8), short(event_id, 8));
+                        self.registry.delete_info(&info_pk).await;
+                    }
+                }
+            }
+        } else {
+            let k_tags: Vec<u64> = event.tags.iter()
+                .filter_map(|t| t.kind_value())
+                .collect();
+
+            if k_tags.is_empty() || k_tags.contains(&13194) {
+                log_info!("info deleted for author: pk={}", short(author, 8));
+                self.registry.delete_info(author).await;
+            }
+        }
     }
 
     async fn process_event(&mut self, connection_id: u32, event: Event) -> Vec<EngineResponse> {
@@ -269,6 +301,7 @@ mod tests {
     use super::*;
     use super::super::wallet_registry::tests::MockStorage;
     use super::super::RelayError;
+    use super::super::Tag;
 
     #[test]
     fn test_engine_req_storage() {
@@ -672,6 +705,146 @@ mod tests {
             let (success, msg) = ok_response.unwrap();
             assert!(msg.contains("invalid"), "event within tolerance should fail for id/sig, not timestamp, got: {}", msg);
             assert!(!success);
+        });
+    }
+
+    #[test]
+    fn test_kind_5_deletion_with_e_tag() {
+        futures::executor::block_on(async {
+            let mut engine = NostrEngine::new();
+            engine.on_connect(1).await;
+
+            // Publish info event for alice
+            let info_event = Event {
+                id: "info1".into(),
+                pubkey: "alice".into(),
+                created_at: test_now(),
+                kind: 13194,
+                tags: vec![],
+                content: "".into(),
+                sig: "sig1".into(),
+            };
+            engine.process_info_event(info_event.clone()).await;
+            assert!(engine.get_wallet_info("alice").await.is_some());
+
+            // Delete it via kind 5 with e-tag referencing the info event
+            let deletion_event = Event {
+                id: "del1".into(),
+                pubkey: "alice".into(),
+                created_at: test_now(),
+                kind: 5,
+                tags: vec![Tag::E("info1".into(), vec![])],
+                content: "deleted".into(),
+                sig: "sig2".into(),
+            };
+            engine.process_deletion_event(&deletion_event).await;
+
+            // Info should be gone
+            assert!(engine.get_wallet_info("alice").await.is_none());
+        });
+    }
+
+    #[test]
+    fn test_kind_5_deletion_unauthorized() {
+        futures::executor::block_on(async {
+            let mut engine = NostrEngine::new();
+            engine.on_connect(1).await;
+
+            // Publish info event for alice
+            let info_event = Event {
+                id: "info1".into(),
+                pubkey: "alice".into(),
+                created_at: test_now(),
+                kind: 13194,
+                tags: vec![],
+                content: "".into(),
+                sig: "sig1".into(),
+            };
+            engine.process_info_event(info_event.clone()).await;
+            assert!(engine.get_wallet_info("alice").await.is_some());
+
+            // Try to delete with wrong pubkey (bob)
+            let deletion_event = Event {
+                id: "del1".into(),
+                pubkey: "bob".into(),
+                created_at: test_now(),
+                kind: 5,
+                tags: vec![Tag::E("info1".into(), vec![])],
+                content: "deleted".into(),
+                sig: "sig2".into(),
+            };
+            engine.process_deletion_event(&deletion_event).await;
+
+            // Info should still be there (bob can't delete alice's info)
+            assert!(engine.get_wallet_info("alice").await.is_some());
+        });
+    }
+
+    #[test]
+    fn test_kind_5_deletion_with_k_tag() {
+        futures::executor::block_on(async {
+            let mut engine = NostrEngine::new();
+            engine.on_connect(1).await;
+
+            let info_event = Event {
+                id: "info1".into(),
+                pubkey: "alice".into(),
+                created_at: test_now(),
+                kind: 13194,
+                tags: vec![],
+                content: "".into(),
+                sig: "sig1".into(),
+            };
+            engine.process_info_event(info_event.clone()).await;
+            assert!(engine.get_wallet_info("alice").await.is_some());
+
+            // Delete via k=13194 tag without e-tag
+            let deletion_event = Event {
+                id: "del1".into(),
+                pubkey: "alice".into(),
+                created_at: test_now(),
+                kind: 5,
+                tags: vec![Tag::Other("k".into(), vec![serde_json::json!("13194")])],
+                content: "deleted".into(),
+                sig: "sig2".into(),
+            };
+            engine.process_deletion_event(&deletion_event).await;
+
+            assert!(engine.get_wallet_info("alice").await.is_none());
+        });
+    }
+
+    #[test]
+    fn test_kind_5_deletion_no_tags() {
+        futures::executor::block_on(async {
+            let mut engine = NostrEngine::new();
+            engine.on_connect(1).await;
+
+            let info_event = Event {
+                id: "info1".into(),
+                pubkey: "alice".into(),
+                created_at: test_now(),
+                kind: 13194,
+                tags: vec![],
+                content: "".into(),
+                sig: "sig1".into(),
+            };
+            engine.process_info_event(info_event.clone()).await;
+            assert!(engine.get_wallet_info("alice").await.is_some());
+
+            // Delete with no e/k tags (delete all events by this author)
+            let deletion_event = Event {
+                id: "del1".into(),
+                pubkey: "alice".into(),
+                created_at: test_now(),
+                kind: 5,
+                tags: vec![],
+                content: "deleted".into(),
+                sig: "sig2".into(),
+            };
+            engine.process_deletion_event(&deletion_event).await;
+
+            assert!(engine.get_wallet_info("alice").await.is_none());
         });
     }
 

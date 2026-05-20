@@ -45,9 +45,9 @@ impl Event {
 
     pub fn verify(&self, current_time: u64, limits: &Limits) -> Result<(), RelayError> {
         
-        // Enforce NWC-only kinds
+        // Enforce allowed kinds
         match self.kind {
-            13194 | 23194 | 23195 | 23196 | 23197 => {}
+            5 | 13194 | 23194 | 23195 | 23196 | 23197 => {}
             _ => return Err(RelayError::InvalidKind),
         }
 
@@ -158,5 +158,25 @@ mod tests {
         assert_eq!(keys.len(), 2);
         assert!(keys.contains("pk1"));
         assert!(keys.contains("pk2"));
+    }
+
+    #[test]
+    fn test_kind_5_passes_kind_check() {
+        let event = Event {
+            id: "id5".into(),
+            pubkey: "pk1".into(),
+            created_at: 1700000000,
+            kind: 5,
+            tags: vec![Tag::E("event_to_delete".into(), vec![])],
+            content: "deleting".into(),
+            sig: "badsig".into(),
+        };
+        let result = event.verify(1700000000, &Limits::default());
+        // Kind 5 should pass the kind check, then fail on id/signature
+        match result {
+            Err(RelayError::InvalidId) | Err(RelayError::InvalidSignature) => {}
+            Err(RelayError::InvalidKind) => panic!("kind 5 should not be rejected as InvalidKind"),
+            other => panic!("expected id/sig error, got {:?}", other),
+        }
     }
 }

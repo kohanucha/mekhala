@@ -140,7 +140,7 @@ async function testRelay() {
       );
       ws.send(JSON.stringify(["EVENT", eventNoPTag]));
 
-      // 4. Test Restricted Kinds (ensure kind not in [13194, 23194, 23195, 23196, 23197] is rejected)
+      // 4. Test Restricted Kinds (ensure kind not in [5, 13194, 23194, 23195, 23196, 23197] is rejected)
       console.log("Testing Restricted Kinds (Kind 1)...");
       eventKind3 = finalizeEvent(
         {
@@ -749,6 +749,106 @@ async function testInfoEventCaching() {
 
     appWs.on("error", reject);
     setTimeout(() => reject(new Error("App cache retrieval timeout")), 5000);
+  });
+
+  walletWs.close();
+}
+
+async function testNip09Deletion() {
+  console.log("\n--- Testing NIP-09 Deletion (Kind 5) ---");
+
+  const walletSk = generateSecretKey();
+  const walletPk = getPublicKey(walletSk);
+
+  // 1. Wallet connects and publishes Info Event
+  const walletWs = new WebSocket(RELAY_URL);
+  let infoEvent;
+  await new Promise((resolve, reject) => {
+    walletWs.on("open", () => {
+      infoEvent = finalizeEvent(
+        {
+          kind: 13194,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [],
+          content: "nip09_deletion_test",
+        },
+        walletSk,
+      );
+      walletWs.send(JSON.stringify(["EVENT", infoEvent]));
+    });
+
+    walletWs.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg[0] === "OK" && msg[2] === true) {
+        console.log("✅ Wallet received OK for Info Event (13194).");
+        resolve();
+      }
+    });
+
+    walletWs.on("error", reject);
+    setTimeout(() => reject(new Error("Wallet publish timeout waiting for OK")), 5000);
+  });
+
+  // 2. Delete the info event via kind 5
+  await new Promise((resolve, reject) => {
+    const deletionEvent = finalizeEvent(
+      {
+        kind: 5,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [["e", infoEvent.id]],
+        content: "wallet deleted",
+      },
+      walletSk,
+    );
+    walletWs.send(JSON.stringify(["EVENT", deletionEvent]));
+
+    walletWs.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg[0] === "OK" && msg[2] === true && msg[1] === deletionEvent.id) {
+        console.log("✅ Wallet received OK for Deletion Event (kind 5).");
+        resolve();
+      }
+    });
+
+    setTimeout(() => reject(new Error("Deletion event publish timeout waiting for OK")), 5000);
+  });
+
+  // 3. App connects and requests Info Event — should get nothing
+  const appWs = new WebSocket(RELAY_URL);
+  let infoReceived = false;
+  await new Promise((resolve, reject) => {
+    appWs.on("open", () => {
+      appWs.send(
+        JSON.stringify([
+          "REQ",
+          "nip09-sub",
+          { kinds: [13194], authors: [walletPk] },
+        ]),
+      );
+    });
+
+    appWs.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg[0] === "EVENT" && msg[1] === "nip09-sub") {
+        if (msg[2].kind === 13194 && msg[2].content === "nip09_deletion_test") {
+          infoReceived = true;
+        }
+      }
+      if (msg[0] === "EOSE" && msg[1] === "nip09-sub") {
+        setTimeout(() => {
+          if (!infoReceived) {
+            console.log("✅ App received EOSE with no info event after NIP-09 deletion.");
+            appWs.close();
+            resolve();
+          } else {
+            reject(new Error("Info event still returned after NIP-09 deletion"));
+          }
+        }, 500);
+      }
+    });
+
+    appWs.on("error", reject);
+    setTimeout(() => reject(new Error("App NIP-09 test timeout")), 5000);
   });
 
   walletWs.close();
@@ -1753,6 +1853,7 @@ async function runAll() {
     await testNwcFlow();
     await testMultiClientIsolation();
     await testInfoEventCaching();
+    await testNip09Deletion();
     await testTimestampValidation();
     await testEdgeCases();
     await testLnAddressFlow();
