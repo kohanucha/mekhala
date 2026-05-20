@@ -113,16 +113,21 @@ impl WalletIndex {
         let mut sub_to_conns = HashMap::new();
         for pk in target_pks {
             if let Some(entry) = self.pk_index.get(&pk) {
-                let global_latest = self.get_connection_id(&pk);
-
+                let mut matching: Vec<(String, u32)> = Vec::new();
                 for sub_key in &entry.0 {
                     if sub_key.1.iter().any(|f| f.matches(event)) {
                         if let Some(conns) = self.subscription_index.get(sub_key) {
-                            if let Some(latest_conn) = conns.last() {
-                                if global_latest == Some(*latest_conn) {
-                                    sub_to_conns.insert(sub_key.0.clone(), vec![*latest_conn]);
-                                }
+                            if let Some(&latest_conn) = conns.last() {
+                                matching.push((sub_key.0.clone(), latest_conn));
                             }
+                        }
+                    }
+                }
+                let latest = matching.iter().map(|(_, id)| *id).max();
+                if let Some(latest_id) = latest {
+                    for (sub_id, id) in matching {
+                        if id == latest_id {
+                            sub_to_conns.insert(sub_id, vec![id]);
                         }
                     }
                 }
@@ -232,10 +237,8 @@ impl<S: Storage> WalletRegistry<S> {
         let target_pks = event.target_pubkeys();
 
         for pk in target_pks {
-            if self.index.get_connection_id(&pk).is_none() {
-                if let Some(id) = self.load_by_pubkey(&pk).await {
-                    responses.push(RegistryResponse::WakeUp(id));
-                }
+            for id in self.load_by_pubkey(&pk).await {
+                responses.push(RegistryResponse::WakeUp(id));
             }
         }
 
@@ -259,23 +262,38 @@ impl<S: Storage> WalletRegistry<S> {
         false
     }
 
-    pub async fn load_by_pubkey(&mut self, pubkey: &str) -> Option<u32> {
-        if let Some(id) = self.index.get_connection_id(pubkey) {
-            return Some(id);
-        }
+    pub async fn load_by_pubkey(&mut self, pubkey: &str) -> Vec<u32> {
         let key = format!("pk:{}", pubkey);
-        if let Some(val) = self.storage.get(&key).await {
-            if let Some(id) = val.as_u64() {
-                let id = id as u32;
-                if self.load(id).await {
-                    return Some(id);
-                } else {
-                    log_debug!("stale pubkey index cleaned: pk={}", short(pubkey, 8));
-                    self.storage.delete_batch(vec![key]).await;
-                }
+        let storage_ids: Vec<u32> = if let Some(val) = self.storage.get(&key).await {
+            match &val {
+                Value::Array(arr) => arr.iter().filter_map(|v| v.as_u64().map(|x| x as u32)).collect(),
+                Value::Number(n) => n.as_u64().map(|x| vec![x as u32]).unwrap_or_default(),
+                _ => Vec::new(),
+            }
+        } else {
+            if let Some(id) = self.index.get_connection_id(pubkey) {
+                return vec![id];
+            }
+            return Vec::new();
+        };
+        let mut loaded = Vec::new();
+        let mut stale = Vec::new();
+        for id in storage_ids {
+            if self.load(id).await {
+                loaded.push(id);
+            } else {
+                stale.push(id);
             }
         }
-        None
+        if loaded.is_empty() {
+            log_debug!("stale pubkey index cleaned: pk={}", short(pubkey, 8));
+            self.storage.delete_batch(vec![key]).await;
+        } else if !stale.is_empty() {
+            let mut entries = HashMap::new();
+            entries.insert(key, serde_json::json!(loaded));
+            self.storage.put_batch(entries).await;
+        }
+        loaded
     }
 
     pub async fn on_disconnect(&mut self, id: u32) {
@@ -283,7 +301,37 @@ impl<S: Storage> WalletRegistry<S> {
     }
 
     pub async fn on_terminate(&mut self, id: u32) {
+        let subs = self.index.get_subscriptions(id);
+        let mut pubkeys: HashSet<String> = HashSet::new();
+        for filters in subs.values() {
+            for filter in filters {
+                for pk in filter.pubkeys() {
+                    pubkeys.insert(pk);
+                }
+            }
+        }
+
         self.index.disconnect(id);
+
+        for pk in &pubkeys {
+            let key = format!("pk:{}", pk);
+            if let Some(val) = self.storage.get(&key).await {
+                let ids: Vec<u32> = match &val {
+                    Value::Array(arr) => arr.iter().filter_map(|v| v.as_u64().map(|x| x as u32)).collect(),
+                    Value::Number(n) => n.as_u64().map(|x| vec![x as u32]).unwrap_or_default(),
+                    _ => Vec::new(),
+                };
+                let new_ids: Vec<u32> = ids.into_iter().filter(|x| *x != id).collect();
+                if new_ids.is_empty() {
+                    self.storage.delete_batch(vec![key]).await;
+                } else {
+                    let mut entries = HashMap::new();
+                    entries.insert(key, serde_json::json!(new_ids));
+                    self.storage.put_batch(entries).await;
+                }
+            }
+        }
+
         log_debug!("deleted conn state: conn={}", id);
         self.storage.delete_batch(vec![format!("conn:{}", id)]).await;
     }
@@ -326,11 +374,28 @@ impl<S: Storage> WalletRegistry<S> {
             let mut entries = HashMap::new();
             entries.insert(format!("conn:{}", conn_id), state.json);
             for pk in state.pubkeys {
-                entries.insert(format!("pk:{}", pk), serde_json::json!(conn_id));
+                let key = format!("pk:{}", pk);
+                let mut ids = self.read_pk_list(&key).await;
+                if !ids.contains(&conn_id) {
+                    ids.push(conn_id);
+                }
+                entries.insert(key, serde_json::json!(ids));
             }
             self.storage.put_batch(entries).await;
         } else {
             self.storage.delete_batch(vec![format!("conn:{}", conn_id)]).await;
+        }
+    }
+
+    async fn read_pk_list(&self, key: &str) -> Vec<u32> {
+        if let Some(val) = self.storage.get(key).await {
+            match &val {
+                Value::Array(arr) => arr.iter().filter_map(|v| v.as_u64().map(|x| x as u32)).collect(),
+                Value::Number(n) => n.as_u64().map(|x| vec![x as u32]).unwrap_or_default(),
+                _ => Vec::new(),
+            }
+        } else {
+            Vec::new()
         }
     }
 }
@@ -415,8 +480,8 @@ pub mod tests {
             };
             
             let matches = registry.match_event(&event).await;
-            assert_eq!(matches.len(), 1);
-            assert_eq!(matches[0], RegistryResponse::Send { recipient_id: 1, sub_id: "sub1".into() });
+            assert!(matches.contains(&RegistryResponse::WakeUp(1)));
+            assert!(matches.contains(&RegistryResponse::Send { recipient_id: 1, sub_id: "sub1".into() }));
         });
     }
 
@@ -429,7 +494,7 @@ pub mod tests {
             
             // 1. Seed storage
             let mut entries = HashMap::new();
-            entries.insert(format!("pk:{}", wallet_pk), serde_json::json!(conn_id));
+            entries.insert(format!("pk:{}", wallet_pk), serde_json::json!(vec![conn_id]));
             entries.insert(format!("conn:{}", conn_id), serde_json::json!({
                 "subscriptions": {
                     "sub1": [{"#p": [wallet_pk]}]
@@ -551,7 +616,7 @@ fn test_info_event_caching() {
 
             let data = registry.storage.data.lock().unwrap();
             assert!(!data.contains_key("conn:1"));
-            assert!(data.contains_key("pk:alice"));
+            assert!(!data.contains_key("pk:alice"));
             assert!(!registry.has_subscription(1, "sub1"));
         });
     }
@@ -561,16 +626,95 @@ fn test_info_event_caching() {
         futures::executor::block_on(async {
             let storage = MockStorage::new();
             let mut entries = HashMap::new();
-            entries.insert("pk:stale".to_string(), serde_json::json!(99));
+            entries.insert("pk:stale".to_string(), serde_json::json!(vec![99]));
             storage.put_batch(entries).await;
 
             let mut registry = WalletRegistry::new(storage);
 
             let result = registry.load_by_pubkey("stale").await;
-            assert!(result.is_none());
+            assert!(result.is_empty());
 
             let data = registry.storage.data.lock().unwrap();
             assert!(!data.contains_key("pk:stale"));
+        });
+    }
+
+    #[test]
+    fn test_two_connections_same_pubkey_different_filters() {
+        futures::executor::block_on(async {
+            let storage = MockStorage::new();
+            let mut registry = WalletRegistry::new(storage);
+
+            let shared_pk = "shared_pk";
+
+            // Wallet subscribes to kind=23194 requests
+            registry.subscribe(1, "wallet_sub".into(), vec![Filter {
+                kinds: Some(vec![23194]),
+                p_tags: Some(vec![shared_pk.into()]),
+                ..Default::default()
+            }]).await.unwrap();
+
+            // App subscribes to kind=23195 responses
+            registry.subscribe(2, "app_sub".into(), vec![Filter {
+                kinds: Some(vec![23195]),
+                authors: Some(vec![shared_pk.into()]),
+                ..Default::default()
+            }]).await.unwrap();
+
+            // Verify pk: entry stores both connection IDs
+            let data = registry.storage.data.lock().unwrap();
+            let pk_val = data.get(&format!("pk:{}", shared_pk)).expect("pk: entry should exist");
+            let ids: Vec<u32> = serde_json::from_value(pk_val.clone()).unwrap();
+            assert!(ids.contains(&1), "pk: entry should contain conn 1");
+            assert!(ids.contains(&2), "pk: entry should contain conn 2");
+
+            // Simulate hibernation: create fresh registry from seeded storage
+            let snapshot: HashMap<String, Value> = data.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            drop(data);
+
+            // Scenario 1: Route kind=23194 event — should match conn 1 (wallet)
+            {
+                let storage2 = MockStorage::new();
+                storage2.put_batch(snapshot.clone()).await;
+                let mut registry2 = WalletRegistry::new(storage2);
+
+                let req_event = Event {
+                    id: "req1".into(),
+                    pubkey: "app_pk".into(),
+                    created_at: 1000,
+                    kind: 23194,
+                    tags: vec![Tag::p(shared_pk)],
+                    content: "pay invoice".into(),
+                    sig: "sig".into(),
+                };
+                let responses = registry2.match_event(&req_event).await;
+                assert!(responses.contains(&RegistryResponse::WakeUp(1)));
+                assert!(responses.contains(&RegistryResponse::Send { recipient_id: 1, sub_id: "wallet_sub".into() }));
+                // Kind=23194 should NOT route to conn 2 (app subscribes to kind=23195)
+                assert!(!responses.contains(&RegistryResponse::Send { recipient_id: 2, sub_id: "app_sub".into() }));
+            }
+
+            // Scenario 2: Route kind=23195 event — should match conn 2 (app)
+            {
+                let storage3 = MockStorage::new();
+                storage3.put_batch(snapshot).await;
+                let mut registry3 = WalletRegistry::new(storage3);
+
+                let resp_event = Event {
+                    id: "resp1".into(),
+                    pubkey: shared_pk.into(),
+                    created_at: 1000,
+                    kind: 23195,
+                    tags: vec![Tag::p("app_pk")],
+                    content: "paid".into(),
+                    sig: "sig".into(),
+                };
+                let responses2 = registry3.match_event(&resp_event).await;
+                assert!(responses2.contains(&RegistryResponse::WakeUp(2)));
+                assert!(responses2.contains(&RegistryResponse::Send { recipient_id: 2, sub_id: "app_sub".into() }));
+                // Kind=23195 should NOT route to conn 1 (wallet subscribes to kind=23194)
+                assert!(!responses2.contains(&RegistryResponse::Send { recipient_id: 1, sub_id: "wallet_sub".into() }));
+            }
         });
     }
 }
