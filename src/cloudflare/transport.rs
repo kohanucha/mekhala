@@ -299,7 +299,7 @@ impl CloudflareTransport {
     }
 
     async fn load_connection_with_handler(&self, pubkey: &str, engine: &mut NostrEngine<CloudflareStorage>) -> Result<Option<u32>> {
-        if let Some(id) = engine.load_by_pubkey(pubkey).await {
+        for id in engine.load_by_pubkey(pubkey).await {
             let ws = self.websockets.borrow().find_by_id(&self.state, id);
             if let Some(ws) = ws {
                 let _ = self.wake_up_with_handler(&ws, engine).await;

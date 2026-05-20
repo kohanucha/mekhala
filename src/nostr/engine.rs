@@ -259,7 +259,7 @@ impl<S: Storage> NostrEngine<S> {
         self.registry.load(conn_id).await
     }
 
-    pub async fn load_by_pubkey(&mut self, pubkey: &str) -> Option<u32> {
+    pub async fn load_by_pubkey(&mut self, pubkey: &str) -> Vec<u32> {
         self.registry.load_by_pubkey(pubkey).await
     }
 }
