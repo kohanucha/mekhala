@@ -17,31 +17,41 @@ pub fn short(s: &str, len: usize) -> &str {
 }
 
 #[macro_export]
-macro_rules! _log_impl {
-    ($console_fn:path, $($arg:tt)*) => {
+macro_rules! log_info {
+    ($($arg:tt)*) => {
         #[cfg(target_arch = "wasm32")]
-        { $console_fn($($arg)*); }
+        { worker::console_log!($($arg)*); }
         #[cfg(not(target_arch = "wasm32"))]
         { let _ = format_args!($($arg)*); }
     };
 }
 
 #[macro_export]
-macro_rules! log_info {
-    ($($arg:tt)*) => { crate::_log_impl!(worker::console_log, $($arg)*) };
-}
-
-#[macro_export]
 macro_rules! log_debug {
-    ($($arg:tt)*) => { crate::_log_impl!(worker::console_debug, $($arg)*) };
+    ($($arg:tt)*) => {
+        #[cfg(target_arch = "wasm32")]
+        { worker::console_debug!($($arg)*); }
+        #[cfg(not(target_arch = "wasm32"))]
+        { let _ = format_args!($($arg)*); }
+    };
 }
 
 #[macro_export]
 macro_rules! log_warn {
-    ($($arg:tt)*) => { crate::_log_impl!(worker::console_warn, $($arg)*) };
+    ($($arg:tt)*) => {
+        #[cfg(target_arch = "wasm32")]
+        { worker::console_warn!($($arg)*); }
+        #[cfg(not(target_arch = "wasm32"))]
+        { let _ = format_args!($($arg)*); }
+    };
 }
 
 #[macro_export]
 macro_rules! log_error {
-    ($($arg:tt)*) => { crate::_log_impl!(worker::console_error, $($arg)*) };
+    ($($arg:tt)*) => {
+        #[cfg(target_arch = "wasm32")]
+        { worker::console_error!($($arg)*); }
+        #[cfg(not(target_arch = "wasm32"))]
+        { let _ = format_args!($($arg)*); }
+    };
 }
