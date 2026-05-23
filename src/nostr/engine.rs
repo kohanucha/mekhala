@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use super::{Filter, Event, RelayMessage, ClientMessage};
 use super::wallet_registry::{WalletRegistry, Storage, RegistryResponse};
 use super::connection::ConnectionHandler;
+use super::protocol;
 use crate::util::short;
 use crate::{log_info, log_debug};
 
@@ -92,16 +93,12 @@ impl<S: Storage> NostrEngine<S> {
         }
 
         match event.kind {
-            13194 => {
-                self.process_info_event(event.clone()).await;
-                self.process_event(connection_id, event).await
-            }
-            5 => {
-                self.process_deletion_event(&event).await;
-                self.process_event(connection_id, event).await
-            }
-            _ => self.process_event(connection_id, event).await,
+            protocol::KIND_NWC_INFO => self.process_info_event(event.clone()).await,
+            protocol::KIND_DELETION => self.process_deletion_event(&event).await,
+            _ => {}
         }
+
+        self.process_event(connection_id, event).await
     }
 
     pub async fn handle_req(&mut self, id: u32, sub_id: String, filters: Vec<Filter>, origin: SubscriptionOrigin) -> Vec<EngineResponse> {
@@ -261,6 +258,18 @@ mod tests {
     use super::super::RelayError;
     use super::super::Tag;
 
+    fn test_event(id: &str, pubkey: &str, kind: u64) -> Event {
+        Event {
+            id: id.into(),
+            pubkey: pubkey.into(),
+            created_at: test_now(),
+            kind,
+            tags: vec![],
+            content: String::new(),
+            sig: "sig".into(),
+        }
+    }
+
     #[test]
     fn test_engine_req_storage() {
         futures::executor::block_on(async {
@@ -289,42 +298,29 @@ mod tests {
             let mut engine = NostrEngine::new();
             engine.on_connect(1).await;
 
-            let event = Event {
-                id: "id1".into(),
-                pubkey: "pk1".into(),
-                created_at: 1000,
-                kind: 13194,
-                tags: vec![],
-                content: "".into(),
-                sig: "sig1".into(),
-            };
-
+            let mut event = test_event("id1", "pk1", protocol::KIND_NWC_INFO);
+            event.created_at = 1000;
             engine.process_info_event(event).await;
 
             assert!(engine.get_wallet_info("pk1").await.is_some());
-            });
-            }
+        });
+    }
 
-            #[test]
-            fn test_get_wallet_info_none() {
-                let mut engine = NostrEngine::new();
-                futures::executor::block_on(async {
-                    assert!(engine.get_wallet_info("pk1").await.is_none());
-                });
-            }
+    #[test]
+    fn test_get_wallet_info_none() {
+        let mut engine = NostrEngine::new();
+        futures::executor::block_on(async {
+            assert!(engine.get_wallet_info("pk1").await.is_none());
+        });
+    }
+
     #[test]
     fn test_engine_get_wallet_info_with_encryption_tag() {
         futures::executor::block_on(async {
             let mut engine = NostrEngine::new();
-            let event = Event {
-                id: "id1".into(),
-                pubkey: "pk1".into(),
-                created_at: 1000,
-                kind: 13194,
-                tags: vec![super::super::Tag::encryption("nip44_v2 nip04")],
-                content: "".into(),
-                sig: "sig1".into(),
-            };
+            let mut event = test_event("id1", "pk1", protocol::KIND_NWC_INFO);
+            event.created_at = 1000;
+            event.tags = vec![super::super::Tag::encryption("nip44_v2 nip04")];
             engine.process_info_event(event).await;
 
             let info = engine.get_wallet_info("pk1").await.unwrap();
@@ -337,15 +333,8 @@ mod tests {
     fn test_engine_get_wallet_info_default_nip04() {
         futures::executor::block_on(async {
             let mut engine = NostrEngine::new();
-            let event = Event {
-                id: "id1".into(),
-                pubkey: "pk1".into(),
-                created_at: 1000,
-                kind: 13194,
-                tags: vec![],
-                content: "".into(),
-                sig: "sig1".into(),
-            };
+            let mut event = test_event("id1", "pk1", protocol::KIND_NWC_INFO);
+            event.created_at = 1000;
             engine.process_info_event(event).await;
 
             let info = engine.get_wallet_info("pk1").await.unwrap();
@@ -448,15 +437,7 @@ mod tests {
                 ..Default::default()
             }]).await;
 
-            let event = Event {
-                id: "event1".into(),
-                pubkey: "alice".into(),
-                created_at: test_now(),
-                kind: 23194,
-                tags: vec![],
-                content: "test".into(),
-                sig: "sig".into(),
-            };
+            let event = test_event("event1", "alice", protocol::KIND_NWC_REQUEST);
 
             let responses = engine.process_event(2, event).await;
 
@@ -497,15 +478,9 @@ mod tests {
             let mut engine = NostrEngine::new_with_storage(storage, 65536, test_now);
 
             // 2. Handle an event that targets the hibernated pubkey
-            let event = Event {
-                id: "event1".into(),
-                pubkey: pk.into(),
-                created_at: test_now(),
-                kind: 23194,
-                tags: vec![super::super::Tag::p(pk)],
-                content: "wake up!".into(),
-                sig: "sig".into(),
-            };
+            let mut event = test_event("event1", pk, protocol::KIND_NWC_REQUEST);
+            event.tags = vec![super::super::Tag::p(pk)];
+            event.content = "wake up!".into();
 
             let responses = engine.process_event(99, event).await;
 
@@ -520,15 +495,8 @@ mod tests {
     #[test]
     fn test_event_rejects_future_beyond_tolerance() {
         let now = 1700000000u64;
-        let event = Event {
-            id: "id1".into(),
-            pubkey: "pk1".into(),
-            created_at: now + 901,
-            kind: 13194,
-            tags: vec![],
-            content: "".into(),
-            sig: "sig1".into(),
-        };
+        let mut event = test_event("id1", "pk1", protocol::KIND_NWC_INFO);
+        event.created_at = now + 901;
 
         let result = event.verify(now, 65536);
         match result {
@@ -541,15 +509,8 @@ mod tests {
     #[test]
     fn test_event_accepts_future_within_tolerance() {
         let now = 1700000000u64;
-        let event = Event {
-            id: "id1".into(),
-            pubkey: "pk1".into(),
-            created_at: now + 800,
-            kind: 13194,
-            tags: vec![],
-            content: "".into(),
-            sig: "sig1".into(),
-        };
+        let mut event = test_event("id1", "pk1", protocol::KIND_NWC_INFO);
+        event.created_at = now + 800;
 
         let result = event.verify(now, 65536);
         match result {
@@ -563,15 +524,8 @@ mod tests {
     #[test]
     fn test_event_rejects_past_beyond_tolerance() {
         let now = 1700000000u64;
-        let event = Event {
-            id: "id1".into(),
-            pubkey: "pk1".into(),
-            created_at: now - 31_536_001,
-            kind: 13194,
-            tags: vec![],
-            content: "".into(),
-            sig: "sig1".into(),
-        };
+        let mut event = test_event("id1", "pk1", protocol::KIND_NWC_INFO);
+        event.created_at = now - 31_536_001;
 
         let result = event.verify(now, 65536);
         match result {
@@ -584,15 +538,8 @@ mod tests {
     #[test]
     fn test_event_accepts_past_within_tolerance() {
         let now = 1700000000u64;
-        let event = Event {
-            id: "id1".into(),
-            pubkey: "pk1".into(),
-            created_at: now - 100000,
-            kind: 13194,
-            tags: vec![],
-            content: "".into(),
-            sig: "sig1".into(),
-        };
+        let mut event = test_event("id1", "pk1", protocol::KIND_NWC_INFO);
+        event.created_at = now - 100000;
 
         let result = event.verify(now, 65536);
         match result {

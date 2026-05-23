@@ -101,10 +101,9 @@ impl DurableObject for CloudflareTransport {
         self.manager.lock().await.wake_and_load(connection_id, engine_ref).await;
 
         let parsed = crate::nostr::ClientMessage::from_json(&text);
-        let responses = match &parsed {
+        match &parsed {
             Ok(crate::nostr::ClientMessage::Event(event)) => {
                 log_info!("← conn={} RECV EVENT kind={} pk={} id={}", connection_id, event.kind, short(&event.pubkey, 8), short(&event.id, 8));
-                engine_ref.handle_typed(connection_id, parsed.unwrap()).await
             }
             Ok(crate::nostr::ClientMessage::Req(sub_id, filters)) => {
                 log_info!("← conn={} RECV REQ sub={}", connection_id, sub_id);
@@ -114,16 +113,18 @@ impl DurableObject for CloudflareTransport {
                     let pts = f.p_tags.as_ref().map(|p| p.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(",")).unwrap_or_else(|| "".into());
                     log_info!("  filter[{}]: kinds={} authors={} #p={}", i, kinds, auths, pts);
                 }
-                engine_ref.handle_typed(connection_id, parsed.unwrap()).await
             }
             Ok(crate::nostr::ClientMessage::Close(sub_id)) => {
                 log_info!("← conn={} RECV CLOSE sub={}", connection_id, sub_id);
-                engine_ref.handle_typed(connection_id, parsed.unwrap()).await
             }
             Err(parse_error) => {
                 log_error!("✗ parse failed: {}", parse_error.message);
-                parse_error.clone().into_responses(connection_id)
             }
+        }
+
+        let responses = match parsed {
+            Ok(msg) => engine_ref.handle_typed(connection_id, msg).await,
+            Err(parse_error) => parse_error.into_responses(connection_id),
         };
 
         self.manager.lock().await.dispatch(responses, engine_ref).await;
@@ -177,14 +178,14 @@ impl RpcContext for CloudflareTransport {
         let engine_ref = &mut *engine;
 
         let responses = match action {
-            crate::nostr::rpc_machine::RpcAction::Subscribe(sub_id, filter) => {
+            RpcAction::Subscribe(sub_id, filter) => {
                 engine_ref.handle_req(conn_id, sub_id, vec![filter], crate::nostr::engine::SubscriptionOrigin::Internal).await
             }
-            crate::nostr::rpc_machine::RpcAction::Publish(event) => {
+            RpcAction::Publish(event) => {
                 let event_msg = crate::nostr::ClientMessage::Event(event);
                 engine_ref.handle_typed(conn_id, event_msg).await
             }
-            crate::nostr::rpc_machine::RpcAction::Unsubscribe(sub_id) => {
+            RpcAction::Unsubscribe(sub_id) => {
                 engine_ref.process_close(conn_id, sub_id).await
             }
         };

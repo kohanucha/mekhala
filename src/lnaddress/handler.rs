@@ -34,10 +34,6 @@ impl<'a, S: UserStore> LnAddressHandler<'a, S> {
         }
     }
 
-    #[allow(dead_code)]
-    pub async fn lookup_user(&self, username: &str) -> Option<String> {
-        self.store.get_nwc_uri(username).await
-    }
 }
 
 fn lnaddress_error(reason: &str) -> Result<Response> {
@@ -96,7 +92,7 @@ mod tests {
         let handler = LnAddressHandler::new(&store);
 
         futures::executor::block_on(async {
-            let result = handler.lookup_user("alice").await;
+            let result = store.get_nwc_uri("alice").await;
             assert!(result.is_some());
             assert!(result.unwrap().contains("nostr+walletconnect"));
         });
@@ -108,7 +104,7 @@ mod tests {
         let handler = LnAddressHandler::new(&store);
 
         futures::executor::block_on(async {
-            let result = handler.lookup_user("nobody").await;
+            let result = store.get_nwc_uri("nobody").await;
             assert!(result.is_none());
         });
     }
@@ -121,7 +117,7 @@ mod tests {
         let handler = LnAddressHandler::new(&store);
 
         futures::executor::block_on(async {
-            let result = handler.lookup_user("bob").await;
+            let result = store.get_nwc_uri("bob").await;
             assert!(result.is_some());
         });
     }

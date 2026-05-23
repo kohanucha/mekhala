@@ -13,8 +13,16 @@ pub trait Storage {
 }
 
 pub struct SavedState {
-    pub json: Value,
-    pub pubkeys: HashSet<String>,
+    json: Value,
+    pubkeys: HashSet<String>,
+}
+
+fn parse_u32_list(val: &Value) -> Vec<u32> {
+    match val {
+        Value::Array(arr) => arr.iter().filter_map(|v| v.as_u64().map(|x| x as u32)).collect(),
+        Value::Number(n) => n.as_u64().map(|x| vec![x as u32]).unwrap_or_default(),
+        _ => Vec::new(),
+    }
 }
 
 /// A purely synchronous index for subscriptions and info events.
@@ -291,11 +299,7 @@ impl<S: Storage> WalletRegistry<S> {
     pub async fn load_by_pubkey(&mut self, pubkey: &str) -> Vec<u32> {
         let key = format!("pk:{}", pubkey);
         let storage_ids: Vec<u32> = if let Some(val) = self.storage.get(&key).await {
-            match &val {
-                Value::Array(arr) => arr.iter().filter_map(|v| v.as_u64().map(|x| x as u32)).collect(),
-                Value::Number(n) => n.as_u64().map(|x| vec![x as u32]).unwrap_or_default(),
-                _ => Vec::new(),
-            }
+            parse_u32_list(&val)
         } else {
             if let Some(id) = self.index.get_connection_id(pubkey) {
                 return vec![id];
@@ -342,11 +346,7 @@ impl<S: Storage> WalletRegistry<S> {
         for pk in &pubkeys {
             let key = format!("pk:{}", pk);
             if let Some(val) = self.storage.get(&key).await {
-                let ids: Vec<u32> = match &val {
-                    Value::Array(arr) => arr.iter().filter_map(|v| v.as_u64().map(|x| x as u32)).collect(),
-                    Value::Number(n) => n.as_u64().map(|x| vec![x as u32]).unwrap_or_default(),
-                    _ => Vec::new(),
-                };
+                let ids = parse_u32_list(&val);
                 let new_ids: Vec<u32> = ids.into_iter().filter(|x| *x != id).collect();
                 if new_ids.is_empty() {
                     self.storage.delete_batch(vec![key]).await;
@@ -427,15 +427,7 @@ impl<S: Storage> WalletRegistry<S> {
     }
 
     async fn read_pk_list(&self, key: &str) -> Vec<u32> {
-        if let Some(val) = self.storage.get(key).await {
-            match &val {
-                Value::Array(arr) => arr.iter().filter_map(|v| v.as_u64().map(|x| x as u32)).collect(),
-                Value::Number(n) => n.as_u64().map(|x| vec![x as u32]).unwrap_or_default(),
-                _ => Vec::new(),
-            }
-        } else {
-            Vec::new()
-        }
+        self.storage.get(key).await.map(|val| parse_u32_list(&val)).unwrap_or_default()
     }
 }
 

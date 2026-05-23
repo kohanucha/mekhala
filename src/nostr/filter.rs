@@ -63,30 +63,29 @@ impl Filter {
     }
 
     pub fn is_valid(&self) -> bool {
-        let has_specific_narrowing = self.p_tags.is_some() || self.e_tags.is_some() || self.ids.is_some();
-
-        if has_specific_narrowing {
-            if let Some(kinds) = &self.kinds {
-                if kinds.iter().any(|k| !protocol::is_allowed_filter_kind(k)) {
-                    return false;
-                }
-            }
-        } else {
-            let kinds = match &self.kinds {
-                Some(k) if !k.is_empty() => k,
-                _ => return false,
-            };
-
-            if kinds.iter().any(|k| !protocol::is_allowed_filter_kind(k)) {
-                return false;
-            }
-
-            if self.ids.is_none() && self.authors.is_none() && self.p_tags.is_none() && self.e_tags.is_none() {
+        // If kinds are specified, they must all be allowed.
+        if let Some(kinds) = &self.kinds {
+            if !kinds.is_empty() && kinds.iter().any(|k| !protocol::is_allowed_filter_kind(k)) {
                 return false;
             }
         }
 
-        true
+        let has_specific_narrowing = self.p_tags.is_some() || self.e_tags.is_some() || self.ids.is_some();
+
+        if has_specific_narrowing {
+            // p_tags/e_tags/ids provide enough narrowing; kinds are optional.
+            true
+        } else {
+            // Without specific narrowing, require kinds and author narrowing.
+            match &self.kinds {
+                Some(k) if !k.is_empty() => {}
+                _ => return false,
+            }
+            if self.authors.is_none() {
+                return false;
+            }
+            true
+        }
     }
 
     pub fn pubkeys(&self) -> Vec<String> {

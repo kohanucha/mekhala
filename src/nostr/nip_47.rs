@@ -57,10 +57,10 @@ pub enum EncryptionMethod {
 }
 
 impl EncryptionMethod {
-    pub fn to_protocol_string(&self) -> String {
+    pub fn to_protocol_str(&self) -> &'static str {
         match self {
-            EncryptionMethod::Nip04 => "nip04".to_string(),
-            EncryptionMethod::Nip44 => "nip44_v2".to_string(),
+            EncryptionMethod::Nip04 => "nip04",
+            EncryptionMethod::Nip44 => "nip44_v2",
         }
     }
 
@@ -213,7 +213,7 @@ impl NwcClient {
         ];
         tags.extend(extra_tags);
 
-        tags.push(Tag::encryption(self.encryption_method.to_protocol_string()));
+        tags.push(Tag::encryption(self.encryption_method.to_protocol_str()));
 
         let encrypted_content = self.encrypt(&payload)?;
         let event = self.create_event(KIND_NWC_REQUEST, encrypted_content, tags)?;
