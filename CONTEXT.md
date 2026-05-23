@@ -34,20 +34,33 @@ Mekhala provides an LN Address bridge, allowing users to pay to an LN Address (e
 - **RpcReceiveError**: The error type for the `receive_response` seam — `Timeout` or `ChannelClosed`, both representable without Cloudflare-specific types.
 - **Clock seam**: Both `NostrEngine` and `NwcClient` accept `fn() -> u64` as a clock parameter, defaulting to `crate::util::now`. No domain module calls `now()` directly — all timestamps flow through the injected seam.
 - **UserStore**: A `?Send` trait for looking up NWC connection URIs by username. `CloudflareKvStore` implements it using Workers KV. The seam enables unit-testing the LN Address handler without a worker runtime.
+- **ConnectionManager**: A deep module that manages connection dispatch and lifecycle. It routes `EngineResponse` to WebSocket peers or internal RPC channels, orchestrates hibernation wake-up via `ConnectionTransport`, and calls back to `ConnectionHandler` for engine state persistence. Fully unit-testable without Cloudflare Workers.
+- **ConnectionTransport**: The seam abstracting peer I/O and hibernation activation. Production adapter (`CloudflareConnectionTransport`) wraps `WebSocketRegistry` using `js_sys::Object::is` for identity. Test adapter (`MockTransport`) uses in-memory tracking.
+- **ConnectionHandler**: The seam abstracting engine callbacks for connection lifecycle events (`on_connect`, `load`, `on_terminate`). Production adapter (`NostrEngineHandler`) wraps `NostrEngine`. Test adapter (`MockHandler`) records calls.
+- **CloudflareConnectionTransport**: The production adapter for `ConnectionTransport`. Wraps `WebSocketRegistry` and holds `State` for hibernation recovery.
 - **LnAddressHandler<S>**: A struct generic over `UserStore` that orchestrates LNURL-pay requests and callbacks. It resolves usernames to NWC URIs via the `UserStore` seam and delegates invoice creation to `LnAddressGateway` and `NwcSession` via the `NwcTransport` seam.
 
 ## Architecture Map
 
 ### 1. Transport Layer (The Edge)
 **Module:** `CloudflareTransport` (`src/cloudflare/transport.rs`)
-- **Role:** The entry point living on Cloudflare's edge. It manages the Durable Object lifecycle, physical WebSockets, and **WebSocket Hibernation**. It translates raw incoming HTTP/WebSocket traffic into domain events.
+- **Role:** The entry point living on Cloudflare's edge. It manages the Durable Object lifecycle and translates raw incoming HTTP/WebSocket traffic into domain events.
 - **Provides:** `CloudflareStorage`, a concrete adapter for the `Storage` trait, interacting with the Durable Object's internal KV.
 - **Composed of:**
-  - `WebSocketRegistry`: manages physical WebSocket connections and hibernation recovery.
-  - `InternalConnectionMap`: manages oneshot channels for RPC responses (InternalConnections).
+  - `ConnectionManager<CloudflareConnectionTransport>`: manages dispatch, hibernation wake-up, and internal channels.
+  - `CloudflareConnectionTransport`: production adapter for `ConnectionTransport`, wrapping `WebSocketRegistry`.
 - **Calls Down To:**
   - `NostrEngine` to process incoming messages.
+  - `ConnectionManager` to dispatch `EngineResponse` and manage connection lifecycle.
   - `WalletRegistry` (via the engine) to proactively wake up hibernating WebSockets when an incoming event targets an offline **Subscription**.
+
+### 1a. Connection Management Layer
+**Module:** `ConnectionManager` (`src/nostr/connection.rs`)
+- **Role:** A deep module that owns connection dispatch and lifecycle. It routes `EngineResponse::Send` to peers or internal channels, handles `EngineResponse::WakeUp` by activating hibernated peers, and delegates engine callbacks to `ConnectionHandler`.
+- **Seams:** `ConnectionTransport` trait (peer I/O and activation), `ConnectionHandler` trait (engine callbacks for load/terminate/connect).
+- **Production Adapters:** `CloudflareConnectionTransport` (WebSocketRegistry + State), `NostrEngineHandler` (MutexGuard<NostrEngine>).
+- **Test Doubles:** `MockTransport` (in-memory tracking), `MockHandler` (call recording).
+- **Called By:** `CloudflareTransport` for all WebSocket lifecycle and dispatch operations.
 
 ### 2. The Core Domain (The Routing Engine)
 **Module:** `NostrEngine` (`src/nostr/engine.rs`)
@@ -92,19 +105,20 @@ Mekhala provides an LN Address bridge, allowing users to pay to an LN Address (e
 
 ### The Data Flow
 1. A physical WebSocket wakes up from **WebSocket Hibernation** and sends text to `CloudflareTransport`.
-2. `CloudflareTransport` asks `NostrEngine` to handle the text.
-3. `NostrEngine` parses it into an **NWC Event** or **Filter** and validates it.
-4. If it's a **Subscription** request, the engine tells `WalletRegistry` to subscribe.
-5. `WalletRegistry` updates its pure in-memory `WalletIndex` and async-flushes a **SavedState** via `Storage`.
-6. If it's an **NWC Event** to be broadcast, the engine asks `WalletRegistry` for matching connection IDs.
-7. `NostrEngine` returns an array of `EngineResponse::Send` commands back up to `CloudflareTransport`.
-8. `CloudflareTransport` delivers the bytes to the physical WebSockets (via `WebSocketRegistry`) or to internal RPC callers (via `InternalConnectionMap`).
+2. `CloudflareTransport` identifies the WebSocket via `ConnectionManager` and loads its state from `WalletRegistry`.
+3. `CloudflareTransport` asks `NostrEngine` to handle the text.
+4. `NostrEngine` parses it into an **NWC Event** or **Filter** and validates it.
+5. If it's a **Subscription** request, the engine tells `WalletRegistry` to subscribe.
+6. `WalletRegistry` updates its pure in-memory `WalletIndex` and async-flushes a **SavedState** via `Storage`.
+7. If it's an **NWC Event** to be broadcast, the engine asks `WalletRegistry` for matching connection IDs.
+8. `NostrEngine` returns an array of `EngineResponse::Send` and `EngineResponse::WakeUp` commands back up to `CloudflareTransport`.
+9. `CloudflareTransport` delegates dispatch to `ConnectionManager`, which routes to physical WebSockets (via `ConnectionTransport`) or internal RPC callers (via `InternalConnectionMap`).
 
 ### The RPC Flow (LN Address Bridge / programmatic NWC)
 1. An HTTP callback arrives for LN Address bridging (or a programmatic NWC call is made).
 2. The caller invokes `NwcTransport::execute_nwc_rpc`.
 3. This delegates to `NwcRpcOrchestrator::execute_nwc_rpc`, which drives the full lifecycle via the `RpcContext` seam.
 4. The orchestrator allocates an InternalConnection, starts `NwcRpcMachine` (subscribe + publish), and waits for a wallet response.
-5. When the wallet's response arrives via WebSocket, `CloudflareTransport.route_send` delivers it to the `InternalConnectionMap` oneshot channel.
+5. When the wallet's response arrives via WebSocket, `ConnectionManager::route_send` delivers it to the `InternalConnectionMap` oneshot channel.
 6. The orchestrator picks up the response, transitions the machine, and returns the result event (or times out / fails).
 7. The orchestrator disconnects the InternalConnection and cleans up.

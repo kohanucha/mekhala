@@ -11,6 +11,7 @@ pub mod rpc_orchestrator;
 pub mod tag;
 pub mod error;
 pub mod limits;
+pub mod connection;
 
 pub use nip_01::{RelayMessage, ClientMessage};
 pub use event::Event;

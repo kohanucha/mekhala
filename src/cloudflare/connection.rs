@@ -1,6 +1,8 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
-use futures::channel::oneshot;
+use std::rc::Rc;
 use worker::*;
+use crate::nostr::connection::ConnectionTransport;
 
 pub struct WebSocketRegistry {
     websockets: HashMap<u32, WebSocket>,
@@ -15,15 +17,6 @@ impl WebSocketRegistry {
 
     pub fn add_active(&mut self, id: u32, ws: WebSocket) {
         self.websockets.insert(id, ws);
-    }
-
-    pub fn accept_and_register(&mut self, state: &State, id: u32, ws: &WebSocket) {
-        if let Err(e) = ws.serialize_attachment(&id) {
-            crate::log_warn!("serialize_attachment failed for conn={}: {}", id, e);
-        }
-        state.accept_web_socket(ws);
-        self.add_active(id, ws.clone());
-        crate::log_debug!("✓ conn={} registered, attachment verified", id);
     }
 
     pub fn identify(&self, ws: &WebSocket) -> Option<u32> {
@@ -66,12 +59,8 @@ impl WebSocketRegistry {
         }
     }
 
-    pub fn len(&self, state: &State) -> usize {
-        state.get_websockets().len()
-    }
-
-    pub fn get_all_websockets(&self, state: &State) -> Vec<WebSocket> {
-        state.get_websockets()
+    pub fn active_count(&self) -> usize {
+        self.websockets.len()
     }
 
     pub fn remove(&mut self, id: u32) -> Option<WebSocket> {
@@ -79,31 +68,65 @@ impl WebSocketRegistry {
     }
 }
 
-pub struct InternalConnectionMap {
-    channels: HashMap<u32, oneshot::Sender<String>>,
+/// Production adapter for ConnectionTransport.
+/// Wraps WebSocketRegistry and provides Cloudflare-specific peer I/O.
+pub struct CloudflareConnectionTransport {
+    websockets: RefCell<WebSocketRegistry>,
+    state: Rc<State>,
 }
 
-impl InternalConnectionMap {
-    pub fn new() -> Self {
+impl CloudflareConnectionTransport {
+    pub fn new(state: Rc<State>) -> Self {
         Self {
-            channels: HashMap::new(),
+            websockets: RefCell::new(WebSocketRegistry::new()),
+            state,
         }
     }
 
-    pub fn add(&mut self, id: u32, sender: oneshot::Sender<String>) {
-        self.channels.insert(id, sender);
+}
+
+impl ConnectionTransport for CloudflareConnectionTransport {
+    type Connection = WebSocket;
+
+    fn identify(&self, ws: &WebSocket) -> Option<u32> {
+        self.websockets.borrow().identify(ws)
     }
 
-    pub fn send(&mut self, id: u32, message: String) -> bool {
-        if let Some(sender) = self.channels.remove(&id) {
-            let _ = sender.send(message);
+    fn accept_and_register(&self, id: u32, ws: &WebSocket) {
+        if let Err(e) = ws.serialize_attachment(&id) {
+            crate::log_warn!("serialize_attachment failed for conn={}: {}", id, e);
+        }
+        self.state.accept_web_socket(ws);
+        self.websockets.borrow_mut().add_active(id, ws.clone());
+        crate::log_debug!("✓ conn={} registered, attachment verified", id);
+    }
+
+    fn send_to_peer(&self, id: u32, message: &str) -> bool {
+        self.websockets.borrow_mut().send(id, message.to_string())
+    }
+
+    fn try_activate(&self, id: u32) -> bool {
+        let ws = {
+            let borrowed = self.websockets.borrow();
+            borrowed.find_by_id(&self.state, id)
+        };
+        if let Some(ws) = ws {
+            self.websockets.borrow_mut().add_active(id, ws);
             true
         } else {
             false
         }
     }
 
-    pub fn remove(&mut self, id: u32) {
-        self.channels.remove(&id);
+    fn remove_peer(&mut self, id: u32) {
+        self.websockets.borrow_mut().remove(id);
+    }
+
+    fn active_count(&self) -> usize {
+        self.websockets.borrow().active_count()
+    }
+
+    fn hibernated_count(&self) -> usize {
+        self.state.get_websockets().len() - self.active_count()
     }
 }
