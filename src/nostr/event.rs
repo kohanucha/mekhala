@@ -3,7 +3,8 @@ use k256::schnorr::signature::hazmat::PrehashVerifier;
 use k256::schnorr::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use crate::nostr::{RelayError, Limits, Tag};
+use crate::nostr::{RelayError, Tag};
+use crate::nostr::protocol;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Event {
@@ -43,12 +44,10 @@ impl Event {
         keys
     }
 
-    pub fn verify(&self, current_time: u64, limits: &Limits) -> Result<(), RelayError> {
-        
+    pub fn verify(&self, current_time: u64, max_content_length: usize) -> Result<(), RelayError> {
         // Enforce allowed kinds
-        match self.kind {
-            5 | 13194 | 23194 | 23195 | 23196 | 23197 => {}
-            _ => return Err(RelayError::InvalidKind),
+        if !protocol::is_allowed_event_kind(self.kind) {
+            return Err(RelayError::InvalidKind);
         }
 
         // Enforce tags for specific NWC kinds
@@ -66,8 +65,8 @@ impl Event {
             _ => {}
         }
 
-        if self.content.len() > limits.max_content_length {
-            return Err(RelayError::LimitExceeded(format!("content too large (max {} bytes)", limits.max_content_length)));
+        if self.content.len() > max_content_length {
+            return Err(RelayError::LimitExceeded(format!("content too large (max {} bytes)", max_content_length)));
         }
 
         if self.created_at > current_time + 900 {
@@ -171,7 +170,7 @@ mod tests {
             content: "deleting".into(),
             sig: "badsig".into(),
         };
-        let result = event.verify(1700000000, &Limits::default());
+        let result = event.verify(1700000000, 65536);
         // Kind 5 should pass the kind check, then fail on id/signature
         match result {
             Err(RelayError::InvalidId) | Err(RelayError::InvalidSignature) => {}

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use crate::nostr::Event;
+use crate::nostr::protocol;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Filter {
@@ -66,7 +67,7 @@ impl Filter {
 
         if has_specific_narrowing {
             if let Some(kinds) = &self.kinds {
-                if kinds.iter().any(|k| !matches!(k, 5 | 13194 | 23194..=23197)) {
+                if kinds.iter().any(|k| !protocol::is_allowed_filter_kind(k)) {
                     return false;
                 }
             }
@@ -76,7 +77,7 @@ impl Filter {
                 _ => return false,
             };
 
-            if kinds.iter().any(|k| !matches!(k, 5 | 13194 | 23194..=23197)) {
+            if kinds.iter().any(|k| !protocol::is_allowed_filter_kind(k)) {
                 return false;
             }
 

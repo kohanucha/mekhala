@@ -44,9 +44,6 @@ pub trait ConnectionTransport {
 /// Production adapter wraps NostrEngine. Test adapter records calls.
 #[async_trait::async_trait(?Send)]
 pub trait ConnectionHandler {
-    /// Called when a new connection is accepted.
-    async fn on_connect(&mut self, connection_id: u32) -> Vec<EngineResponse>;
-
     /// Load persisted state for a hibernated connection.
     /// Returns true if state was found in storage.
     async fn load(&mut self, connection_id: u32) -> bool;
@@ -304,10 +301,6 @@ impl MockHandler {
 #[cfg(test)]
 #[async_trait::async_trait(?Send)]
 impl ConnectionHandler for MockHandler {
-    async fn on_connect(&mut self, _connection_id: u32) -> Vec<EngineResponse> {
-        Vec::new()
-    }
-
     async fn load(&mut self, connection_id: u32) -> bool {
         self.load_calls.borrow_mut().push(connection_id);
         *self.load_returns.borrow().get(&connection_id).unwrap_or(&true)

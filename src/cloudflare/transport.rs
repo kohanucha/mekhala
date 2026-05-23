@@ -4,66 +4,23 @@ use futures::channel::oneshot;
 use futures::lock::Mutex;
 use futures_util::FutureExt;
 use worker::*;
-use crate::nostr::engine::{NostrEngine, EngineResponse};
-use crate::nostr::wallet_registry::Storage;
-use crate::nostr::Limits;
+use crate::nostr::engine::NostrEngine;
 use crate::nostr::rpc_machine::RpcAction;
 use crate::nostr::rpc_orchestrator::{RpcContext, RpcReceiveError};
-use crate::nostr::connection::{ConnectionManager, ConnectionHandler};
+use crate::nostr::connection::ConnectionManager;
 use crate::cloudflare::create_cors_response;
 use crate::cloudflare::connection::CloudflareConnectionTransport;
 use crate::cloudflare::kv::CloudflareKvStore;
+use crate::cloudflare::storage::CloudflareStorage;
 use crate::util::short;
 use crate::log_info;
 use crate::log_debug;
 use crate::log_warn;
 use crate::log_error;
 
-pub struct CloudflareStorage {
-    storage: worker::Storage,
-}
-
-#[async_trait::async_trait(?Send)]
-impl Storage for CloudflareStorage {
-    async fn get(&self, key: &str) -> Option<serde_json::Value> {
-        self.storage.get(key).await.ok().flatten()
-    }
-    async fn put_batch(&self, entries: std::collections::HashMap<String, serde_json::Value>) {
-        for (k, v) in entries {
-            let _ = self.storage.put(&k, v).await;
-        }
-    }
-    async fn delete_batch(&self, keys: Vec<String>) {
-        for k in keys {
-            let _ = self.storage.delete(&k).await;
-        }
-    }
-}
-
 struct IdCounterState {
     current_id: u32,
     id_limit: u32,
-}
-
-/// Production adapter for ConnectionHandler.
-/// Wraps a mutable reference to NostrEngine behind a MutexGuard.
-struct NostrEngineHandler<'a, S: Storage> {
-    engine: &'a mut NostrEngine<S>,
-}
-
-#[async_trait::async_trait(?Send)]
-impl<'a, S: Storage> ConnectionHandler for NostrEngineHandler<'a, S> {
-    async fn on_connect(&mut self, connection_id: u32) -> Vec<EngineResponse> {
-        self.engine.on_connect(connection_id).await
-    }
-
-    async fn load(&mut self, connection_id: u32) -> bool {
-        self.engine.load(connection_id).await
-    }
-
-    async fn on_terminate(&mut self, connection_id: u32) {
-        self.engine.on_terminate(connection_id).await;
-    }
 }
 
 #[durable_object]
@@ -79,13 +36,11 @@ pub struct CloudflareTransport {
 impl DurableObject for CloudflareTransport {
     fn new(state: State, env: Env) -> Self {
         let state = Rc::new(state);
-        let storage = CloudflareStorage { storage: state.storage() };
-        let limits = Limits::new(
-            env.var("MAX_CONTENT_LENGTH")
-                .and_then(|v| v.to_string().parse::<usize>().map_err(|e| Error::from(e.to_string())))
-                .unwrap_or(65536),
-        );
-        let engine = NostrEngine::new_with_storage(storage, limits, crate::util::now);
+        let storage = CloudflareStorage::new(state.storage());
+        let max_content_length = env.var("MAX_CONTENT_LENGTH")
+            .and_then(|v| v.to_string().parse::<usize>().map_err(|e| Error::from(e.to_string())))
+            .unwrap_or(65536);
+        let engine = NostrEngine::new_with_storage(storage, max_content_length, crate::util::now);
         let kv = CloudflareKvStore::new(env.kv("MEKHALA_NWC_KV").expect("MEKHALA_NWC_KV not configured"));
 
         let transport = CloudflareConnectionTransport::new(state.clone());
@@ -116,127 +71,63 @@ impl DurableObject for CloudflareTransport {
 
     async fn websocket_message(&self, websocket: WebSocket, message: WebSocketIncomingMessage) -> Result<()> {
         log_debug!("→ websocket_message handler invoked");
-        if let WebSocketIncomingMessage::String(text) = message {
-            if text.len() > 131072 {
-                log_warn!("message too large: {} bytes", text.len());
-                let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Notice("message too large".into()).to_json());
+        let text = match message {
+            WebSocketIncomingMessage::String(t) => t,
+            _ => {
+                log_warn!("binary message not supported");
+                let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Notice("binary not supported".into()).to_json());
                 return Ok(());
             }
+        };
 
-            let parsed = crate::nostr::ClientMessage::from_json(&text);
-
-            match &parsed {
-                Ok(crate::nostr::ClientMessage::Event(event)) => {
-                    let connection_id = {
-                        let manager = self.manager.lock().await;
-                        manager.identify(&websocket)
-                    };
-
-                    let connection_id = match connection_id {
-                        Some(id) => {
-                            let mut engine = self.engine.lock().await;
-                            let engine_ref = &mut *engine;
-                            let mut handler = NostrEngineHandler { engine: engine_ref };
-                            let manager = self.manager.lock().await;
-                            manager.wake_and_load(id, &mut handler).await;
-                            id
-                        }
-                        None => {
-                            log_error!("connection not found for incoming EVENT, sending reconnect notice");
-                            let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Notice("connection lost: please reconnect".into()).to_json());
-                            return Ok(());
-                        }
-                    };
-
-                    log_info!("← conn={} RECV EVENT kind={} pk={} id={}", connection_id, event.kind, short(&event.pubkey, 8), short(&event.id, 8));
-
-                    let mut engine = self.engine.lock().await;
-                    let engine_ref = &mut *engine;
-
-                    match engine_ref.validate_event(event) {
-                        Ok(()) => {
-                            log_debug!("✓ EVENT accepted kind={} pk={} id={}", event.kind, short(&event.pubkey, 8), short(&event.id, 8));
-                            let ok_msg = crate::nostr::RelayMessage::Ok(event.id.clone(), true, "".to_string()).to_json();
-                            log_info!("→ conn={} SEND {}", connection_id, ok_msg);
-                            let _ = websocket.send_with_str(&ok_msg);
-                            let responses = engine_ref.route_verified_event(connection_id, event.clone()).await;
-
-                            let mut handler = NostrEngineHandler { engine: engine_ref };
-                            let mut manager = self.manager.lock().await;
-                            manager.dispatch(responses, &mut handler).await;
-                        }
-                        Err((event_id, error_msg)) => {
-                            log_warn!("✗ EVENT rejected id={}: {}", short(&event_id, 8), error_msg);
-                            let fail_msg = crate::nostr::RelayMessage::Ok(event_id, false, error_msg).to_json();
-                            log_info!("→ conn={} SEND {}", connection_id, fail_msg);
-                            let _ = websocket.send_with_str(&fail_msg);
-                        }
-                    }
-                }
-                _ => {
-                    let connection_id = {
-                        let manager = self.manager.lock().await;
-                        manager.identify(&websocket)
-                    };
-
-                    let connection_id = match connection_id {
-                        Some(id) => {
-                            let mut engine = self.engine.lock().await;
-                            let engine_ref = &mut *engine;
-                            let mut handler = NostrEngineHandler { engine: engine_ref };
-                            let manager = self.manager.lock().await;
-                            manager.wake_and_load(id, &mut handler).await;
-                            id
-                        }
-                        None => {
-                            log_error!("connection not found for incoming message, sending reconnect notice");
-                            let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Notice("connection lost: please reconnect".into()).to_json());
-                            return Ok(());
-                        }
-                    };
-
-                    let mut engine = self.engine.lock().await;
-                    let engine_ref = &mut *engine;
-
-                    let responses = match parsed {
-                        Ok(crate::nostr::ClientMessage::Req(sub_id, filters)) => {
-                            log_info!("← conn={} RECV REQ sub={}", connection_id, sub_id);
-                            for (i, f) in filters.iter().enumerate() {
-                                let kinds = f.kinds.as_ref().map(|k| format!("{:?}", k)).unwrap_or_else(|| "any".into());
-                                let auths = f.authors.as_ref().map(|a| a.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(",")).unwrap_or_else(|| "".into());
-                                let pts = f.p_tags.as_ref().map(|p| p.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(",")).unwrap_or_else(|| "".into());
-                                log_info!("  filter[{}]: kinds={} authors={} #p={}", i, kinds, auths, pts);
-                            }
-                            engine_ref.handle_req(connection_id, sub_id, filters).await
-                        }
-                        Ok(crate::nostr::ClientMessage::Close(sub_id)) => {
-                            log_info!("← conn={} RECV CLOSE sub={}", connection_id, sub_id);
-                            engine_ref.process_close(connection_id, sub_id).await
-                        }
-                        Ok(crate::nostr::ClientMessage::Event(_)) => unreachable!(),
-                        Err(e) => {
-                            log_error!("✗ parse failed: {}", e);
-                            if let Some(crate::nostr::nip_01::PartialClientMessage::Event(id)) = crate::nostr::nip_01::PartialClientMessage::from_json(&text) {
-                                vec![crate::nostr::engine::EngineResponse::send(connection_id, crate::nostr::RelayMessage::Ok(id, false, format!("parse failed: {}", e)))]
-                            } else {
-                                vec![crate::nostr::engine::EngineResponse::send(connection_id, crate::nostr::RelayMessage::Notice(format!("parse failed: {}", e)))]
-                            }
-                        }
-                    };
-
-                    let mut handler = NostrEngineHandler { engine: engine_ref };
-                    let mut manager = self.manager.lock().await;
-                    manager.dispatch(responses, &mut handler).await;
-                }
-            }
-
-            Ok(())
-        } else {
-            let _engine = self.engine.lock().await;
-            log_warn!("binary message not supported");
-            let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Notice("binary not supported".into()).to_json());
-            Ok(())
+        if text.len() > 131072 {
+            log_warn!("message too large: {} bytes", text.len());
+            let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Notice("message too large".into()).to_json());
+            return Ok(());
         }
+
+        let connection_id = match self.manager.lock().await.identify(&websocket) {
+            Some(id) => id,
+            None => {
+                log_error!("connection not found, sending reconnect notice");
+                let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Notice("connection lost: please reconnect".into()).to_json());
+                return Ok(());
+            }
+        };
+
+        let mut engine = self.engine.lock().await;
+        let engine_ref = &mut *engine;
+
+        self.manager.lock().await.wake_and_load(connection_id, engine_ref).await;
+
+        let parsed = crate::nostr::ClientMessage::from_json(&text);
+        let responses = match &parsed {
+            Ok(crate::nostr::ClientMessage::Event(event)) => {
+                log_info!("← conn={} RECV EVENT kind={} pk={} id={}", connection_id, event.kind, short(&event.pubkey, 8), short(&event.id, 8));
+                engine_ref.handle_typed(connection_id, parsed.unwrap()).await
+            }
+            Ok(crate::nostr::ClientMessage::Req(sub_id, filters)) => {
+                log_info!("← conn={} RECV REQ sub={}", connection_id, sub_id);
+                for (i, f) in filters.iter().enumerate() {
+                    let kinds = f.kinds.as_ref().map(|k| format!("{:?}", k)).unwrap_or_else(|| "any".into());
+                    let auths = f.authors.as_ref().map(|a| a.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(",")).unwrap_or_else(|| "".into());
+                    let pts = f.p_tags.as_ref().map(|p| p.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(",")).unwrap_or_else(|| "".into());
+                    log_info!("  filter[{}]: kinds={} authors={} #p={}", i, kinds, auths, pts);
+                }
+                engine_ref.handle_typed(connection_id, parsed.unwrap()).await
+            }
+            Ok(crate::nostr::ClientMessage::Close(sub_id)) => {
+                log_info!("← conn={} RECV CLOSE sub={}", connection_id, sub_id);
+                engine_ref.handle_typed(connection_id, parsed.unwrap()).await
+            }
+            Err(parse_error) => {
+                log_error!("✗ parse failed: {}", parse_error.message);
+                parse_error.clone().into_responses(connection_id)
+            }
+        };
+
+        self.manager.lock().await.dispatch(responses, engine_ref).await;
+        Ok(())
     }
 
     async fn websocket_close(&self, ws: WebSocket, code: usize, reason: String, was_clean: bool) -> Result<()> {
@@ -287,7 +178,7 @@ impl RpcContext for CloudflareTransport {
 
         let responses = match action {
             crate::nostr::rpc_machine::RpcAction::Subscribe(sub_id, filter) => {
-                engine_ref.handle_req_internal(conn_id, sub_id, vec![filter]).await
+                engine_ref.handle_req(conn_id, sub_id, vec![filter], crate::nostr::engine::SubscriptionOrigin::Internal).await
             }
             crate::nostr::rpc_machine::RpcAction::Publish(event) => {
                 let event_msg = crate::nostr::ClientMessage::Event(event);
@@ -298,9 +189,8 @@ impl RpcContext for CloudflareTransport {
             }
         };
 
-        let mut handler = NostrEngineHandler { engine: engine_ref };
         let mut manager = self.manager.lock().await;
-        manager.dispatch(responses, &mut handler).await;
+        manager.dispatch(responses, engine_ref).await;
         Ok(())
     }
 
@@ -375,14 +265,13 @@ impl CloudflareTransport {
         // 3. NOW safe to await — WS is accepted and in HashMap
         let mut engine = self.engine.lock().await;
         let engine_ref = &mut *engine;
-        let mut handler = NostrEngineHandler { engine: engine_ref };
-        let responses = handler.on_connect(connection_id).await;
+        let responses = engine_ref.on_connect(connection_id).await;
 
         let mut manager = self.manager.lock().await;
 
         log_info!("+ conn={} accepted count={}/{}", connection_id, manager.total_count(), max_connections);
 
-        manager.dispatch(responses, &mut handler).await;
+        manager.dispatch(responses, engine_ref).await;
 
         Ok(Response::from_websocket(client)?)
     }
@@ -393,14 +282,13 @@ impl CloudflareTransport {
         if let Some(id) = conn_id {
             let mut engine = self.engine.lock().await;
             let engine_ref = &mut *engine;
-            let mut handler = NostrEngineHandler { engine: engine_ref };
             let mut manager = self.manager.lock().await;
 
             // Wake up if hibernated, then terminate
-            manager.wake_and_load(id, &mut handler).await;
+            manager.wake_and_load(id, engine_ref).await;
 
             log_info!("- conn={} disconnected", id);
-            manager.on_terminate(id, &mut handler).await;
+            manager.on_terminate(id, engine_ref).await;
         }
         Ok(())
     }
