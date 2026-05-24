@@ -179,7 +179,8 @@ impl<S: Storage> NostrEngine<S> {
                 if let Some(info_event) = self.registry.get_info(&pk).await {
                     if filters.iter().any(|f| {
                         f.matches(&info_event)
-                        || f.p_tags.as_ref().map_or(false, |p| p.contains(&info_event.pubkey))
+                        || (f.p_tags.as_ref().map_or(false, |p| p.contains(&info_event.pubkey))
+                            && f.kinds.as_ref().map_or(true, |k| k.contains(&13194)))
                     }) {
                         log_debug!("info hit: pk={} sub={}", short(&pk, 8), sub_id);
                         responses.push(EngineResponse::send(id, RelayMessage::Event(sub_id.clone(), info_event.clone())));
