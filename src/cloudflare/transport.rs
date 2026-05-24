@@ -1,36 +1,28 @@
 use std::rc::Rc;
-use std::time::Duration;
-use futures::channel::oneshot;
 use futures::lock::Mutex;
-use futures_util::FutureExt;
 use worker::*;
-use crate::nostr::engine::NostrEngine;
-use crate::nostr::rpc_machine::RpcAction;
-use crate::nostr::rpc_orchestrator::{RpcContext, RpcReceiveError};
-use crate::nostr::connection::ConnectionManager;
-use crate::cloudflare::create_cors_response;
 use crate::cloudflare::connection::CloudflareConnectionTransport;
+use crate::cloudflare::create_cors_response;
+use crate::cloudflare::id_allocator::{DoIdBatchStore, IdAllocator};
 use crate::cloudflare::kv::CloudflareKvStore;
+use crate::cloudflare::rpc_context::CloudflareRpcContext;
 use crate::cloudflare::storage::CloudflareStorage;
+use crate::nostr::connection::ConnectionManager;
+use crate::nostr::engine::NostrEngine;
 use crate::util::short;
 use crate::log_info;
 use crate::log_debug;
 use crate::log_warn;
 use crate::log_error;
 
-struct IdCounterState {
-    current_id: u32,
-    id_limit: u32,
-}
-
 #[durable_object]
 pub struct CloudflareTransport {
     env: Env,
-    state: Rc<State>,
-    engine: Mutex<NostrEngine<CloudflareStorage>>,
-    manager: Mutex<ConnectionManager<CloudflareConnectionTransport>>,
-    id_counter: Mutex<IdCounterState>,
+    engine: Rc<Mutex<NostrEngine<CloudflareStorage>>>,
+    manager: Rc<Mutex<ConnectionManager<CloudflareConnectionTransport>>>,
+    id_allocator: Rc<IdAllocator<DoIdBatchStore>>,
     kv: CloudflareKvStore,
+    rpc_ctx: CloudflareRpcContext,
 }
 
 impl DurableObject for CloudflareTransport {
@@ -43,16 +35,27 @@ impl DurableObject for CloudflareTransport {
         let engine = NostrEngine::new_with_storage(storage, max_content_length, crate::util::now);
         let kv = CloudflareKvStore::new(env.kv("MEKHALA_NWC_KV").expect("MEKHALA_NWC_KV not configured"));
 
-        let transport = CloudflareConnectionTransport::new(state.clone());
+        let transport = CloudflareConnectionTransport::new(Rc::clone(&state));
         let manager = ConnectionManager::new(transport);
+        let id_store = DoIdBatchStore::new(state.storage());
+        let id_allocator = IdAllocator::new(id_store);
+
+        let engine = Rc::new(Mutex::new(engine));
+        let manager = Rc::new(Mutex::new(manager));
+        let id_allocator = Rc::new(id_allocator);
+        let rpc_ctx = CloudflareRpcContext::new(
+            Rc::clone(&engine),
+            Rc::clone(&manager),
+            Rc::clone(&id_allocator),
+        );
 
         Self {
             env,
-            state,
-            engine: Mutex::new(engine),
-            manager: Mutex::new(manager),
-            id_counter: Mutex::new(IdCounterState { current_id: 0, id_limit: 0 }),
+            engine,
+            manager,
+            id_allocator,
             kv,
+            rpc_ctx,
         }
     }
 
@@ -159,90 +162,11 @@ impl crate::common::NwcTransport for CloudflareTransport {
     }
 
     async fn execute_nwc_rpc(&self, request: crate::nostr::Event) -> Result<crate::nostr::Event, crate::common::NwcError> {
-        crate::nostr::rpc_orchestrator::execute_nwc_rpc(self, request).await
-    }
-}
-
-#[async_trait::async_trait(?Send)]
-impl RpcContext for CloudflareTransport {
-    fn now(&self) -> u64 {
-        crate::util::now()
-    }
-
-    async fn allocate_connection_id(&self) -> u32 {
-        self.allocate_id().await
-    }
-
-    async fn execute_action(&self, conn_id: u32, action: RpcAction) -> Result<(), crate::common::NwcError> {
-        let mut engine = self.engine.lock().await;
-        let engine_ref = &mut *engine;
-
-        let responses = match action {
-            RpcAction::Subscribe(sub_id, filter) => {
-                engine_ref.handle_req(conn_id, sub_id, vec![filter], crate::nostr::engine::SubscriptionOrigin::Internal).await
-            }
-            RpcAction::Publish(event) => {
-                let event_msg = crate::nostr::ClientMessage::Event(event);
-                engine_ref.handle_typed(conn_id, event_msg).await
-            }
-            RpcAction::Unsubscribe(sub_id) => {
-                engine_ref.process_close(conn_id, sub_id).await
-            }
-        };
-
-        let mut manager = self.manager.lock().await;
-        manager.dispatch(responses, engine_ref).await;
-        Ok(())
-    }
-
-    async fn receive_response(&self, conn_id: u32, remaining_secs: u64) -> Result<String, RpcReceiveError> {
-        let (tx, rx) = oneshot::channel();
-        self.manager.lock().await.add_internal_channel(conn_id, tx);
-
-        let delay = Delay::from(Duration::from_secs(remaining_secs)).fuse();
-        let pinned_rx = rx.fuse();
-        futures_util::pin_mut!(pinned_rx, delay);
-
-        match futures_util::future::select(pinned_rx, delay).await {
-            futures_util::future::Either::Left((Ok(resp), _)) => Ok(resp),
-            futures_util::future::Either::Left((Err(_), _)) => Err(RpcReceiveError::ChannelClosed),
-            futures_util::future::Either::Right(_) => {
-                self.manager.lock().await.remove_internal_channel(conn_id);
-                Err(RpcReceiveError::Timeout)
-            }
-        }
-    }
-
-    async fn disconnect(&self, conn_id: u32) {
-        let mut engine = self.engine.lock().await;
-        let engine_ref = &mut *engine;
-        let _ = engine_ref.on_disconnect(conn_id).await;
-        self.manager.lock().await.remove_internal_channel(conn_id);
+        crate::nostr::rpc_orchestrator::execute_nwc_rpc(&self.rpc_ctx, request).await
     }
 }
 
 impl CloudflareTransport {
-    async fn allocate_id(&self) -> u32 {
-        let mut counter = self.id_counter.lock().await;
-        let current = counter.current_id;
-        let limit = counter.id_limit;
-
-        if current >= limit {
-            let storage = self.state.storage();
-            let last_limit = storage.get::<u32>("id_counter").await.ok().flatten().unwrap_or(0);
-            let now = crate::util::now() as u32;
-            let start = std::cmp::max(last_limit, now);
-            let new_limit = start + 1000;
-            let _ = storage.put("id_counter", new_limit).await;
-            counter.current_id = start + 1;
-            counter.id_limit = new_limit;
-            counter.current_id
-        } else {
-            counter.current_id = current + 1;
-            counter.current_id
-        }
-    }
-
     async fn accept_new_connection(&self) -> Result<Response> {
         let max_connections = self.env.var("MAX_CONNECTIONS")
             .and_then(|v| v.to_string().parse::<usize>().map_err(|e| Error::from(e.to_string())))
@@ -251,7 +175,7 @@ impl CloudflareTransport {
         let WebSocketPair { client, server } = WebSocketPair::new()?;
 
         // 1. Allocate ID without holding any borrow across await
-        let connection_id = self.allocate_id().await;
+        let connection_id = self.id_allocator.allocate().await;
 
         // 2. Accept + register atomically with count re-check inside lock
         {

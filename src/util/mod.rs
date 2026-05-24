@@ -55,3 +55,31 @@ macro_rules! log_error {
         { let _ = format_args!($($arg)*); }
     };
 }
+
+/// A helper trait to decode a hex string into binary bytes with consistent, clear error handling.
+pub trait FromHexStr {
+    fn decode_hex(&self) -> crate::nostr::Result<Vec<u8>>;
+}
+
+impl FromHexStr for str {
+    fn decode_hex(&self) -> crate::nostr::Result<Vec<u8>> {
+        hex::decode(self).map_err(|e| crate::nostr::RelayError::MalformedHex(e.to_string()))
+    }
+}
+
+impl FromHexStr for String {
+    fn decode_hex(&self) -> crate::nostr::Result<Vec<u8>> {
+        self.as_str().decode_hex()
+    }
+}
+
+/// A helper trait to encode byte slices/collections into a hex string.
+pub trait ToHex {
+    fn to_hex(&self) -> String;
+}
+
+impl<T: AsRef<[u8]>> ToHex for T {
+    fn to_hex(&self) -> String {
+        hex::encode(self)
+    }
+}

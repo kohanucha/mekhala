@@ -6,15 +6,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use url::Url;
 use crate::nostr::{RelayError, Result};
+use crate::util::{FromHexStr, ToHex};
 
 pub const KIND_NWC_REQUEST: u64 = 23194;
 
 fn get_shared_secret(secret_key_hex: &str, public_key_hex: &str) -> Result<Vec<u8>> {
-    let secret_key_bytes = hex::decode(secret_key_hex).map_err(|e| RelayError::MalformedHex(e.to_string()))?;
+    let secret_key_bytes = secret_key_hex.decode_hex()?;
     let sk =
         K256SecretKey::from_slice(&secret_key_bytes).map_err(|e| RelayError::CryptoError(e.to_string()))?;
 
-    let public_key_bytes = hex::decode(public_key_hex).map_err(|e| RelayError::MalformedHex(e.to_string()))?;
+    let public_key_bytes = public_key_hex.decode_hex()?;
     let mut full_pk_bytes = [0u8; 33];
     full_pk_bytes[0] = 0x02;
     full_pk_bytes[1..].copy_from_slice(&public_key_bytes);
@@ -166,13 +167,13 @@ impl NwcClient {
     pub fn new(uri: NwcUri) -> Result<Self> {
         let shared_secret = get_shared_secret(&uri.secret, &uri.wallet_pubkey)?;
 
-        let sk_bytes = hex::decode(&uri.secret).map_err(|e| RelayError::MalformedHex(e.to_string()))?;
+        let sk_bytes = uri.secret.decode_hex()?;
         let sk_bytes_arr: [u8; 32] = sk_bytes
             .try_into()
             .map_err(|_| RelayError::Generic("Invalid secret key length".into()))?;
         let signing_key =
             SigningKey::from_bytes(&sk_bytes_arr).map_err(|e| RelayError::CryptoError(e.to_string()))?;
-        let my_pubkey = hex::encode(&signing_key.verifying_key().to_bytes());
+        let my_pubkey = signing_key.verifying_key().to_bytes().to_hex();
 
         Ok(Self {
             wallet_pubkey: uri.wallet_pubkey,
@@ -251,7 +252,7 @@ impl NwcClient {
             .signing_key
             .sign_prehash(&id_bytes)
             .map_err(|e| RelayError::CryptoError(e.to_string()))?;
-        let sig = hex::encode(signature.to_bytes());
+        let sig = signature.to_bytes().to_hex();
 
         Ok(Event {
             id,
@@ -318,12 +319,12 @@ mod tests {
         };
         
         // Actually we need to sign it to pass verify(now())
-        let wallet_sk_bytes = hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap();
+        let wallet_sk_bytes = "0101010101010101010101010101010101010101010101010101010101010101".decode_hex().unwrap();
         let wallet_sk_arr: [u8; 32] = wallet_sk_bytes.try_into().unwrap();
         let wallet_sk = SigningKey::from_bytes(&wallet_sk_arr).unwrap();
         
         let (resp_id, resp_id_bytes) = Event::compute_id(&client.wallet_pubkey, resp_event.created_at, resp_event.kind, &resp_event.tags, &resp_event.content).unwrap();
-        let resp_sig = hex::encode(wallet_sk.sign_prehash(&resp_id_bytes).unwrap().to_bytes());
+        let resp_sig = wallet_sk.sign_prehash(&resp_id_bytes).unwrap().to_bytes().to_hex();
         
         let signed_resp_event = Event {
             id: resp_id,

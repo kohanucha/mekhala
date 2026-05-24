@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use crate::nostr::{RelayError, Tag};
 use crate::nostr::protocol;
+use crate::util::{FromHexStr, ToHex};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Event {
@@ -30,7 +31,7 @@ impl Event {
         .map_err(|e| RelayError::SerializationError(e.to_string()))?;
 
         let id_bytes = Sha256::digest(serialized.as_bytes());
-        Ok((hex::encode(id_bytes), id_bytes.to_vec()))
+        Ok((id_bytes.to_hex(), id_bytes.to_vec()))
     }
 
     pub fn target_pubkeys(&self) -> HashSet<String> {
@@ -42,6 +43,16 @@ impl Event {
             }
         }
         keys
+    }
+
+    /// Returns all pubkeys found in this event's p-tags.
+    pub fn tagged_pubkeys(&self) -> Vec<&str> {
+        self.tags.iter().filter_map(|t| t.pubkey()).collect()
+    }
+
+    /// Returns all event IDs found in this event's e-tags.
+    pub fn tagged_event_ids(&self) -> Vec<&str> {
+        self.tags.iter().filter_map(|t| t.event_id()).collect()
     }
 
     pub fn verify(&self, current_time: u64, max_content_length: usize) -> Result<(), RelayError> {
@@ -81,8 +92,8 @@ impl Event {
             return Err(RelayError::InvalidId);
         }
 
-        let pubkey_bytes = hex::decode(&self.pubkey)?;
-        let sig_bytes = hex::decode(&self.sig)?;
+        let pubkey_bytes = self.pubkey.decode_hex()?;
+        let sig_bytes = self.sig.decode_hex()?;
 
         let verifying_key = VerifyingKey::from_bytes(&pubkey_bytes)
             .map_err(|_| RelayError::MalformedHex("public key format".into()))?;

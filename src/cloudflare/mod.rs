@@ -3,6 +3,8 @@ pub mod durable_object;
 pub mod connection;
 pub mod kv;
 pub mod storage;
+pub mod id_allocator;
+pub mod rpc_context;
 
 pub use transport::CloudflareTransport;
 pub use durable_object::get_durable_stub;

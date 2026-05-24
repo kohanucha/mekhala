@@ -12,14 +12,10 @@ impl Storage for CloudflareStorage {
         self.storage.get(key).await.ok().flatten()
     }
     async fn put_batch(&self, entries: HashMap<String, Value>) {
-        for (k, v) in entries {
-            let _ = self.storage.put(&k, v).await;
-        }
+        let _ = self.storage.put_multiple(entries).await;
     }
     async fn delete_batch(&self, keys: Vec<String>) {
-        for k in keys {
-            let _ = self.storage.delete(&k).await;
-        }
+        let _ = self.storage.delete_multiple(keys).await;
     }
 }
 

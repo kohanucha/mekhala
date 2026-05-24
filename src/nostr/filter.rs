@@ -34,18 +34,14 @@ impl Filter {
             }
         }
         if let Some(p_tags) = &self.p_tags {
-            let has_match = event.tags.iter().any(|t| {
-                t.pubkey().map_or(false, |pk| p_tags.iter().any(|s| s == pk))
-            });
-            if !has_match {
+            let event_pks = event.tagged_pubkeys();
+            if !p_tags.iter().any(|p| event_pks.contains(&p.as_str())) {
                 return false;
             }
         }
         if let Some(e_tags) = &self.e_tags {
-            let has_match = event.tags.iter().any(|t| {
-                t.event_id().map_or(false, |eid| e_tags.iter().any(|s| s == eid))
-            });
-            if !has_match {
+            let event_eids = event.tagged_event_ids();
+            if !e_tags.iter().any(|e| event_eids.contains(&e.as_str())) {
                 return false;
             }
         }
