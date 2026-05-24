@@ -34,6 +34,10 @@ impl<'a, S: UserStore> LnAddressHandler<'a, S> {
         }
     }
 
+    #[allow(dead_code)]
+    pub async fn lookup_user(&self, username: &str) -> Option<String> {
+        self.store.get_nwc_uri(username).await
+    }
 }
 
 fn lnaddress_error(reason: &str) -> Result<Response> {
@@ -89,9 +93,10 @@ mod tests {
         let mut uris = HashMap::new();
         uris.insert("alice".to_string(), "nostr+walletconnect://pk?secret=s&relay=wss%3A%2F%2Frelay.com".to_string());
         let store = MockUserStore { uris };
+        let handler = LnAddressHandler::new(&store);
 
         futures::executor::block_on(async {
-            let result = store.get_nwc_uri("alice").await;
+            let result = handler.lookup_user("alice").await;
             assert!(result.is_some());
             assert!(result.unwrap().contains("nostr+walletconnect"));
         });
@@ -100,9 +105,10 @@ mod tests {
     #[test]
     fn test_lookup_user_not_found() {
         let store = MockUserStore { uris: HashMap::new() };
+        let handler = LnAddressHandler::new(&store);
 
         futures::executor::block_on(async {
-            let result = store.get_nwc_uri("nobody").await;
+            let result = handler.lookup_user("nobody").await;
             assert!(result.is_none());
         });
     }
@@ -112,9 +118,10 @@ mod tests {
         let mut uris = HashMap::new();
         uris.insert("bob".to_string(), String::new());
         let store = MockUserStore { uris };
+        let handler = LnAddressHandler::new(&store);
 
         futures::executor::block_on(async {
-            let result = store.get_nwc_uri("bob").await;
+            let result = handler.lookup_user("bob").await;
             assert!(result.is_some());
         });
     }

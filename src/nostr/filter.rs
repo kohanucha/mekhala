@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use crate::nostr::Event;
-use crate::nostr::protocol;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Filter {
@@ -34,14 +33,18 @@ impl Filter {
             }
         }
         if let Some(p_tags) = &self.p_tags {
-            let event_pks = event.tagged_pubkeys();
-            if !p_tags.iter().any(|p| event_pks.contains(&p.as_str())) {
+            let has_match = event.tags.iter().any(|t| {
+                t.pubkey().map_or(false, |pk| p_tags.iter().any(|s| s == pk))
+            });
+            if !has_match {
                 return false;
             }
         }
         if let Some(e_tags) = &self.e_tags {
-            let event_eids = event.tagged_event_ids();
-            if !e_tags.iter().any(|e| event_eids.contains(&e.as_str())) {
+            let has_match = event.tags.iter().any(|t| {
+                t.event_id().map_or(false, |eid| e_tags.iter().any(|s| s == eid))
+            });
+            if !has_match {
                 return false;
             }
         }
@@ -59,29 +62,30 @@ impl Filter {
     }
 
     pub fn is_valid(&self) -> bool {
-        // If kinds are specified, they must all be allowed.
-        if let Some(kinds) = &self.kinds {
-            if !kinds.is_empty() && kinds.iter().any(|k| !protocol::is_allowed_filter_kind(k)) {
-                return false;
-            }
-        }
-
         let has_specific_narrowing = self.p_tags.is_some() || self.e_tags.is_some() || self.ids.is_some();
 
         if has_specific_narrowing {
-            // p_tags/e_tags/ids provide enough narrowing; kinds are optional.
-            true
-        } else {
-            // Without specific narrowing, require kinds and author narrowing.
-            match &self.kinds {
-                Some(k) if !k.is_empty() => {}
-                _ => return false,
+            if let Some(kinds) = &self.kinds {
+                if kinds.iter().any(|k| !matches!(k, 5 | 13194 | 23194..=23197)) {
+                    return false;
+                }
             }
-            if self.authors.is_none() {
+        } else {
+            let kinds = match &self.kinds {
+                Some(k) if !k.is_empty() => k,
+                _ => return false,
+            };
+
+            if kinds.iter().any(|k| !matches!(k, 5 | 13194 | 23194..=23197)) {
                 return false;
             }
-            true
+
+            if self.ids.is_none() && self.authors.is_none() && self.p_tags.is_none() && self.e_tags.is_none() {
+                return false;
+            }
         }
+
+        true
     }
 
     pub fn pubkeys(&self) -> Vec<String> {

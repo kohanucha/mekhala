@@ -1,4 +1,3 @@
-pub mod protocol;
 pub mod nip_01;
 pub mod nip_04;
 pub mod nip_44;
@@ -11,7 +10,7 @@ pub mod rpc_machine;
 pub mod rpc_orchestrator;
 pub mod tag;
 pub mod error;
-pub mod connection;
+pub mod limits;
 
 pub use nip_01::{RelayMessage, ClientMessage};
 pub use event::Event;
@@ -19,3 +18,4 @@ pub use filter::Filter;
 pub use nip_47::WalletInfo;
 pub use tag::Tag;
 pub use error::{RelayError, Result};
+pub use limits::Limits;

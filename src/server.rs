@@ -31,7 +31,7 @@ pub async fn run(req: Request, env: Env) -> Result<Response> {
 
 async fn handle_request(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     if req.method() == Method::Options {
-        return create_cors_response(Response::ok("")?);
+        return handle_options();
     }
 
     if let Some(auth_error) = handle_auth(&req, &ctx)? {
@@ -43,6 +43,10 @@ async fn handle_request(req: Request, ctx: RouteContext<()>) -> Result<Response>
     }
 
     handle_nip11()
+}
+
+fn handle_options() -> Result<Response> {
+    create_cors_response(Response::ok("")?)
 }
 
 fn handle_auth(_req: &Request, ctx: &RouteContext<()>) -> Result<Option<Response>> {
