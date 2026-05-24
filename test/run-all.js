@@ -1,7 +1,7 @@
 import { isLocal } from "./env.js";
 
 import { testWebSocketMessageDelivery } from "./ws-connect.test.js";
-import { testInfoEventRetrieval, testInfoEventRetrievalWithPtag } from "./info-event.test.js";
+import { testInfoEventRetrieval, testInfoEventRetrievalWithPtag, testRealisticNwcFlow } from "./info-event.test.js";
 import { testAuth, testAuthHeaders, testNip11, testCorsAndHeaders } from "./basic.test.js";
 import { testRelay, testNwcFlow, testStrictValidation, testMultiClientIsolation, testEdgeCases, testLastInWinsRouting, testMaxConnections } from "./nwc-flow.test.js";
 import { testNip01EdgeCases, testFilterMatching, testFilterMatchingAdvanced, testMixedValidInvalidFilters, testFilterLimit } from "./nip01-filters.test.js";
@@ -26,6 +26,7 @@ async function runAll() {
     await testNwcFlow();
     await testMultiClientIsolation();
     await testInfoEventCaching();
+    await testRealisticNwcFlow();
     await testNip09Deletion();
     await testNip09KTagDeletion();
     await testNip09BlanketDeletion();
