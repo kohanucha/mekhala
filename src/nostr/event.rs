@@ -3,9 +3,7 @@ use k256::schnorr::signature::hazmat::PrehashVerifier;
 use k256::schnorr::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use crate::nostr::{RelayError, Tag};
-use crate::nostr::protocol;
-use crate::util::{FromHexStr, ToHex};
+use crate::nostr::{RelayError, Limits, Tag};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Event {
@@ -31,7 +29,7 @@ impl Event {
         .map_err(|e| RelayError::SerializationError(e.to_string()))?;
 
         let id_bytes = Sha256::digest(serialized.as_bytes());
-        Ok((id_bytes.to_hex(), id_bytes.to_vec()))
+        Ok((hex::encode(id_bytes), id_bytes.to_vec()))
     }
 
     pub fn target_pubkeys(&self) -> HashSet<String> {
@@ -45,20 +43,12 @@ impl Event {
         keys
     }
 
-    /// Returns all pubkeys found in this event's p-tags.
-    pub fn tagged_pubkeys(&self) -> Vec<&str> {
-        self.tags.iter().filter_map(|t| t.pubkey()).collect()
-    }
-
-    /// Returns all event IDs found in this event's e-tags.
-    pub fn tagged_event_ids(&self) -> Vec<&str> {
-        self.tags.iter().filter_map(|t| t.event_id()).collect()
-    }
-
-    pub fn verify(&self, current_time: u64, max_content_length: usize) -> Result<(), RelayError> {
+    pub fn verify(&self, current_time: u64, limits: &Limits) -> Result<(), RelayError> {
+        
         // Enforce allowed kinds
-        if !protocol::is_allowed_event_kind(self.kind) {
-            return Err(RelayError::InvalidKind);
+        match self.kind {
+            5 | 13194 | 23194 | 23195 | 23196 | 23197 => {}
+            _ => return Err(RelayError::InvalidKind),
         }
 
         // Enforce tags for specific NWC kinds
@@ -76,8 +66,8 @@ impl Event {
             _ => {}
         }
 
-        if self.content.len() > max_content_length {
-            return Err(RelayError::LimitExceeded(format!("content too large (max {} bytes)", max_content_length)));
+        if self.content.len() > limits.max_content_length {
+            return Err(RelayError::LimitExceeded(format!("content too large (max {} bytes)", limits.max_content_length)));
         }
 
         if self.created_at > current_time + 900 {
@@ -92,8 +82,8 @@ impl Event {
             return Err(RelayError::InvalidId);
         }
 
-        let pubkey_bytes = self.pubkey.decode_hex()?;
-        let sig_bytes = self.sig.decode_hex()?;
+        let pubkey_bytes = hex::decode(&self.pubkey)?;
+        let sig_bytes = hex::decode(&self.sig)?;
 
         let verifying_key = VerifyingKey::from_bytes(&pubkey_bytes)
             .map_err(|_| RelayError::MalformedHex("public key format".into()))?;
@@ -181,7 +171,7 @@ mod tests {
             content: "deleting".into(),
             sig: "badsig".into(),
         };
-        let result = event.verify(1700000000, 65536);
+        let result = event.verify(1700000000, &Limits::default());
         // Kind 5 should pass the kind check, then fail on id/signature
         match result {
             Err(RelayError::InvalidId) | Err(RelayError::InvalidSignature) => {}
