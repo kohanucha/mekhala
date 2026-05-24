@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use worker::*;
 use crate::nostr::connection::ConnectionTransport;
+use crate::util::short;
 
 pub struct WebSocketRegistry {
     websockets: HashMap<u32, WebSocket>,
@@ -22,6 +23,7 @@ impl WebSocketRegistry {
     pub fn identify(&self, ws: &WebSocket) -> Option<u32> {
         for (id, registered) in &self.websockets {
             if js_sys::Object::is(registered.as_ref(), ws.as_ref()) {
+                crate::log_debug!("identify: conn={} found in active set", id);
                 return Some(*id);
             }
         }
@@ -37,24 +39,31 @@ impl WebSocketRegistry {
 
     pub fn find_by_id(&self, state: &State, id: u32) -> Option<WebSocket> {
         if let Some(ws) = self.get_active(id) {
+            crate::log_debug!("find_by_id: conn={} found in active set", id);
             return Some(ws);
         }
 
-        for ws in state.get_websockets() {
+        let ws_list: Vec<WebSocket> = state.get_websockets();
+        crate::log_debug!("find_by_id: conn={} scanning {} hibernated websockets", id, ws_list.len());
+        for ws in &ws_list {
             if let Ok(Some(attachment_id)) = ws.deserialize_attachment::<u32>() {
                 if attachment_id == id {
-                    return Some(ws);
+                    crate::log_debug!("find_by_id: conn={} recovered from hibernation", id);
+                    return Some(ws.clone());
                 }
             }
         }
+        crate::log_warn!("find_by_id: conn={} NOT FOUND ({} hibernated websockets scanned)", id, ws_list.len());
         None
     }
 
     pub fn send(&mut self, id: u32, message: String) -> bool {
         if let Some(ws) = self.websockets.get(&id) {
             let _ = ws.send_with_str(&message);
+            crate::log_info!("→ conn={} SEND {}", id, short(&message, 120));
             true
         } else {
+            crate::log_warn!("✗ send failed: conn={} not found", id);
             false
         }
     }
