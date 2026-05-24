@@ -95,6 +95,21 @@ impl Serialize for Tag {
     }
 }
 
+fn expect_str<'de, D: Deserializer<'de>>(
+    arr: &[Value],
+    idx: usize,
+    tag_name: &str,
+    field_name: &str,
+) -> Result<String, D::Error> {
+    arr.get(idx)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| serde::de::Error::custom(format!(
+            "{}-tag requires a {} value",
+            tag_name, field_name
+        )))
+}
+
 impl<'de> Deserialize<'de> for Tag {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let arr: Vec<Value> = Vec::deserialize(deserializer)?;
@@ -107,26 +122,17 @@ impl<'de> Deserialize<'de> for Tag {
 
         match name {
             "p" => {
-                let pk = arr.get(1)
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| serde::de::Error::custom("p-tag requires a pubkey value"))?
-                    .to_string();
+                let pk = expect_str::<D>(&arr, 1, "p", "pubkey")?;
                 let extras = arr.get(2..).unwrap_or(&[]).to_vec();
                 Ok(Tag::P(pk, extras))
             }
             "e" => {
-                let id = arr.get(1)
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| serde::de::Error::custom("e-tag requires an event id value"))?
-                    .to_string();
+                let id = expect_str::<D>(&arr, 1, "e", "event id")?;
                 let extras = arr.get(2..).unwrap_or(&[]).to_vec();
                 Ok(Tag::E(id, extras))
             }
             "encryption" => {
-                let scheme = arr.get(1)
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| serde::de::Error::custom("encryption-tag requires a scheme value"))?
-                    .to_string();
+                let scheme = expect_str::<D>(&arr, 1, "encryption", "scheme")?;
                 Ok(Tag::Encryption(scheme))
             }
             "expiration" => {

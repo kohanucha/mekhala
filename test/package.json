@@ -4,7 +4,7 @@
   "main": "test-relay.js",
   "type": "module",
   "scripts": {
-    "test": "node test-relay.js",
+    "test": "node run-all.js",
     "setup-test": "node setup-kv.js",
     "pretest": "npm run setup-test"
   },

@@ -4,6 +4,7 @@ use url::Url;
 use crate::common::NwcTransport;
 use crate::common::NwcError;
 use crate::lnaddress::wallet_connector::NwcSession;
+use crate::util::ToHex;
 
 pub fn pay_request_info(username: &str, request_url: &Url) -> Value {
     let callback_url = build_callback_url(username, request_url);
@@ -37,7 +38,7 @@ fn get_description_hash(username: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(metadata.as_bytes());
     let hash = hasher.finalize();
-    hex::encode(hash)
+    hash.to_hex()
 }
 
 fn build_callback_url(username: &str, request_url: &Url) -> String {
