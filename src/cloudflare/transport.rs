@@ -192,13 +192,13 @@ impl CloudflareTransport {
         let engine_ref = &mut *engine;
         let responses = engine_ref.on_connect(connection_id).await;
 
+        let response = Response::from_websocket(client)?;
+
         let mut manager = self.manager.lock().await;
-
         log_info!("+ conn={} accepted count={}/{}", connection_id, manager.total_count(), max_connections);
-
         manager.dispatch(responses, engine_ref).await;
 
-        Ok(Response::from_websocket(client)?)
+        Ok(response)
     }
 
     async fn handle_disconnect(&self, ws: &WebSocket) -> Result<()> {

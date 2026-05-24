@@ -141,7 +141,9 @@ impl<T: ConnectionTransport> ConnectionManager<T> {
                 EngineResponse::Send { recipient_id, message } => {
                     let json = message.to_json();
                     if !self.transport.send_to_peer(recipient_id, &json) {
-                        self.internal.send(recipient_id, json);
+                        if !self.internal.send(recipient_id, json) {
+                            crate::log_warn!("dispatch: conn={} message dropped (no peer, no internal channel)", recipient_id);
+                        }
                     }
                 }
                 EngineResponse::WakeUp { connection_id } => {
