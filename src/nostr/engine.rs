@@ -177,7 +177,10 @@ impl<S: Storage> NostrEngine<S> {
         for filters_set in filters.iter() {
             for pk in filters_set.pubkeys() {
                 if let Some(info_event) = self.registry.get_info(&pk).await {
-                    if filters.iter().any(|f| f.matches(&info_event)) {
+                    if filters.iter().any(|f| {
+                        f.matches(&info_event)
+                        || f.p_tags.as_ref().map_or(false, |p| p.contains(&info_event.pubkey))
+                    }) {
                         log_debug!("info hit: pk={} sub={}", short(&pk, 8), sub_id);
                         responses.push(EngineResponse::send(id, RelayMessage::Event(sub_id.clone(), info_event.clone())));
                     }
