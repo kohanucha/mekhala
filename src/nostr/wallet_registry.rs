@@ -180,16 +180,18 @@ impl WalletIndex {
         None
     }
 
-    fn save(&self, conn_id: u32) -> Option<Value> {
+    fn save(&self, conn_id: u32) -> Option<(Value, HashSet<String>)> {
         let subscriptions = self.get_subscriptions(conn_id);
         if subscriptions.is_empty() {
             return None;
         }
 
         let mut info_event = None;
+        let mut pubkeys = HashSet::new();
         for filters in subscriptions.values() {
             for filter in filters {
                 for pk in filter.pubkeys() {
+                    pubkeys.insert(pk.clone());
                     if info_event.is_none() {
                         if let Some(event) = self.get_info(&pk) {
                             info_event = Some(event);
@@ -199,10 +201,10 @@ impl WalletIndex {
             }
         }
 
-        Some(serde_json::json!({
+        Some((serde_json::json!({
             "subscriptions": subscriptions,
             "info_event": info_event,
-        }))
+        }), pubkeys))
     }
 
     fn restore(&mut self, conn_id: u32, data: Value) {
@@ -420,9 +422,21 @@ impl<S: Storage> WalletRegistry<S> {
     }
 
     async fn sync(&self, conn_id: u32) {
-        if let Some(state) = self.index.save(conn_id) {
+        if let Some((state, pubkeys)) = self.index.save(conn_id) {
             let mut entries = HashMap::new();
             entries.insert(format!("conn:{}", conn_id), state);
+            for pk in pubkeys {
+                let key = format!("pk:{}", pk);
+                let mut ids = if let Some(val) = self.storage.get(&key).await {
+                    Self::deserialize_id_list(&val)
+                } else {
+                    Vec::new()
+                };
+                if !ids.contains(&conn_id) {
+                    ids.push(conn_id);
+                }
+                entries.insert(key, serde_json::json!(ids));
+            }
             self.storage.put_batch(entries).await;
         } else {
             self.storage.delete_batch(vec![format!("conn:{}", conn_id)]).await;
@@ -480,8 +494,11 @@ pub mod tests {
             
             registry.subscribe(1, "sub1".into(), filters).await.unwrap();
             
-            // Verify in-memory state (sync deferred to on_terminate for perf)
+            // Verify in-memory state and storage
             assert!(registry.has_subscription(1, "sub1"));
+            let data = registry.storage.data.lock().unwrap();
+            assert!(data.contains_key("conn:1"), "Storage should contain connection state");
+            assert!(data.contains_key("pk:alice"), "Storage should contain pubkey index");
         });
     }
 
