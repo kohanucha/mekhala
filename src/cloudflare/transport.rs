@@ -15,7 +15,6 @@ use crate::nostr::rpc_orchestrator::{RpcContext, RpcReceiveError};
 use crate::cloudflare::create_cors_response;
 use crate::cloudflare::connection::{WebSocketRegistry, InternalConnectionMap};
 use crate::cloudflare::kv::CloudflareKvStore;
-use crate::lnaddress::is_valid_username;
 use crate::util::short;
 use crate::log_info;
 use crate::log_debug;
@@ -65,9 +64,6 @@ impl DurableObject for CloudflareTransport {
             env.var("MAX_CONTENT_LENGTH")
                 .and_then(|v| v.to_string().parse::<usize>().map_err(|e| Error::from(e.to_string())))
                 .unwrap_or(65536),
-            env.var("MAX_SUBSCRIPTIONS_PER_CONNECTION")
-                .and_then(|v| v.to_string().parse::<usize>().map_err(|e| Error::from(e.to_string())))
-                .unwrap_or(100),
         );
         let engine = NostrEngine::new_with_storage(storage, limits, crate::util::now);
         let kv = env.kv("MEKHALA_NWC_KV").ok().map(CloudflareKvStore::new);
@@ -96,9 +92,6 @@ impl DurableObject for CloudflareTransport {
                 }
             };
             let username = path.strip_prefix("/lnaddress/").and_then(|s| s.strip_suffix("/callback")).unwrap_or("");
-            if !is_valid_username(username) {
-                return Response::error("Not Found", 404);
-            }
             let handler = crate::lnaddress::LnAddressHandler::new(kv);
             return handler.handle_callback(req, username, self).await;
         }
@@ -347,7 +340,7 @@ impl CloudflareTransport {
     async fn accept_new_connection(&self) -> Result<Response> {
         let max_connections = self.env.var("MAX_CONNECTIONS")
             .and_then(|v| v.to_string().parse::<usize>().map_err(|e| Error::from(e.to_string())))
-            .unwrap_or(100);
+            .unwrap_or(20);
 
         let WebSocketPair { client, server } = WebSocketPair::new()?;
 

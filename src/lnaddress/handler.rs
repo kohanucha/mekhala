@@ -40,10 +40,6 @@ impl<'a, S: UserStore> LnAddressHandler<'a, S> {
     }
 }
 
-pub(crate) fn is_valid_username(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-}
-
 fn lnaddress_error(reason: &str) -> Result<Response> {
     let error_body = serde_json::json!({ "status": "ERROR", "reason": reason });
     create_cors_response(Response::from_json(&error_body)?.with_status(200))

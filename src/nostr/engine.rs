@@ -1,9 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 use k256::schnorr::VerifyingKey;
-use lru::LruCache;
 use super::{Filter, Event, RelayMessage, ClientMessage, Limits};
 use super::wallet_registry::{WalletRegistry, Storage, RegistryResponse};
 use crate::util::short;
@@ -47,17 +45,17 @@ pub struct NostrEngine<S: Storage> {
     registry: WalletRegistry<S>,
     limits: Limits,
     clock: fn() -> u64,
-    pubkey_vk_cache: RefCell<LruCache<String, VerifyingKey>>,
+    pubkey_vk_cache: RefCell<HashMap<String, VerifyingKey>>,
 }
 
 #[cfg(test)]
 impl NostrEngine<super::wallet_registry::tests::MockStorage> {
     pub fn new() -> Self {
         Self {
-            registry: WalletRegistry::new(super::wallet_registry::tests::MockStorage::new(), Limits::default()),
+            registry: WalletRegistry::new(super::wallet_registry::tests::MockStorage::new()),
             limits: Limits::default(),
             clock: test_now,
-            pubkey_vk_cache: RefCell::new(LruCache::new(NonZeroUsize::new(1000).expect("valid"))),
+            pubkey_vk_cache: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -65,10 +63,10 @@ impl NostrEngine<super::wallet_registry::tests::MockStorage> {
 impl<S: Storage> NostrEngine<S> {
     pub fn new_with_storage(storage: S, limits: Limits, clock: fn() -> u64) -> Self {
         Self {
-            registry: WalletRegistry::new(storage, limits),
+            registry: WalletRegistry::new(storage),
             limits,
             clock,
-            pubkey_vk_cache: RefCell::new(LruCache::new(NonZeroUsize::new(1000).expect("valid"))),
+            pubkey_vk_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -87,7 +85,7 @@ impl<S: Storage> NostrEngine<S> {
         match event.kind {
             5 | 13194 | 23194..=23197 => {
                 let key = &event.pubkey;
-                let cached = self.pubkey_vk_cache.borrow_mut().get(key).cloned();
+                let cached = self.pubkey_vk_cache.borrow().get(key).cloned();
                 match cached {
                     Some(vk) => event.verify_with_key(ts, &self.limits, &vk)
                         .map_err(|e| (event.id.clone(), e.to_string())),
@@ -97,7 +95,7 @@ impl<S: Storage> NostrEngine<S> {
                                 // Cache the key for next time
                                 if let Ok(pk_bytes) = hex::decode(key) {
                                     if let Ok(vk) = VerifyingKey::from_bytes(&pk_bytes) {
-                                        self.pubkey_vk_cache.borrow_mut().put(key.clone(), vk);
+                                        self.pubkey_vk_cache.borrow_mut().insert(key.clone(), vk);
                                     }
                                 }
                                 Ok(())
@@ -236,10 +234,7 @@ impl<S: Storage> NostrEngine<S> {
 
     async fn process_req(&mut self, id: u32, sub_id: String, filters: Vec<Filter>) -> Vec<EngineResponse> {
         let mut responses = Vec::new();
-        if let Err(e) = self.registry.subscribe(id, sub_id.clone(), filters.clone()).await {
-            log_warn!("sub rejected: conn={} sub={}: {}", id, sub_id, e);
-            return vec![EngineResponse::send(id, RelayMessage::Closed(sub_id, e.to_string()))];
-        }
+        let _ = self.registry.subscribe(id, sub_id.clone(), filters.clone()).await;
 
         let global_limit = filters.iter().filter_map(|f| f.limit).min();
 
