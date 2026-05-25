@@ -50,14 +50,12 @@ impl NwcRpcMachine {
     pub fn transition(&mut self, message: RelayMessage) -> Option<RpcAction> {
         match (&self.state, message) {
             (RpcState::AwaitingResponse, RelayMessage::Event(_, event)) => {
-                // Correlation check: ensure this event references our request
-                // In NWC, response should have an 'e' tag pointing to request ID
                 let references_request = event.tags.iter().any(|t| {
                     matches!(t, crate::nostr::Tag::E(eid, _) if eid == &self.request.id)
                 });
 
                 if references_request {
-                    self.state = RpcState::Success(event);
+                    self.state = RpcState::Success((*event).clone());
                     Some(RpcAction::Unsubscribe(self.sub_id.clone()))
                 } else {
                     None
@@ -116,7 +114,7 @@ mod tests {
         // Feed Response EVENT
         let mut resp = mock_event("resp1", "pk2");
         resp.tags = vec![crate::nostr::Tag::E("req1".to_string(), vec![])];
-        let action = machine.transition(RelayMessage::Event("rpc_sub".into(), resp.clone()));
+        let action = machine.transition(RelayMessage::Event("rpc_sub".into(), std::sync::Arc::new(resp.clone())));
 
         assert_eq!(action, Some(RpcAction::Unsubscribe("rpc_sub".into())));
         assert_eq!(machine.state, RpcState::Success(resp));
