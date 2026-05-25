@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use async_trait::async_trait;
 use serde_json::Value;
 use crate::log_debug;
-use crate::nostr::{Filter, Event};
+use crate::nostr::{Filter, Event, Limits};
 use crate::util::short;
 
 #[async_trait(?Send)]
@@ -95,6 +95,10 @@ impl WalletIndex {
         self.reverse_index.get(&conn_id).cloned().unwrap_or_default()
     }
 
+    fn sub_count(&self, conn_id: u32) -> usize {
+        self.reverse_index.get(&conn_id).map_or(0, |m| m.len())
+    }
+
     fn cache_info(&mut self, event: Event) {
         let entry = self.pk_index.entry(event.pubkey.clone()).or_insert_with(|| (HashSet::new(), None));
         self.info_id_index.insert(event.id.clone(), event.pubkey.clone());
@@ -176,6 +180,31 @@ impl WalletIndex {
         None
     }
 
+    fn save(&self, conn_id: u32) -> Option<Value> {
+        let subscriptions = self.get_subscriptions(conn_id);
+        if subscriptions.is_empty() {
+            return None;
+        }
+
+        let mut info_event = None;
+        for filters in subscriptions.values() {
+            for filter in filters {
+                for pk in filter.pubkeys() {
+                    if info_event.is_none() {
+                        if let Some(event) = self.get_info(&pk) {
+                            info_event = Some(event);
+                        }
+                    }
+                }
+            }
+        }
+
+        Some(serde_json::json!({
+            "subscriptions": subscriptions,
+            "info_event": info_event,
+        }))
+    }
+
     fn restore(&mut self, conn_id: u32, data: Value) {
         if let Some(subs_val) = data.get("subscriptions") {
             if let Ok(subs) = serde_json::from_value::<HashMap<String, Vec<Filter>>>(subs_val.clone()) {
@@ -196,6 +225,7 @@ pub struct WalletRegistry<S: Storage> {
     pub(crate) storage: S,
     index: WalletIndex,
     pk_cache: HashMap<String, Vec<u32>>,
+    limits: Limits,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -205,21 +235,31 @@ pub enum RegistryResponse {
 }
 
 impl<S: Storage> WalletRegistry<S> {
-    pub fn new(storage: S) -> Self {
+    pub fn new(storage: S, limits: Limits) -> Self {
         Self { 
             storage,
             index: WalletIndex::new(),
             pk_cache: HashMap::new(),
+            limits,
         }
     }
 
     pub async fn subscribe(&mut self, conn_id: u32, sub_id: String, filters: Vec<Filter>) -> crate::nostr::Result<()> {
+        let count = self.index.sub_count(conn_id);
+        if count >= self.limits.max_subscriptions_per_connection {
+            return Err(crate::nostr::RelayError::Generic(format!(
+                "too many subscriptions: {} (max {})",
+                count, self.limits.max_subscriptions_per_connection
+            )));
+        }
         self.index.subscribe(conn_id, sub_id, filters);
+        self.sync(conn_id).await;
         Ok(())
     }
 
     pub async fn unsubscribe(&mut self, conn_id: u32, sub_id: String) -> crate::nostr::Result<()> {
         self.index.unsubscribe(conn_id, sub_id);
+        self.sync(conn_id).await;
         Ok(())
     }
 
@@ -379,6 +419,15 @@ impl<S: Storage> WalletRegistry<S> {
         self.index.get_subscriptions(conn_id).contains_key(sub_id)
     }
 
+    async fn sync(&self, conn_id: u32) {
+        if let Some(state) = self.index.save(conn_id) {
+            let mut entries = HashMap::new();
+            entries.insert(format!("conn:{}", conn_id), state);
+            self.storage.put_batch(entries).await;
+        } else {
+            self.storage.delete_batch(vec![format!("conn:{}", conn_id)]).await;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -422,7 +471,7 @@ pub mod tests {
     fn test_registry_sub_persistence() {
         futures::executor::block_on(async {
             let storage = MockStorage::new();
-            let mut registry = WalletRegistry::new(storage);
+            let mut registry = WalletRegistry::new(storage, Limits::default());
             
             let filters = vec![Filter {
                 authors: Some(vec!["alice".into()]),
@@ -440,7 +489,7 @@ pub mod tests {
     fn test_registry_match_routing() {
         futures::executor::block_on(async {
             let storage = MockStorage::new();
-            let mut registry = WalletRegistry::new(storage);
+            let mut registry = WalletRegistry::new(storage, Limits::default());
             
             let wallet_pk = "wallet_pk";
             registry.subscribe(1, "sub1".into(), vec![Filter {
@@ -482,7 +531,7 @@ pub mod tests {
             }));
             storage.put_batch(entries).await;
             
-            let mut registry = WalletRegistry::new(storage);
+            let mut registry = WalletRegistry::new(storage, Limits::default());
             
             // 2. Event targeting the hibernated pubkey
             let event = Event {
@@ -507,7 +556,7 @@ pub mod tests {
     fn test_index_matching_grouped() {
         futures::executor::block_on(async {
             let storage = MockStorage::new();
-            let mut registry = WalletRegistry::new(storage);
+            let mut registry = WalletRegistry::new(storage, Limits::default());
 
             registry.subscribe(1, "sub1".into(), vec![Filter {
                 authors: Some(vec!["alice".into()]),
@@ -544,7 +593,7 @@ pub mod tests {
 fn test_info_event_caching() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage);
+        let mut registry = WalletRegistry::new(storage, Limits::default());
 
         let event = Event {
             id: "id1".into(),
@@ -567,7 +616,7 @@ fn test_info_event_caching() {
     fn test_info_id_index() {
         futures::executor::block_on(async {
             let storage = MockStorage::new();
-            let mut registry = WalletRegistry::new(storage);
+            let mut registry = WalletRegistry::new(storage, Limits::default());
 
             let event = Event {
                 id: "id1".into(),
@@ -592,7 +641,7 @@ fn test_info_event_caching() {
     fn test_delete_info() {
         futures::executor::block_on(async {
             let storage = MockStorage::new();
-            let mut registry = WalletRegistry::new(storage);
+            let mut registry = WalletRegistry::new(storage, Limits::default());
 
             let event = Event {
                 id: "id1".into(),
@@ -625,7 +674,7 @@ fn test_info_event_caching() {
     fn test_delete_info_preserves_subscriptions() {
         futures::executor::block_on(async {
             let storage = MockStorage::new();
-            let mut registry = WalletRegistry::new(storage);
+            let mut registry = WalletRegistry::new(storage, Limits::default());
 
             registry.subscribe(1, "sub1".into(), vec![Filter {
                 authors: Some(vec!["alice".into()]),
@@ -656,7 +705,7 @@ fn test_info_event_caching() {
     fn test_registry_sync() {
         futures::executor::block_on(async {
             let storage = MockStorage::new();
-            let mut registry = WalletRegistry::new(storage);
+            let mut registry = WalletRegistry::new(storage, Limits::default());
 
             registry.subscribe(1, "sub1".into(), vec![Filter {
                 authors: Some(vec!["alice".into()]),
@@ -672,7 +721,7 @@ fn test_info_event_caching() {
     fn test_registry_terminate() {
         futures::executor::block_on(async {
             let storage = MockStorage::new();
-            let mut registry = WalletRegistry::new(storage);
+            let mut registry = WalletRegistry::new(storage, Limits::default());
 
             registry.subscribe(1, "sub1".into(), vec![Filter {
                 authors: Some(vec!["alice".into()]),
@@ -696,7 +745,7 @@ fn test_info_event_caching() {
             entries.insert("pk:stale".to_string(), serde_json::json!(vec![99]));
             storage.put_batch(entries).await;
 
-            let mut registry = WalletRegistry::new(storage);
+            let mut registry = WalletRegistry::new(storage, Limits::default());
 
             let result = registry.load_by_pubkey("stale").await;
             assert!(result.is_empty());
@@ -710,7 +759,7 @@ fn test_info_event_caching() {
     fn test_two_connections_same_pubkey_different_filters() {
         futures::executor::block_on(async {
             let storage = MockStorage::new();
-            let mut registry = WalletRegistry::new(storage);
+            let mut registry = WalletRegistry::new(storage, Limits::default());
 
             let shared_pk = "shared_pk";
 

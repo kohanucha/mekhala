@@ -1,6 +1,6 @@
 use crate::auth::{AccessPolicy, AuthError};
 use crate::cloudflare::{apply_security_headers, create_cors_response, CloudflareKvStore};
-use crate::lnaddress::LnAddressHandler;
+use crate::lnaddress::{is_valid_username, LnAddressHandler};
 use worker::*;
 
 pub async fn run(req: Request, env: Env) -> Result<Response> {
@@ -14,6 +14,9 @@ pub async fn run(req: Request, env: Env) -> Result<Response> {
             let kv_store = CloudflareKvStore::new(kv);
             let handler = LnAddressHandler::new(&kv_store);
             let username = ctx.param("username").ok_or_else(|| Error::from("Missing username"))?;
+            if !is_valid_username(&username) {
+                return Response::error("Not Found", 404);
+            }
             match handler.handle_pay_request(req, &username).await {
                 Ok(resp) => Ok(resp),
                 Err(e) => {
