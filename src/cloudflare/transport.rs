@@ -1,12 +1,9 @@
 use std::cell::RefCell;
-use std::sync::Arc;
 use std::time::Duration;
 use futures::channel::oneshot;
 use futures::lock::Mutex;
 use futures_util::FutureExt;
 use worker::*;
-use serde::Deserialize;
-use serde_json::value::RawValue;
 use crate::nostr::engine::{NostrEngine, EngineResponse};
 use crate::nostr::wallet_registry::Storage;
 use crate::nostr::Limits;
@@ -31,8 +28,9 @@ impl Storage for CloudflareStorage {
         self.storage.get(key).await.ok().flatten()
     }
     async fn put_batch(&self, entries: std::collections::HashMap<String, serde_json::Value>) {
-        let map: serde_json::Map<String, serde_json::Value> = entries.into_iter().collect();
-        let _ = self.storage.put_multiple(map).await;
+        for (k, v) in entries {
+            let _ = self.storage.put(&k, v).await;
+        }
     }
     async fn delete_batch(&self, keys: Vec<String>) {
         for k in keys {
@@ -54,7 +52,7 @@ pub struct CloudflareTransport {
     websockets: RefCell<WebSocketRegistry>,
     internal: RefCell<InternalConnectionMap>,
     id_counter: Mutex<IdCounterState>,
-    kv: Option<CloudflareKvStore>,
+    kv: CloudflareKvStore,
 }
 
 impl DurableObject for CloudflareTransport {
@@ -66,7 +64,7 @@ impl DurableObject for CloudflareTransport {
                 .unwrap_or(65536),
         );
         let engine = NostrEngine::new_with_storage(storage, limits, crate::util::now);
-        let kv = env.kv("MEKHALA_NWC_KV").ok().map(CloudflareKvStore::new);
+        let kv = CloudflareKvStore::new(env.kv("MEKHALA_NWC_KV").expect("MEKHALA_NWC_KV not configured"));
 
         Self {
             env,
@@ -84,15 +82,8 @@ impl DurableObject for CloudflareTransport {
         let path = url.path();
 
         if path.starts_with("/lnaddress/") && path.ends_with("/callback") {
-            let kv = match &self.kv {
-                Some(kv) => kv,
-                None => {
-                    log_warn!("MEKHALA_NWC_KV not configured, rejecting LN Address callback");
-                    return Response::error("KV not configured", 500);
-                }
-            };
             let username = path.strip_prefix("/lnaddress/").and_then(|s| s.strip_suffix("/callback")).unwrap_or("");
-            let handler = crate::lnaddress::LnAddressHandler::new(kv);
+            let handler = crate::lnaddress::LnAddressHandler::new(&self.kv);
             return handler.handle_callback(req, username, self).await;
         }
 
@@ -130,7 +121,7 @@ impl DurableObject for CloudflareTransport {
                             let ok_msg = crate::nostr::RelayMessage::Ok(event.id.clone(), true, "".to_string()).to_json();
                             log_info!("→ conn={} SEND {}", connection_id, ok_msg);
                             let _ = websocket.send_with_str(&ok_msg);
-                            let responses = engine.route_verified_event(connection_id, Arc::new(event.clone())).await;
+                            let responses = engine.route_verified_event(connection_id, event.clone()).await;
                             self.process_responses(responses, &mut engine).await?;
                         }
                         Err((event_id, error_msg)) => {
@@ -167,13 +158,10 @@ impl DurableObject for CloudflareTransport {
                             log_info!("← conn={} RECV CLOSE sub={}", connection_id, sub_id);
                             engine.process_close(connection_id, sub_id).await
                         }
-                        Ok(crate::nostr::ClientMessage::Event(_)) => {
-                            log_error!("Event reached non-Event branch — outer match should have caught this");
-                            vec![]
-                        }
+                        Ok(crate::nostr::ClientMessage::Event(_)) => unreachable!(),
                         Err(e) => {
                             log_error!("✗ parse failed: {}", e);
-                            if let Some(id) = try_extract_event_id(&text) {
+                            if let Some(crate::nostr::nip_01::PartialClientMessage::Event(id)) = crate::nostr::nip_01::PartialClientMessage::from_json(&text) {
                                 vec![crate::nostr::engine::EngineResponse::send(connection_id, crate::nostr::RelayMessage::Ok(id, false, format!("parse failed: {}", e)))]
                             } else {
                                 vec![crate::nostr::engine::EngineResponse::send(connection_id, crate::nostr::RelayMessage::Notice(format!("parse failed: {}", e)))]
@@ -281,8 +269,8 @@ impl CloudflareTransport {
 
     fn route_send(&self, id: u32, message: String) -> bool {
         log_info!("→ conn={} SEND {}", id, message);
-        if self.websockets.borrow().contains(id) {
-            self.websockets.borrow_mut().send(id, message)
+        if self.websockets.borrow_mut().send(id, message.clone()) {
+            true
         } else if self.internal.borrow_mut().send(id, message) {
             true
         } else {
@@ -312,9 +300,19 @@ impl CloudflareTransport {
 
     async fn load_connection_with_handler(&self, pubkey: &str, engine: &mut NostrEngine<CloudflareStorage>) -> Result<Option<u32>> {
         for id in engine.load_by_pubkey(pubkey).await {
-            let found = self.websockets.borrow().find_by_id(&self.state, id);
-            if let Some(ws) = found {
+            let ws = self.websockets.borrow().find_by_id(&self.state, id);
+            if let Some(ws) = ws {
                 let _ = self.wake_up_with_handler(&ws, engine).await;
+                return Ok(Some(id));
+            }
+
+            let all_ws = self.websockets.borrow().get_all_websockets(&self.state);
+            for ws in all_ws {
+                if let Some(actual_id) = self.wake_up_with_handler(&ws, engine).await {
+                    if actual_id == id {
+                        return Ok(Some(id));
+                    }
+                }
             }
             return Ok(Some(id));
         }
@@ -405,18 +403,4 @@ pub fn create_response(info: serde_json::Value, content_type: &str) -> Result<Re
     let mut response = create_cors_response(Response::from_json(&info)?)?;
     response.headers_mut().set("Content-Type", content_type)?;
     Ok(response)
-}
-
-fn try_extract_event_id(text: &str) -> Option<String> {
-    // Quick prefix check — avoids full JSON parse for non-EVENT messages
-    let text = text.trim();
-    if !text.starts_with("[\"EVENT\"") {
-        return None;
-    }
-    let arr: Vec<&RawValue> = serde_json::from_str(text).ok()?;
-    if arr.len() < 2 { return None; }
-    #[derive(Deserialize)]
-    struct PartialEvent { id: String }
-    let event: PartialEvent = serde_json::from_str(arr[1].get()).ok()?;
-    Some(event.id)
 }
