@@ -32,8 +32,15 @@ pub async fn execute_nwc_rpc<C: RpcContext>(ctx: &C, request: Event) -> Result<E
 
     loop {
         let elapsed = ctx.now().saturating_sub(start);
+        let remaining = RPC_TIMEOUT_SECS.saturating_sub(elapsed);
+        if remaining == 0 {
+            let action = machine.handle_timeout();
+            let _ = ctx.execute_action(id, action).await;
+            ctx.disconnect(id).await;
+            return Err(NwcError::Timeout);
+        }
 
-        match ctx.receive_response(id, RPC_TIMEOUT_SECS.saturating_sub(elapsed)).await {
+        match ctx.receive_response(id, remaining).await {
             Ok(text) => {
                 let msg = RelayMessage::from_json(&text)
                     .map_err(|e| NwcError::ProtocolError(format!("malformed relay response: {}", e)))?;
@@ -73,7 +80,6 @@ mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
-    use std::sync::Arc;
 
     struct MockRpcContext {
         now_val: Cell<u64>,
@@ -104,7 +110,7 @@ mod tests {
         }
 
         fn push_event_response(&self, sub_id: &str, event: Event) {
-            let msg = RelayMessage::Event(sub_id.to_string(), Arc::new(event));
+            let msg = RelayMessage::Event(sub_id.to_string(), event);
             self.push_response(Ok(msg.to_json()));
         }
 

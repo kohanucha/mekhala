@@ -5,8 +5,8 @@ compatibility_date = "2026-04-30"
 [vars]
 WALLET_REGION = "apac"
 MAX_CONNECTIONS = "100"
-MAX_SUBSCRIPTIONS_PER_CONNECTION = "100"
 MAX_CONTENT_LENGTH = "65536"
+MAX_SUBSCRIPTIONS_PER_CONNECTION = "100"
 
 [[durable_objects.bindings]]
 name = "MEKHALA_NWC_DO"

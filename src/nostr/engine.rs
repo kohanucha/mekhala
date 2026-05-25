@@ -1,9 +1,4 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::num::NonZeroUsize;
-use std::sync::Arc;
-use k256::schnorr::VerifyingKey;
-use lru::LruCache;
 use super::{Filter, Event, RelayMessage, ClientMessage, Limits};
 use super::wallet_registry::{WalletRegistry, Storage, RegistryResponse};
 use crate::util::short;
@@ -47,17 +42,16 @@ pub struct NostrEngine<S: Storage> {
     registry: WalletRegistry<S>,
     limits: Limits,
     clock: fn() -> u64,
-    pubkey_vk_cache: RefCell<LruCache<String, VerifyingKey>>,
 }
 
 #[cfg(test)]
 impl NostrEngine<super::wallet_registry::tests::MockStorage> {
     pub fn new() -> Self {
+        let limits = Limits::default();
         Self {
-            registry: WalletRegistry::new(super::wallet_registry::tests::MockStorage::new(), Limits::default()),
-            limits: Limits::default(),
+            registry: WalletRegistry::new(super::wallet_registry::tests::MockStorage::new(), limits),
+            limits,
             clock: test_now,
-            pubkey_vk_cache: RefCell::new(LruCache::new(NonZeroUsize::new(1000).expect("valid"))),
         }
     }
 }
@@ -68,7 +62,6 @@ impl<S: Storage> NostrEngine<S> {
             registry: WalletRegistry::new(storage, limits),
             limits,
             clock,
-            pubkey_vk_cache: RefCell::new(LruCache::new(NonZeroUsize::new(1000).expect("valid"))),
         }
     }
 
@@ -86,26 +79,8 @@ impl<S: Storage> NostrEngine<S> {
         let ts = (self.clock)();
         match event.kind {
             5 | 13194 | 23194..=23197 => {
-                let key = &event.pubkey;
-                let cached = self.pubkey_vk_cache.borrow_mut().get(key).cloned();
-                match cached {
-                    Some(vk) => event.verify_with_key(ts, &self.limits, &vk)
-                        .map_err(|e| (event.id.clone(), e.to_string())),
-                    None => {
-                        match event.verify(ts, &self.limits) {
-                            Ok(()) => {
-                                // Cache the key for next time
-                                if let Ok(pk_bytes) = hex::decode(key) {
-                                    if let Ok(vk) = VerifyingKey::from_bytes(&pk_bytes) {
-                                        self.pubkey_vk_cache.borrow_mut().put(key.clone(), vk);
-                                    }
-                                }
-                                Ok(())
-                            }
-                            Err(e) => Err((event.id.clone(), e.to_string())),
-                        }
-                    }
-                }
+                event.verify(ts, &self.limits)
+                    .map_err(|e| (event.id.clone(), e.to_string()))
             }
             _ => {
                 log_warn!("event rejected: kind={} reason=kind not allowed", event.kind);
@@ -115,28 +90,46 @@ impl<S: Storage> NostrEngine<S> {
     }
 
     /// Route a pre-verified event. Does NOT send OK — the caller is responsible
-    /// for sending OK immediately after successful validation (per NIP-01).
-    pub async fn route_verified_event(&mut self, connection_id: u32, event: Arc<Event>) -> Vec<EngineResponse> {
+    /// for sending OK immediately upon successful validation (per NIP-01).
+    pub async fn route_verified_event(&mut self, connection_id: u32, event: Event) -> Vec<EngineResponse> {
         if event.kind == 13194 {
             log_info!("info cached: pk={}", short(&event.pubkey, 8));
-            self.process_info_event(Event::clone(&event)).await;
+            self.process_info_event(event.clone()).await;
         } else if event.kind == 5 {
-            self.process_deletion_event(event.as_ref()).await;
+            self.process_deletion_event(&event).await;
         }
         self.route_event(connection_id, event).await
     }
 
     async fn handle_event(&mut self, connection_id: u32, event: Event) -> Vec<EngineResponse> {
-        match self.validate_event(&event) {
-            Ok(()) => {
-                let event = Arc::new(event);
-                let ok = EngineResponse::send(connection_id, RelayMessage::Ok(event.id.clone(), true, "".into()));
-                let mut rest = self.route_verified_event(connection_id, event).await;
-                rest.insert(0, ok);
-                rest
+        match event.kind {
+            5 | 13194 | 23194..=23197 => {
+                let ts = (self.clock)();
+
+                if let Err(e) = event.verify(ts, &self.limits) {
+                    return vec![EngineResponse::send(connection_id, RelayMessage::Ok(event.id, false, e.to_string()))];
+                }
+                
+                if event.kind == 13194 {
+                    self.process_info_event(event.clone()).await;
+                    self.process_event(connection_id, event).await
+                } else if event.kind == 5 {
+                    self.process_deletion_event(&event).await;
+                    self.process_event(connection_id, event).await
+                } else {
+                    self.process_event(connection_id, event).await
+                }
             }
-            Err((id, reason)) => {
-                vec![EngineResponse::send(connection_id, RelayMessage::Ok(id, false, reason))]
+            _ => {
+                let ts = (self.clock)();
+
+                let message = if let Err(e) = event.verify(ts, &self.limits) {
+                    RelayMessage::Ok(event.id, false, e.to_string())
+                } else {
+                    RelayMessage::Ok(event.id, false, "blocked: event kind not allowed".into())
+                };
+                
+                vec![EngineResponse::send(connection_id, message)]
             }
         }
     }
@@ -192,18 +185,16 @@ impl<S: Storage> NostrEngine<S> {
         }
     }
 
-    #[allow(dead_code)]
     async fn process_event(&mut self, connection_id: u32, event: Event) -> Vec<EngineResponse> {
-        let event = Arc::new(event);
         let mut responses = Vec::new();
-
+        
         responses.push(EngineResponse::send(connection_id, RelayMessage::Ok(event.id.clone(), true, "".into())));
 
-        let registry_responses = self.registry.match_event(event.as_ref()).await;
+        let registry_responses = self.registry.match_event(&event).await;
         for resp in registry_responses {
             match resp {
                 RegistryResponse::Send { recipient_id, sub_id } => {
-                    responses.push(EngineResponse::send(recipient_id, RelayMessage::Event(sub_id, Arc::clone(&event))));
+                    responses.push(EngineResponse::send(recipient_id, RelayMessage::Event(sub_id, event.clone())));
                 }
                 RegistryResponse::WakeUp(recipient_id) => {
                     responses.push(EngineResponse::wake_up(recipient_id));
@@ -215,15 +206,15 @@ impl<S: Storage> NostrEngine<S> {
     }
 
     /// Route event to subscribers without sending OK (caller already sent it).
-    async fn route_event(&mut self, _connection_id: u32, event: Arc<Event>) -> Vec<EngineResponse> {
+    async fn route_event(&mut self, _connection_id: u32, event: Event) -> Vec<EngineResponse> {
         let mut responses = Vec::new();
 
-        let registry_responses = self.registry.match_event(event.as_ref()).await;
+        let registry_responses = self.registry.match_event(&event).await;
         log_debug!("event kind={} pk={} → {} subscribers", event.kind, short(&event.pubkey, 8), registry_responses.len());
         for resp in registry_responses {
             match resp {
                 RegistryResponse::Send { recipient_id, sub_id } => {
-                    responses.push(EngineResponse::send(recipient_id, RelayMessage::Event(sub_id, Arc::clone(&event))));
+                    responses.push(EngineResponse::send(recipient_id, RelayMessage::Event(sub_id, event.clone())));
                 }
                 RegistryResponse::WakeUp(recipient_id) => {
                     responses.push(EngineResponse::wake_up(recipient_id));
@@ -248,7 +239,7 @@ impl<S: Storage> NostrEngine<S> {
                 if let Some(info_event) = self.registry.get_info(&pk).await {
                     if filters.iter().any(|f| f.matches(&info_event)) {
                         log_debug!("info hit: pk={} sub={}", short(&pk, 8), sub_id);
-                        responses.push(EngineResponse::send(id, RelayMessage::Event(sub_id.clone(), Arc::new(info_event))));
+                        responses.push(EngineResponse::send(id, RelayMessage::Event(sub_id.clone(), info_event.clone())));
                     }
                 } else {
                     log_debug!("info miss: pk={} sub={}", short(&pk, 8), sub_id);
