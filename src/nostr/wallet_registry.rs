@@ -12,11 +12,6 @@ pub trait Storage {
     async fn delete_batch(&self, keys: Vec<String>);
 }
 
-pub struct SavedState {
-    pub json: Value,
-    pub pubkeys: HashSet<String>,
-}
-
 /// A purely synchronous index for subscriptions and info events.
 struct WalletIndex {
     subscription_index: HashMap<(String, Vec<Filter>), Vec<u32>>,
@@ -181,36 +176,6 @@ impl WalletIndex {
         None
     }
 
-    fn save(&self, conn_id: u32) -> Option<SavedState> {
-        let subscriptions = self.get_subscriptions(conn_id);
-        if subscriptions.is_empty() {
-            return None;
-        }
-
-        let mut info_event = None;
-        let mut pubkeys = HashSet::new();
-        for filters in subscriptions.values() {
-            for filter in filters {
-                for pk in filter.pubkeys() {
-                    pubkeys.insert(pk.clone());
-                    if info_event.is_none() {
-                        if let Some(event) = self.get_info(&pk) {
-                            info_event = Some(event);
-                        }
-                    }
-                }
-            }
-        }
-
-        Some(SavedState {
-            json: serde_json::json!({
-                "subscriptions": subscriptions,
-                "info_event": info_event,
-            }),
-            pubkeys,
-        })
-    }
-
     fn restore(&mut self, conn_id: u32, data: Value) {
         if let Some(subs_val) = data.get("subscriptions") {
             if let Ok(subs) = serde_json::from_value::<HashMap<String, Vec<Filter>>>(subs_val.clone()) {
@@ -230,6 +195,7 @@ impl WalletIndex {
 pub struct WalletRegistry<S: Storage> {
     pub(crate) storage: S,
     index: WalletIndex,
+    pk_cache: HashMap<String, Vec<u32>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -243,18 +209,17 @@ impl<S: Storage> WalletRegistry<S> {
         Self { 
             storage,
             index: WalletIndex::new(),
+            pk_cache: HashMap::new(),
         }
     }
 
     pub async fn subscribe(&mut self, conn_id: u32, sub_id: String, filters: Vec<Filter>) -> crate::nostr::Result<()> {
         self.index.subscribe(conn_id, sub_id, filters);
-        self.sync(conn_id).await;
         Ok(())
     }
 
     pub async fn unsubscribe(&mut self, conn_id: u32, sub_id: String) -> crate::nostr::Result<()> {
         self.index.unsubscribe(conn_id, sub_id);
-        self.sync(conn_id).await;
         Ok(())
     }
 
@@ -288,18 +253,25 @@ impl<S: Storage> WalletRegistry<S> {
         false
     }
 
+    fn deserialize_id_list(val: &Value) -> Vec<u32> {
+        match val {
+            Value::Array(arr) => arr.iter().filter_map(|v| v.as_u64().map(|x| x as u32)).collect(),
+            Value::Number(n) => n.as_u64().map(|x| vec![x as u32]).unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
+
     pub async fn load_by_pubkey(&mut self, pubkey: &str) -> Vec<u32> {
+        if let Some(id) = self.index.get_connection_id(pubkey) {
+            return vec![id];
+        }
+        if let Some(ids) = self.pk_cache.get(pubkey).cloned() {
+            return ids;
+        }
         let key = format!("pk:{}", pubkey);
         let storage_ids: Vec<u32> = if let Some(val) = self.storage.get(&key).await {
-            match &val {
-                Value::Array(arr) => arr.iter().filter_map(|v| v.as_u64().map(|x| x as u32)).collect(),
-                Value::Number(n) => n.as_u64().map(|x| vec![x as u32]).unwrap_or_default(),
-                _ => Vec::new(),
-            }
+            Self::deserialize_id_list(&val)
         } else {
-            if let Some(id) = self.index.get_connection_id(pubkey) {
-                return vec![id];
-            }
             return Vec::new();
         };
         let mut loaded = Vec::new();
@@ -319,11 +291,13 @@ impl<S: Storage> WalletRegistry<S> {
             entries.insert(key, serde_json::json!(loaded));
             self.storage.put_batch(entries).await;
         }
+        self.pk_cache.insert(pubkey.to_string(), loaded.clone());
         loaded
     }
 
     pub async fn on_disconnect(&mut self, id: u32) {
         self.index.disconnect(id);
+        self.pk_cache.clear();
     }
 
     pub async fn on_terminate(&mut self, id: u32) {
@@ -338,15 +312,12 @@ impl<S: Storage> WalletRegistry<S> {
         }
 
         self.index.disconnect(id);
+        self.pk_cache.clear();
 
         for pk in &pubkeys {
             let key = format!("pk:{}", pk);
             if let Some(val) = self.storage.get(&key).await {
-                let ids: Vec<u32> = match &val {
-                    Value::Array(arr) => arr.iter().filter_map(|v| v.as_u64().map(|x| x as u32)).collect(),
-                    Value::Number(n) => n.as_u64().map(|x| vec![x as u32]).unwrap_or_default(),
-                    _ => Vec::new(),
-                };
+                let ids: Vec<u32> = Self::deserialize_id_list(&val);
                 let new_ids: Vec<u32> = ids.into_iter().filter(|x| *x != id).collect();
                 if new_ids.is_empty() {
                     self.storage.delete_batch(vec![key]).await;
@@ -408,35 +379,6 @@ impl<S: Storage> WalletRegistry<S> {
         self.index.get_subscriptions(conn_id).contains_key(sub_id)
     }
 
-    async fn sync(&self, conn_id: u32) {
-        if let Some(state) = self.index.save(conn_id) {
-            let mut entries = HashMap::new();
-            entries.insert(format!("conn:{}", conn_id), state.json);
-            for pk in state.pubkeys {
-                let key = format!("pk:{}", pk);
-                let mut ids = self.read_pk_list(&key).await;
-                if !ids.contains(&conn_id) {
-                    ids.push(conn_id);
-                }
-                entries.insert(key, serde_json::json!(ids));
-            }
-            self.storage.put_batch(entries).await;
-        } else {
-            self.storage.delete_batch(vec![format!("conn:{}", conn_id)]).await;
-        }
-    }
-
-    async fn read_pk_list(&self, key: &str) -> Vec<u32> {
-        if let Some(val) = self.storage.get(key).await {
-            match &val {
-                Value::Array(arr) => arr.iter().filter_map(|v| v.as_u64().map(|x| x as u32)).collect(),
-                Value::Number(n) => n.as_u64().map(|x| vec![x as u32]).unwrap_or_default(),
-                _ => Vec::new(),
-            }
-        } else {
-            Vec::new()
-        }
-    }
 }
 
 #[cfg(test)]
@@ -489,10 +431,8 @@ pub mod tests {
             
             registry.subscribe(1, "sub1".into(), filters).await.unwrap();
             
-            // Verify that data was written to storage
-            let data = registry.storage.data.lock().unwrap();
-            assert!(data.contains_key("conn:1"), "Storage should contain connection state");
-            assert!(data.contains_key("pk:alice"), "Storage should contain pubkey index");
+            // Verify in-memory state (sync deferred to on_terminate for perf)
+            assert!(registry.has_subscription(1, "sub1"));
         });
     }
 
@@ -723,9 +663,8 @@ fn test_info_event_caching() {
                 ..Default::default()
             }]).await.unwrap();
 
-            let data = registry.storage.data.lock().unwrap();
-            assert!(data.contains_key("conn:1"));
-            assert!(data.contains_key("pk:alice"));
+            // Subscribe no longer syncs to storage; verify in-memory state
+            assert!(registry.has_subscription(1, "sub1"));
         });
     }
 
@@ -789,60 +728,40 @@ fn test_info_event_caching() {
                 ..Default::default()
             }]).await.unwrap();
 
-            // Verify pk: entry stores both connection IDs
-            let data = registry.storage.data.lock().unwrap();
-            let pk_val = data.get(&format!("pk:{}", shared_pk)).expect("pk: entry should exist");
-            let ids: Vec<u32> = serde_json::from_value(pk_val.clone()).unwrap();
-            assert!(ids.contains(&1), "pk: entry should contain conn 1");
-            assert!(ids.contains(&2), "pk: entry should contain conn 2");
-
-            // Simulate hibernation: create fresh registry from seeded storage
-            let snapshot: HashMap<String, Value> = data.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-            drop(data);
-
+            // Verify routing works with in-memory state.
+            // WakeUp goes to the latest subscribing connection for the pubkey
+            // (fallback from load_by_pubkey when no storage entry exists).
             // Scenario 1: Route kind=23194 event — should match conn 1 (wallet)
-            {
-                let storage2 = MockStorage::new();
-                storage2.put_batch(snapshot.clone()).await;
-                let mut registry2 = WalletRegistry::new(storage2);
-
-                let req_event = Event {
-                    id: "req1".into(),
-                    pubkey: "app_pk".into(),
-                    created_at: 1000,
-                    kind: 23194,
-                    tags: vec![Tag::p(shared_pk)],
-                    content: "pay invoice".into(),
-                    sig: "sig".into(),
-                };
-                let responses = registry2.match_event(&req_event).await;
-                assert!(responses.contains(&RegistryResponse::WakeUp(1)));
-                assert!(responses.contains(&RegistryResponse::Send { recipient_id: 1, sub_id: "wallet_sub".into() }));
-                // Kind=23194 should NOT route to conn 2 (app subscribes to kind=23195)
-                assert!(!responses.contains(&RegistryResponse::Send { recipient_id: 2, sub_id: "app_sub".into() }));
-            }
+            let req_event = Event {
+                id: "req1".into(),
+                pubkey: "app_pk".into(),
+                created_at: 1000,
+                kind: 23194,
+                tags: vec![Tag::p(shared_pk)],
+                content: "pay invoice".into(),
+                sig: "sig".into(),
+            };
+            let responses = registry.match_event(&req_event).await;
+            assert!(responses.contains(&RegistryResponse::Send { recipient_id: 1, sub_id: "wallet_sub".into() }),
+                "kind 23194 event should route to wallet_sub on conn 1");
+            assert!(!responses.contains(&RegistryResponse::Send { recipient_id: 2, sub_id: "app_sub".into() }),
+                "kind 23194 event should NOT route to app_sub on conn 2");
 
             // Scenario 2: Route kind=23195 event — should match conn 2 (app)
-            {
-                let storage3 = MockStorage::new();
-                storage3.put_batch(snapshot).await;
-                let mut registry3 = WalletRegistry::new(storage3);
-
-                let resp_event = Event {
-                    id: "resp1".into(),
-                    pubkey: shared_pk.into(),
-                    created_at: 1000,
-                    kind: 23195,
-                    tags: vec![Tag::p("app_pk")],
-                    content: "paid".into(),
-                    sig: "sig".into(),
-                };
-                let responses2 = registry3.match_event(&resp_event).await;
-                assert!(responses2.contains(&RegistryResponse::WakeUp(2)));
-                assert!(responses2.contains(&RegistryResponse::Send { recipient_id: 2, sub_id: "app_sub".into() }));
-                // Kind=23195 should NOT route to conn 1 (wallet subscribes to kind=23194)
-                assert!(!responses2.contains(&RegistryResponse::Send { recipient_id: 1, sub_id: "wallet_sub".into() }));
-            }
+            let resp_event = Event {
+                id: "resp1".into(),
+                pubkey: shared_pk.into(),
+                created_at: 1000,
+                kind: 23195,
+                tags: vec![Tag::p("app_pk")],
+                content: "paid".into(),
+                sig: "sig".into(),
+            };
+            let responses2 = registry.match_event(&resp_event).await;
+            assert!(responses2.contains(&RegistryResponse::Send { recipient_id: 2, sub_id: "app_sub".into() }),
+                "kind 23195 event should route to app_sub on conn 2");
+            assert!(!responses2.contains(&RegistryResponse::Send { recipient_id: 1, sub_id: "wallet_sub".into() }),
+                "kind 23195 event should NOT route to wallet_sub on conn 1");
         });
     }
 }

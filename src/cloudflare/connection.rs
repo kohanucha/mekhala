@@ -27,15 +27,21 @@ impl WebSocketRegistry {
     }
 
     pub fn identify(&self, ws: &WebSocket) -> Option<u32> {
+        if let Ok(Some(id)) = ws.deserialize_attachment::<u32>() {
+            return Some(id);
+        }
+
         for (id, registered) in &self.websockets {
             if js_sys::Object::is(registered.as_ref(), ws.as_ref()) {
                 return Some(*id);
             }
         }
 
-        let id: u32 = ws.deserialize_attachment::<u32>().ok().flatten()?;
-        crate::log_debug!("identify: recovered conn={} from hibernation attachment", id);
-        Some(id)
+        None
+    }
+
+    pub fn contains(&self, id: u32) -> bool {
+        self.websockets.contains_key(&id)
     }
 
     pub fn get_active(&self, id: u32) -> Option<WebSocket> {
@@ -68,10 +74,6 @@ impl WebSocketRegistry {
 
     pub fn len(&self, state: &State) -> usize {
         state.get_websockets().len()
-    }
-
-    pub fn get_all_websockets(&self, state: &State) -> Vec<WebSocket> {
-        state.get_websockets()
     }
 
     pub fn remove(&mut self, id: u32) -> Option<WebSocket> {

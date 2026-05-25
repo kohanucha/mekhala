@@ -1,35 +1,12 @@
+use std::sync::Arc;
 use crate::nostr::{Event, Filter};
 use serde_json::value::RawValue;
-use serde::Deserialize;
 
 #[derive(Debug, Clone)]
 pub enum ClientMessage {
     Event(Event),
     Req(String, Vec<Filter>),
     Close(String),
-}
-
-#[derive(Deserialize)]
-struct PartialEvent {
-    id: String,
-}
-
-pub enum PartialClientMessage {
-    Event(String), // Returns the ID if it looks like an event
-}
-
-impl PartialClientMessage {
-    pub fn from_json(text: &str) -> Option<Self> {
-        let arr: Vec<&RawValue> = serde_json::from_str(text).ok()?;
-        if arr.len() < 2 { return None; }
-
-        let msg_type: String = serde_json::from_str(arr[0].get()).ok()?;
-        if msg_type == "EVENT" {
-            let event: PartialEvent = serde_json::from_str(arr[1].get()).ok()?;
-            return Some(Self::Event(event.id));
-        }
-        None
-    }
 }
 
 impl ClientMessage {
@@ -68,7 +45,7 @@ impl ClientMessage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelayMessage {
     Ok(String, bool, String),
-    Event(String, crate::nostr::Event),
+    Event(String, Arc<crate::nostr::Event>),
     Eose(String),
     Notice(String),
     Closed(String, String),
@@ -94,7 +71,7 @@ impl RelayMessage {
             "EVENT" if arr.len() >= 3 => {
                 let sub_id: String = serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
                 let event: crate::nostr::Event = serde_json::from_str(arr[2].get()).map_err(|e| e.to_string())?;
-                Ok(Self::Event(sub_id, event))
+                Ok(Self::Event(sub_id, Arc::new(event)))
             }
             "EOSE" if arr.len() >= 2 => {
                 let sub_id: String = serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
@@ -116,7 +93,7 @@ impl RelayMessage {
     pub fn to_json(&self) -> String {
         match self {
             Self::Ok(id, ok, msg) => serde_json::json!(["OK", id, ok, msg]).to_string(),
-            Self::Event(sub_id, event) => serde_json::json!(["EVENT", sub_id, event]).to_string(),
+            Self::Event(sub_id, event) => serde_json::json!(["EVENT", sub_id, event.as_ref()]).to_string(),
             Self::Eose(sub_id) => serde_json::json!(["EOSE", sub_id]).to_string(),
             Self::Notice(msg) => serde_json::json!(["NOTICE", msg]).to_string(),
             Self::Closed(sub_id, msg) => serde_json::json!(["CLOSED", sub_id, msg]).to_string(),
@@ -182,7 +159,7 @@ mod tests {
             content: "test content".into(),
             sig: "test_sig".into(),
         };
-        let msg = RelayMessage::Event("sub1".into(), event);
+        let msg = RelayMessage::Event("sub1".into(), Arc::new(event));
         let json = msg.to_json();
         assert!(json.starts_with(r#"["EVENT","sub1","#));
     }
