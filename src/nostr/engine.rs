@@ -47,9 +47,10 @@ pub struct NostrEngine<S: Storage> {
 #[cfg(test)]
 impl NostrEngine<super::wallet_registry::tests::MockStorage> {
     pub fn new() -> Self {
+        let limits = Limits::default();
         Self {
-            registry: WalletRegistry::new(super::wallet_registry::tests::MockStorage::new()),
-            limits: Limits::default(),
+            registry: WalletRegistry::new(super::wallet_registry::tests::MockStorage::new(), limits),
+            limits,
             clock: test_now,
         }
     }
@@ -58,7 +59,7 @@ impl NostrEngine<super::wallet_registry::tests::MockStorage> {
 impl<S: Storage> NostrEngine<S> {
     pub fn new_with_storage(storage: S, limits: Limits, clock: fn() -> u64) -> Self {
         Self {
-            registry: WalletRegistry::new(storage),
+            registry: WalletRegistry::new(storage, limits),
             limits,
             clock,
         }
@@ -226,7 +227,10 @@ impl<S: Storage> NostrEngine<S> {
 
     async fn process_req(&mut self, id: u32, sub_id: String, filters: Vec<Filter>) -> Vec<EngineResponse> {
         let mut responses = Vec::new();
-        let _ = self.registry.subscribe(id, sub_id.clone(), filters.clone()).await;
+        if let Err(e) = self.registry.subscribe(id, sub_id.clone(), filters.clone()).await {
+            log_warn!("sub rejected: conn={} sub={}: {}", id, sub_id, e);
+            return vec![EngineResponse::send(id, RelayMessage::Closed(sub_id, e.to_string()))];
+        }
 
         let global_limit = filters.iter().filter_map(|f| f.limit).min();
 

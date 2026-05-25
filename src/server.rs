@@ -14,6 +14,9 @@ pub async fn run(req: Request, env: Env) -> Result<Response> {
             let kv_store = CloudflareKvStore::new(kv);
             let handler = LnAddressHandler::new(&kv_store);
             let username = ctx.param("username").ok_or_else(|| Error::from("Missing username"))?;
+            if !crate::lnaddress::is_valid_username(&username) {
+                return create_cors_response(Response::from_json(&serde_json::json!({ "status": "ERROR", "reason": "Not Found" }))?.with_status(404));
+            }
             match handler.handle_pay_request(req, &username).await {
                 Ok(resp) => Ok(resp),
                 Err(e) => {

@@ -37,9 +37,17 @@ pub fn encrypt_nip44(shared_secret: &[u8], plaintext: &str) -> Result<String> {
 }
 
 pub fn decrypt_nip44(shared_secret: &[u8], encrypted_content: &str) -> Result<String> {
+    if encrypted_content.len() > 87472 {
+        return Err(RelayError::Generic("NIP-44 payload too large".into()));
+    }
+
     let payload = general_purpose::STANDARD
         .decode(encrypted_content)
         .map_err(|e| RelayError::Base64Error(e.to_string()))?;
+
+    if payload.len() > 65603 {
+        return Err(RelayError::Generic("NIP-44 decoded payload too large".into()));
+    }
 
     if payload.is_empty() || payload[0] != 0x02 {
         return Err(RelayError::Generic("Unsupported NIP-44 version".into()));

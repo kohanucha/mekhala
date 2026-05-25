@@ -27,7 +27,8 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 ## Required Env Vars
 - `RELAY_SECRET` - password (set via Cloudflare dashboard)
 - `WALLET_REGION` - optional: apac/weur/wnam (default: apac)
-- `MAX_CONNECTIONS` - default: 20 (Optimized for personal NWC)
+- `MAX_CONNECTIONS` - optional, default: 100
+- `MAX_SUBSCRIPTIONS_PER_CONNECTION` - optional, default: 100
 - `MAX_FILTER_ITEMS` - default: 10
 - `MAX_EVENT_TAGS` - default: 10
 - `MAX_CONTENT_LENGTH` - default: 16384 (16 KB)
