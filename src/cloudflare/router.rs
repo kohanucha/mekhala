@@ -1,6 +1,7 @@
-use crate::auth::{AccessPolicy, AuthError};
+use crate::auth::AuthError;
+use crate::cloudflare::auth;
 use crate::cloudflare::{apply_security_headers, create_cors_response, CloudflareKvStore};
-use crate::lnaddress::LnAddressHandler;
+use crate::cloudflare::handler::LnAddressHandler;
 use worker::*;
 
 pub async fn run(req: Request, env: Env) -> Result<Response> {
@@ -14,10 +15,10 @@ pub async fn run(req: Request, env: Env) -> Result<Response> {
             let kv_store = CloudflareKvStore::new(kv);
             let handler = LnAddressHandler::new(&kv_store);
             let username = ctx.param("username").ok_or_else(|| Error::from("Missing username"))?;
-            if !crate::lnaddress::is_valid_username(&username) {
+            if !crate::lnaddress::is_valid_username(username) {
                 return create_cors_response(Response::from_json(&serde_json::json!({ "status": "ERROR", "reason": "Not Found" }))?.with_status(404));
             }
-            match handler.handle_pay_request(req, &username).await {
+            match handler.handle_pay_request(req, username).await {
                 Ok(resp) => Ok(resp),
                 Err(e) => {
                     let error_body = serde_json::json!({ "status": "ERROR", "reason": e.to_string() });
@@ -53,7 +54,7 @@ fn handle_options() -> Result<Response> {
 }
 
 fn handle_auth(_req: &Request, ctx: &RouteContext<()>) -> Result<Option<Response>> {
-    let policy = AccessPolicy::from_env(&ctx.env);
+    let policy = auth::from_env(&ctx.env);
     let provided_secret = ctx.param("secret").map(|s| s.as_str()).unwrap_or_default();
 
     match policy.check_access(provided_secret) {

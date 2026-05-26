@@ -1,7 +1,8 @@
+//! Mekhala — Nostr Wallet Connect relay for Cloudflare Workers.
+
 use worker::*;
 
 mod auth;
-mod server;
 mod common;
 mod cloudflare;
 mod nostr;
@@ -17,5 +18,5 @@ pub fn set_panic_hook() {
 #[event(fetch)]
 pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     set_panic_hook();
-    server::run(req, env).await
+    cloudflare::router::run(req, env).await
 }

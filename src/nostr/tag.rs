@@ -306,4 +306,16 @@ mod tests {
         let tag = Tag::E("event1".into(), vec![]);
         assert_eq!(tag.kind_value(), None);
     }
+
+    #[test]
+    fn test_tag_deserialize_empty_array() {
+        let result: Result<Tag, _> = serde_json::from_value(serde_json::json!([]));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_tag_deserialize_non_string_name() {
+        let result: Result<Tag, _> = serde_json::from_value(serde_json::json!([42]));
+        assert!(result.is_err());
+    }
 }

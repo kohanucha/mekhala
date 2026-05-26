@@ -23,6 +23,15 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Clippy check
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
+      - name: Deny check
+        run: cargo deny check
+
       - name: Cache worker-build
         id: cache-worker-build
         uses: actions/cache@v4

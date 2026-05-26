@@ -57,7 +57,7 @@ pub enum EncryptionMethod {
 }
 
 impl EncryptionMethod {
-    pub fn to_protocol_string(&self) -> String {
+    pub fn to_protocol_string(self) -> String {
         match self {
             EncryptionMethod::Nip04 => "nip04".to_string(),
             EncryptionMethod::Nip44 => "nip44_v2".to_string(),
@@ -172,7 +172,7 @@ impl NwcClient {
             .map_err(|_| RelayError::Generic("Invalid secret key length".into()))?;
         let signing_key =
             SigningKey::from_bytes(&sk_bytes_arr).map_err(|e| RelayError::CryptoError(e.to_string()))?;
-        let my_pubkey = hex::encode(&signing_key.verifying_key().to_bytes());
+        let my_pubkey = hex::encode(signing_key.verifying_key().to_bytes());
 
         Ok(Self {
             wallet_pubkey: uri.wallet_pubkey,
@@ -229,7 +229,7 @@ impl NwcClient {
         }
 
         let has_e_tag = event.tags.iter().any(|t| {
-            t.event_id().map_or(false, |eid| eid == request_id)
+            t.event_id().is_some_and(|eid| eid == request_id)
         });
 
         if !has_e_tag {
@@ -394,5 +394,41 @@ mod tests {
     #[test]
     fn test_kind_constants() {
         assert_eq!(KIND_NWC_REQUEST, 23194);
+    }
+
+    #[test]
+    fn test_encryption_method_from_protocol_str() {
+        assert_eq!(EncryptionMethod::from_protocol_str("nip04"), Some(EncryptionMethod::Nip04));
+        assert_eq!(EncryptionMethod::from_protocol_str("nip44_v2"), Some(EncryptionMethod::Nip44));
+        assert_eq!(EncryptionMethod::from_protocol_str("unknown"), None);
+    }
+
+    #[test]
+    fn test_encryption_method_to_protocol_string() {
+        assert_eq!(EncryptionMethod::Nip04.to_protocol_string(), "nip04");
+        assert_eq!(EncryptionMethod::Nip44.to_protocol_string(), "nip44_v2");
+    }
+
+    #[test]
+    fn test_nwc_uri_error_display() {
+        assert!(NwcUriError::InvalidUrl("bad".into()).to_string().contains("url failure"));
+        assert!(NwcUriError::InvalidScheme.to_string().contains("Invalid scheme"));
+        assert!(NwcUriError::MissingPubkey.to_string().contains("Missing wallet pubkey"));
+        assert!(NwcUriError::MissingSecret.to_string().contains("Missing secret"));
+    }
+
+    #[test]
+    fn test_parse_wallet_info_no_encryption_tag_defaults_nip04() {
+        let event = Event {
+            id: "id1".into(),
+            pubkey: "pk1".into(),
+            created_at: 1000,
+            kind: 13194,
+            tags: vec![],
+            content: "".into(),
+            sig: "sig".into(),
+        };
+        let info = parse_wallet_info(&event);
+        assert_eq!(info.encryption_algorithms, vec![EncryptionMethod::Nip04]);
     }
 }

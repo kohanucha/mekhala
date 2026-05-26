@@ -42,6 +42,7 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 1. **DO state**: Use `self.state.storage()`
 2. **WebSocket tags**: Use `utils::HibernationState` trait
 3. **Panic = Abort**: The project uses `panic = "abort"`. **NEVER** use `unwrap()` or `expect()`. Use `?`, `.get()` for indexing, and checked math to prevent isolate crashes.
+4. **`sync()` required for persistence**: Every `subscribe()`/`unsubscribe()` must call `sync()`. The in-memory index is lost on DO hibernation — only `state.storage()` survives. Removing `sync()` breaks event routing after wake. Regression test: `test_hibernation_contract`.
 
 ## Agent skills
 
@@ -56,3 +57,9 @@ Default vocabulary. See `docs/agents/triage-labels.md`.
 ### Domain docs
 
 Single-context layout. See `docs/agents/domain.md`.
+
+## Coverage Gate
+- Maintain ≥90% line coverage on testable modules (everything outside `cloudflare/`)
+- Run: `cargo llvm-cov --ignore-filename-regex 'cloudflare/' --fail-under-lines 90`
+
+> All worker-dependent modules live under `cloudflare/`. The core relay logic (`nostr/*`, `auth.rs`, `lnaddress/*`) has zero `worker` crate dependency and is fully testable.

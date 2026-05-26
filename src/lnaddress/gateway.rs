@@ -99,4 +99,43 @@ mod tests {
         let hash2 = get_description_hash("testuser");
         assert_eq!(hash1, hash2);
     }
+
+    #[test]
+    fn test_pay_request_info_structure() {
+        let url = Url::parse("https://relay.com/.well-known/lnurlp/alice").unwrap();
+        let info = pay_request_info("alice", &url);
+        assert_eq!(info["tag"], "payRequest");
+        assert_eq!(info["callback"], "https://relay.com/lnaddress/alice/callback");
+        assert_eq!(info["maxSendable"], 100000000);
+        assert_eq!(info["minSendable"], 1000);
+        assert_eq!(info["metadata"], "[[\"text/plain\",\"Payment to alice\"]]");
+    }
+
+    #[test]
+    fn test_pay_request_info_different_username() {
+        let url = Url::parse("https://other.com/.well-known/lnurlp/bob").unwrap();
+        let info = pay_request_info("bob", &url);
+        assert_eq!(info["callback"], "https://other.com/lnaddress/bob/callback");
+        assert_eq!(info["metadata"], "[[\"text/plain\",\"Payment to bob\"]]");
+    }
+
+    #[test]
+    fn test_create_invoice_invalid_uri() {
+        let _url = Url::parse("https://relay.com/lnurlp/test").unwrap();
+        let result = create_invoice(&MockTransport, "not-a-valid-uri", "test", 1000);
+        let err = futures::executor::block_on(result).unwrap_err();
+        assert!(matches!(err, NwcError::ProtocolError(_)));
+    }
+
+    struct MockTransport;
+
+    #[async_trait::async_trait(?Send)]
+    impl NwcTransport for MockTransport {
+        async fn get_wallet_info(&self, _pubkey: &str) -> Option<crate::nostr::WalletInfo> {
+            None
+        }
+        async fn execute_nwc_rpc(&self, _request: crate::nostr::Event) -> Result<crate::nostr::Event, NwcError> {
+            Err(NwcError::WalletNotFound)
+        }
+    }
 }

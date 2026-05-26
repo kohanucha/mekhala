@@ -21,6 +21,21 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Clippy check
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Coverage gate
+        run: cargo llvm-cov --ignore-filename-regex 'cloudflare/' --fail-under-lines 90
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
+      - name: Deny check
+        run: cargo deny check
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:

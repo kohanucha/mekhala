@@ -18,9 +18,11 @@ pub struct SavedState {
 }
 
 /// A purely synchronous index for subscriptions and info events.
+type PkEntry = (HashSet<(String, Vec<Filter>)>, Option<Event>);
+
 struct WalletIndex {
     subscription_index: HashMap<(String, Vec<Filter>), Vec<u32>>,
-    pk_index: HashMap<String, (HashSet<(String, Vec<Filter>)>, Option<Event>)>,
+    pk_index: HashMap<String, PkEntry>,
     info_id_index: HashMap<String, String>,
     reverse_index: HashMap<u32, HashMap<String, Vec<Filter>>>,
 }
@@ -489,6 +491,15 @@ pub mod tests {
         }
     }
 
+    /// Simulates DO hibernation by cloning storage state and creating a fresh
+    /// WalletRegistry from the snapshot (in-memory state is lost).
+    pub async fn simulate_hibernation(original: &MockStorage) -> WalletRegistry<MockStorage> {
+        let snapshot = original.data.lock().unwrap().clone();
+        let new_storage = MockStorage::new();
+        new_storage.put_batch(snapshot).await;
+        WalletRegistry::new(new_storage, Limits::default())
+    }
+
     #[test]
     fn test_registry_sub_persistence() {
         futures::executor::block_on(async {
@@ -506,6 +517,146 @@ pub mod tests {
             let data = registry.storage.data.lock().unwrap();
             assert!(data.contains_key("conn:1"), "Storage should contain connection state");
             assert!(data.contains_key("pk:alice"), "Storage should contain pubkey index");
+        });
+    }
+
+    #[test]
+    fn test_hibernation_contract() {
+        futures::executor::block_on(async {
+            let storage = MockStorage::new();
+            let mut registry = WalletRegistry::new(storage, Limits::default());
+
+            registry.subscribe(1, "sub1".into(), vec![Filter {
+                authors: Some(vec!["alice".into()]),
+                ..Default::default()
+            }]).await.unwrap();
+
+            // Simulate DO hibernation — clone storage, create fresh registry
+            let mut registry2 = simulate_hibernation(&registry.storage).await;
+
+            // Event targeting the pubkey should still route after wake
+            let event = Event {
+                id: "e1".into(),
+                pubkey: "alice".into(),
+                created_at: 1000,
+                kind: 23194,
+                tags: vec![],
+                content: "".into(),
+                sig: "sig".into(),
+            };
+            let responses = registry2.match_event(&event).await;
+            assert!(responses.contains(&RegistryResponse::WakeUp(1)),
+                "hibernated connection must produce WakeUp");
+            assert!(responses.contains(&RegistryResponse::Send {
+                recipient_id: 1, sub_id: "sub1".into()
+            }), "hibernated connection must produce Send");
+        });
+    }
+
+    #[test]
+    fn test_hibernation_info_survival() {
+        futures::executor::block_on(async {
+            let storage = MockStorage::new();
+            let mut registry = WalletRegistry::new(storage, Limits::default());
+
+            registry.subscribe(1, "sub1".into(), vec![Filter {
+                authors: Some(vec!["alice".into()]),
+                ..Default::default()
+            }]).await.unwrap();
+
+            // Cache an info event for alice
+            let info = Event {
+                id: "info1".into(),
+                pubkey: "alice".into(),
+                created_at: 1000,
+                kind: 13194,
+                tags: vec![],
+                content: "wallet info".into(),
+                sig: "sig".into(),
+            };
+            registry.cache_info(info.clone()).await;
+
+            // Hibernate
+            let mut registry2 = simulate_hibernation(&registry.storage).await;
+
+            // Info event should survive
+            let retrieved = registry2.get_info("alice").await;
+            assert!(retrieved.is_some(), "info event should survive hibernation");
+            assert_eq!(retrieved.unwrap().id, "info1");
+
+            // Routing should also work
+            let event = Event {
+                id: "e1".into(),
+                pubkey: "alice".into(),
+                created_at: 1000,
+                kind: 23194,
+                tags: vec![],
+                content: "".into(),
+                sig: "sig".into(),
+            };
+            let responses = registry2.match_event(&event).await;
+            assert!(responses.contains(&RegistryResponse::WakeUp(1)),
+                "hibernated connection must still produce WakeUp with info");
+            assert!(responses.contains(&RegistryResponse::Send {
+                recipient_id: 1, sub_id: "sub1".into()
+            }), "hibernated connection must still produce Send with info");
+        });
+    }
+
+    #[test]
+    fn test_hibernation_subscribe_cycles() {
+        futures::executor::block_on(async {
+            let storage = MockStorage::new();
+            let mut registry = WalletRegistry::new(storage, Limits::default());
+
+            // Subscribe
+            registry.subscribe(1, "sub1".into(), vec![Filter {
+                authors: Some(vec!["alice".into()]),
+                ..Default::default()
+            }]).await.unwrap();
+
+            // Unsubscribe
+            registry.unsubscribe(1, "sub1".into()).await.unwrap();
+
+            // Re-subscribe with different filter (bob instead of alice)
+            registry.subscribe(1, "sub1".into(), vec![Filter {
+                authors: Some(vec!["bob".into()]),
+                ..Default::default()
+            }]).await.unwrap();
+
+            // Hibernate
+            let mut registry2 = simulate_hibernation(&registry.storage).await;
+
+            // Event from alice should NOT match (final subscribe was for bob)
+            let alice_event = Event {
+                id: "e1".into(),
+                pubkey: "alice".into(),
+                created_at: 1000,
+                kind: 23194,
+                tags: vec![],
+                content: "".into(),
+                sig: "sig".into(),
+            };
+            let responses = registry2.match_event(&alice_event).await;
+            assert!(!responses.contains(&RegistryResponse::Send { recipient_id: 1, sub_id: "sub1".into() }),
+                "alice event should NOT match after re-subscribe to bob");
+
+            // Event from bob should match
+            let bob_event = Event {
+                id: "e2".into(),
+                pubkey: "bob".into(),
+                created_at: 1000,
+                kind: 23194,
+                tags: vec![],
+                content: "".into(),
+                sig: "sig".into(),
+            };
+            let responses2 = registry2.match_event(&bob_event).await;
+            assert!(responses2.contains(&RegistryResponse::WakeUp(1)),
+                "bob event must produce WakeUp after re-subscribe");
+            assert!(responses2.contains(&RegistryResponse::Send {
+                recipient_id: 1, sub_id: "sub1".into()
+            }), "bob event must produce Send after re-subscribe");
         });
     }
 
@@ -781,6 +932,67 @@ fn test_info_event_caching() {
     }
 
     #[test]
+    fn test_subscription_limit_exceeded() {
+        futures::executor::block_on(async {
+            let storage = MockStorage::new();
+            let limits = Limits::new(65536, 0); // max 0 subscriptions
+            let mut registry = WalletRegistry::new(storage, limits);
+
+            let result = registry.subscribe(1, "sub1".into(), vec![Filter {
+                authors: Some(vec!["alice".into()]),
+                ..Default::default()
+            }]).await;
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("too many subscriptions"));
+        });
+    }
+
+    #[test]
+    fn test_delete_info_for_nonexistent_pubkey() {
+        futures::executor::block_on(async {
+            let storage = MockStorage::new();
+            let mut registry = WalletRegistry::new(storage, Limits::default());
+            // Deleting info for a pubkey that was never registered should be a no-op
+            registry.delete_info("nobody").await;
+            assert!(registry.get_info("nobody").await.is_none());
+        });
+    }
+
+    #[test]
+    fn test_read_pk_list_with_number_value() {
+        futures::executor::block_on(async {
+            let storage = MockStorage::new();
+            let mut entries = HashMap::new();
+            entries.insert("pk:single".to_string(), serde_json::json!(42));
+            entries.insert("conn:42".to_string(), serde_json::json!({
+                "subscriptions": {
+                    "sub1": [{"#p": ["single"]}]
+                },
+                "info_event": null
+            }));
+            storage.put_batch(entries).await;
+
+            let mut registry = WalletRegistry::new(storage, Limits::default());
+            let ids = registry.load_by_pubkey("single").await;
+            assert!(ids.contains(&42));
+        });
+    }
+
+    #[test]
+    fn test_read_pk_list_with_unknown_value_type() {
+        futures::executor::block_on(async {
+            let storage = MockStorage::new();
+            let mut entries = HashMap::new();
+            entries.insert("pk:weird".to_string(), serde_json::json!("string_value"));
+            storage.put_batch(entries).await;
+
+            let mut registry = WalletRegistry::new(storage, Limits::default());
+            let ids = registry.load_by_pubkey("weird").await;
+            assert!(ids.is_empty());
+        });
+    }
+
+    #[test]
     fn test_two_connections_same_pubkey_different_filters() {
         futures::executor::block_on(async {
             let storage = MockStorage::new();
@@ -803,15 +1015,15 @@ fn test_info_event_caching() {
             }]).await.unwrap();
 
             // Verify pk: entry stores both connection IDs
-            let data = registry.storage.data.lock().unwrap();
-            let pk_val = data.get(&format!("pk:{}", shared_pk)).expect("pk: entry should exist");
-            let ids: Vec<u32> = serde_json::from_value(pk_val.clone()).unwrap();
-            assert!(ids.contains(&1), "pk: entry should contain conn 1");
-            assert!(ids.contains(&2), "pk: entry should contain conn 2");
-
-            // Simulate hibernation: create fresh registry from seeded storage
-            let snapshot: HashMap<String, Value> = data.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-            drop(data);
+            #[allow(clippy::await_holding_lock)]
+            let snapshot: HashMap<String, Value> = {
+                let data = registry.storage.data.lock().unwrap();
+                let pk_val = data.get(&format!("pk:{}", shared_pk)).expect("pk: entry should exist");
+                let ids: Vec<u32> = serde_json::from_value(pk_val.clone()).unwrap();
+                assert!(ids.contains(&1), "pk: entry should contain conn 1");
+                assert!(ids.contains(&2), "pk: entry should contain conn 2");
+                data.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+            };
 
             // Scenario 1: Route kind=23194 event — should match conn 1 (wallet)
             {

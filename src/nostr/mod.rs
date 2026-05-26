@@ -1,3 +1,5 @@
+//! NIP protocol types and relay event engine.
+
 pub mod nip_01;
 pub mod nip_04;
 pub mod nip_44;

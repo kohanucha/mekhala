@@ -2,6 +2,7 @@
 name = "mekhala"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.85"
 
 [lib]
 crate-type = ["cdylib"]
@@ -25,13 +26,15 @@ cipher = "0.4"
 base64 = "0.22"
 url = "2.5"
 rand = "0.8"
-lru = "0.12"
 js-sys = "0.3"
 wasm-bindgen = "0.2"
 hkdf = "0.12"
 chacha20 = "0.9"
 hmac = "0.12"
 futures = { version = "0.3.32", features = ["thread-pool"] }
+
+[lints.rust]
+unsafe_code = "deny"
 
 [profile.release]
 opt-level = "s"
