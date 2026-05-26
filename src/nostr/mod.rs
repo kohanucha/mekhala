@@ -9,7 +9,6 @@ pub mod wallet_registry;
 pub mod event;
 pub mod filter;
 pub mod rpc_machine;
-pub mod rpc_orchestrator;
 pub mod tag;
 pub mod error;
 pub mod limits;

@@ -7,8 +7,8 @@ use worker::*;
 use crate::nostr::engine::{NostrEngine, EngineResponse};
 use crate::nostr::wallet_registry::Storage;
 use crate::nostr::Limits;
-use crate::nostr::rpc_machine::RpcAction;
-use crate::nostr::rpc_orchestrator::{RpcContext, RpcReceiveError};
+use crate::nostr::rpc_machine::{NwcRpcMachine, RpcState};
+use crate::nostr::RelayMessage;
 use crate::cloudflare::create_cors_response;
 use crate::cloudflare::connection::{WebSocketRegistry, InternalConnectionMap};
 use crate::cloudflare::kv::CloudflareKvStore;
@@ -28,9 +28,7 @@ impl Storage for CloudflareStorage {
         self.storage.get(key).await.ok().flatten()
     }
     async fn put_batch(&self, entries: std::collections::HashMap<String, serde_json::Value>) {
-        for (k, v) in entries {
-            let _ = self.storage.put(&k, v).await;
-        }
+        self.storage.put_multiple(entries).await.ok();
     }
     async fn delete_batch(&self, keys: Vec<String>) {
         for k in keys {
@@ -207,47 +205,28 @@ impl crate::common::NwcTransport for CloudflareTransport {
     }
 
     async fn execute_nwc_rpc(&self, request: crate::nostr::Event) -> Result<crate::nostr::Event, crate::common::NwcError> {
-        crate::nostr::rpc_orchestrator::execute_nwc_rpc(self, request).await
-    }
-}
+        const RPC_TIMEOUT_SECS: u64 = 10;
 
-#[async_trait::async_trait(?Send)]
-impl RpcContext for CloudflareTransport {
-    fn now(&self) -> u64 {
-        crate::util::now()
-    }
+        let id = self.allocate_id().await;
+        let mut machine = NwcRpcMachine::new(request);
 
-    async fn allocate_connection_id(&self) -> u32 {
-        self.allocate_id().await
-    }
-
-    async fn execute_action(&self, conn_id: u32, action: RpcAction) -> Result<(), crate::common::NwcError> {
-        let mut engine = self.engine.lock().await;
-        self.execute_rpc_action_inner(conn_id, action, &mut engine).await
-    }
-
-    async fn receive_response(&self, conn_id: u32, remaining_secs: u64) -> Result<String, RpcReceiveError> {
-        let (tx, rx) = oneshot::channel();
-        self.internal.borrow_mut().add(conn_id, tx);
-
-        let delay = Delay::from(Duration::from_secs(remaining_secs)).fuse();
-        let pinned_rx = rx.fuse();
-        futures_util::pin_mut!(pinned_rx, delay);
-
-        match futures_util::future::select(pinned_rx, delay).await {
-            futures_util::future::Either::Left((Ok(resp), _)) => Ok(resp),
-            futures_util::future::Either::Left((Err(_), _)) => Err(RpcReceiveError::ChannelClosed),
-            futures_util::future::Either::Right(_) => {
-                self.internal.borrow_mut().remove(conn_id);
-                Err(RpcReceiveError::Timeout)
+        // Phase 1: subscribe + publish
+        {
+            let mut engine = self.engine.lock().await;
+            for action in machine.start() {
+                self.execute_rpc_action_inner(id, action, &mut engine).await?;
             }
         }
-    }
 
-    async fn disconnect(&self, conn_id: u32) {
+        // Phase 2: wait for matching response
+        let result = self.receive_rpc_response(id, &mut machine, RPC_TIMEOUT_SECS).await;
+
+        // Phase 3: cleanup — always disconnect, removing all subscriptions
         let mut engine = self.engine.lock().await;
-        let _ = engine.on_disconnect(conn_id).await;
-        self.internal.borrow_mut().remove(conn_id);
+        let _ = engine.on_disconnect(id).await;
+        self.internal.borrow_mut().remove(id);
+
+        result
     }
 }
 
@@ -280,6 +259,48 @@ impl CloudflareTransport {
         } else {
             log_warn!("✗ send failed: conn={} not found", id);
             false
+        }
+    }
+
+    async fn receive_rpc_response(&self, id: u32, machine: &mut NwcRpcMachine, timeout_secs: u64) -> Result<crate::nostr::Event, crate::common::NwcError> {
+        let start = crate::util::now();
+
+        loop {
+            let remaining = timeout_secs.saturating_sub(crate::util::now().saturating_sub(start));
+            if remaining == 0 {
+                return Err(crate::common::NwcError::Timeout);
+            }
+
+            let (tx, rx) = oneshot::channel();
+            self.internal.borrow_mut().add(id, tx);
+
+            let delay = Delay::from(Duration::from_secs(remaining)).fuse();
+            let pinned_rx = rx.fuse();
+            futures_util::pin_mut!(pinned_rx, delay);
+
+            let text = match futures_util::future::select(pinned_rx, delay).await {
+                futures_util::future::Either::Left((Ok(text), _)) => text,
+                futures_util::future::Either::Left((Err(_), _)) => {
+                    return Err(crate::common::NwcError::ProtocolError("channel closed".into()));
+                }
+                futures_util::future::Either::Right(_) => {
+                    return Err(crate::common::NwcError::Timeout);
+                }
+            };
+
+            let msg = RelayMessage::from_json(&text)
+                .map_err(|e| crate::common::NwcError::ProtocolError(format!("malformed relay response: {e}")))?;
+
+            if let Some(action) = machine.transition(msg) {
+                let mut engine = self.engine.lock().await;
+                self.execute_rpc_action_inner(id, action, &mut engine).await?;
+            }
+
+            match machine.state() {
+                RpcState::Success(event) => return Ok(event.clone()),
+                RpcState::Failed(err) => return Err(crate::common::NwcError::ProtocolError(err.clone())),
+                _ => {}
+            }
         }
     }
 
