@@ -29,8 +29,7 @@ Mekhala provides an LN Address bridge, allowing users to pay to an LN Address (e
 - **SavedState**: A structured object containing a connection's serialized state (for persistence) and an explicit set of associated pubkeys (for indexing). Used to maintain a clean boundary between domain logic and transport-level storage.
 - **WalletRegistry**: A deep module that manages NWC subscription indexing and event routing. It encapsulates the subscription index (filters → connection IDs), pubkey index (pubkey → subscriptions + info event), and coordinates with an asynchronous storage layer to persist and restore connection state.
 - **InternalConnection**: A connection tracked by WalletRegistry that has subscriptions but no backing WebSocket. Used by the LN Address bridge and RPC flow to receive routed NWC responses via oneshot channels instead of WebSocket delivery.
-- **NwcRpcOrchestrator**: The pure coordination logic that drives an NWC RPC request-response cycle. It uses `NwcRpcMachine` for state transitions and delegates I/O to an `RpcContext` trait — making the full RPC flow unit-testable without Cloudflare Workers.
-- **RpcContext**: A 5-method `?Send` trait (clock, ID allocation, action dispatch, response receipt, cleanup) that `CloudflareTransport` implements. The orchestrator calls through this seam; test doubles implement it with pre-configured responses.
+- **NwcRpcMachine**: A pure state machine that drives the NWC RPC request-response cycle (subscribe → wait for response → success/failure). It is used internally by `CloudflareTransport::execute_nwc_rpc`. The `NwcTransport` trait is the public seam for RPC, with `CloudflareTransport` as the production adapter and `MockTransport` as the test double.
 - **RpcReceiveError**: The error type for the `receive_response` seam — `Timeout` or `ChannelClosed`, both representable without Cloudflare-specific types.
 - **Clock seam**: Both `NostrEngine` and `NwcClient` accept `fn() -> u64` as a clock parameter, defaulting to `crate::util::now`. No domain module calls `now()` directly — all timestamps flow through the injected seam.
 - **UserStore**: A `?Send` trait for looking up NWC connection URIs by username. `CloudflareKvStore` implements it using Workers KV. The seam enables unit-testing the LN Address handler without a worker runtime.
@@ -64,12 +63,10 @@ Mekhala provides an LN Address bridge, allowing users to pay to an LN Address (e
 - **Production adapter:** `crate::util::now` (default in `NwcClient::new`).
 - **Test double:** `test_now` / custom clock function.
 
-### 2b. RPC Orchestration Layer
-**Module:** `NwcRpcOrchestrator` (`src/nostr/rpc_orchestrator.rs`)
-- **Role:** Drives the full NWC RPC request-response lifecycle using `NwcRpcMachine` for state transitions. Delegates all I/O to the `RpcContext` trait, making it fully unit-testable.
-- **Seams:** `RpcContext` trait — `now()`, `allocate_connection_id()`, `execute_action()`, `receive_response()`, `disconnect()`.
-- **Production Adapter:** `CloudflareTransport` implements `RpcContext` (maps to oneshot channels + Delay timers + engine locks).
-- **Test Double:** `MockRpcContext` (pre-configured response queue + action recording).
+### 2b. RPC Orchestration (inside CloudflareTransport)
+The NWC RPC orchestration loop lives directly in `CloudflareTransport::execute_nwc_rpc` (the `NwcTransport` impl). It uses `NwcRpcMachine` for pure state transitions and owns the oneshot-channel receive loop. The only public seam is `NwcTransport` with its single method `execute_nwc_rpc`.  
+- **Production Adapter:** `CloudflareTransport` (inlines the receive loop with oneshot channels + Delay timers + engine locks).  
+- **Test Double:** `MockTransport` in `wallet_connector.rs` and `gateway.rs` tests (pre-configured response construction).
 
 ### 3. State & Indexing Layer
 **Module:** `WalletRegistry` (`src/nostr/wallet_registry.rs`)
@@ -103,8 +100,7 @@ Mekhala provides an LN Address bridge, allowing users to pay to an LN Address (e
 ### The RPC Flow (LN Address Bridge / programmatic NWC)
 1. An HTTP callback arrives for LN Address bridging (or a programmatic NWC call is made).
 2. The caller invokes `NwcTransport::execute_nwc_rpc`.
-3. This delegates to `NwcRpcOrchestrator::execute_nwc_rpc`, which drives the full lifecycle via the `RpcContext` seam.
-4. The orchestrator allocates an InternalConnection, starts `NwcRpcMachine` (subscribe + publish), and waits for a wallet response.
-5. When the wallet's response arrives via WebSocket, `CloudflareTransport.route_send` delivers it to the `InternalConnectionMap` oneshot channel.
-6. The orchestrator picks up the response, transitions the machine, and returns the result event (or times out / fails).
-7. The orchestrator disconnects the InternalConnection and cleans up.
+3. `CloudflareTransport::execute_nwc_rpc` allocates an InternalConnection, starts `NwcRpcMachine` (subscribe + publish), and enters the receive loop.
+4. When the wallet's response arrives via WebSocket, `CloudflareTransport.route_send` delivers it to the `InternalConnectionMap` oneshot channel.
+5. The receive loop picks up the response, transitions the machine, and returns the result event (or times out / fails).
+6. The function always disconnects the InternalConnection and cleans up before returning (unified cleanup).

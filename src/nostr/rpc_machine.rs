@@ -77,10 +77,6 @@ impl NwcRpcMachine {
         }
     }
 
-    pub fn handle_timeout(&mut self) -> RpcAction {
-        self.state = RpcState::Failed("NWC RPC timeout".to_string());
-        RpcAction::Unsubscribe(self.sub_id.clone())
-    }
 }
 
 #[cfg(test)]
@@ -122,17 +118,6 @@ mod tests {
 
         assert_eq!(action, Some(RpcAction::Unsubscribe("rpc_sub".into())));
         assert_eq!(machine.state, RpcState::Success(resp));
-    }
-
-    #[test]
-    fn test_rpc_machine_timeout() {
-        let req = mock_event("req1", "pk1");
-        let mut machine = NwcRpcMachine::new(req);
-        machine.start();
-
-        let action = machine.handle_timeout();
-        assert_eq!(action, RpcAction::Unsubscribe("rpc_sub".into()));
-        assert!(matches!(machine.state, RpcState::Failed(_)));
     }
 
     #[test]
