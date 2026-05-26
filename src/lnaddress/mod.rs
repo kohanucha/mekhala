@@ -1,6 +1,7 @@
-mod gateway;
-mod handler;
-mod wallet_connector;
+//! Lightning Address resolution and NWC session management.
 
-pub use handler::LnAddressHandler;
-pub(crate) use handler::is_valid_username;
+pub(crate) mod gateway;
+mod wallet_connector;
+mod validation;
+
+pub(crate) use validation::is_valid_username;

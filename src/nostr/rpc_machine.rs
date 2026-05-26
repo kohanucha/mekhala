@@ -35,9 +35,11 @@ impl NwcRpcMachine {
     }
 
     pub fn start(&mut self) -> Vec<RpcAction> {
-        let mut filter = Filter::default();
-        filter.e_tags = Some(vec![self.request.id.clone()]);
-        filter.p_tags = Some(vec![self.request.pubkey.clone()]);
+        let filter = Filter {
+            e_tags: Some(vec![self.request.id.clone()]),
+            p_tags: Some(vec![self.request.pubkey.clone()]),
+            ..Filter::default()
+        };
 
         self.state = RpcState::AwaitingResponse;
 
@@ -131,5 +133,30 @@ mod tests {
         let action = machine.handle_timeout();
         assert_eq!(action, RpcAction::Unsubscribe("rpc_sub".into()));
         assert!(matches!(machine.state, RpcState::Failed(_)));
+    }
+
+    #[test]
+    fn test_rpc_machine_unmatched_response() {
+        let req = mock_event("req1", "pk1");
+        let mut machine = NwcRpcMachine::new(req);
+        machine.start();
+
+        // Response with wrong e-tag should not match
+        let mut resp = mock_event("resp1", "pk2");
+        resp.tags = vec![crate::nostr::Tag::E("wrong_req".to_string(), vec![])];
+        let action = machine.transition(RelayMessage::Event("rpc_sub".into(), resp));
+        assert!(action.is_none());
+        assert_eq!(machine.state, RpcState::AwaitingResponse);
+    }
+
+    #[test]
+    fn test_rpc_machine_transition_before_start() {
+        let req = mock_event("req1", "pk1");
+        let mut machine = NwcRpcMachine::new(req);
+
+        // Machine is still in Initial state. Any transition should be ignored.
+        let action = machine.transition(RelayMessage::Eose("rpc_sub".into()));
+        assert!(action.is_none());
+        assert_eq!(machine.state, RpcState::Initial);
     }
 }

@@ -34,7 +34,7 @@ impl Filter {
         }
         if let Some(p_tags) = &self.p_tags {
             let has_match = event.tags.iter().any(|t| {
-                t.pubkey().map_or(false, |pk| p_tags.iter().any(|s| s == pk))
+                t.pubkey().is_some_and(|pk| p_tags.iter().any(|s| s == pk))
             });
             if !has_match {
                 return false;
@@ -42,7 +42,7 @@ impl Filter {
         }
         if let Some(e_tags) = &self.e_tags {
             let has_match = event.tags.iter().any(|t| {
-                t.event_id().map_or(false, |eid| e_tags.iter().any(|s| s == eid))
+                t.event_id().is_some_and(|eid| e_tags.iter().any(|s| s == eid))
             });
             if !has_match {
                 return false;
@@ -350,5 +350,44 @@ mod tests {
         };
         let keys = filter.pubkeys();
         assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
+    fn test_filter_is_valid_narrowing_with_non_nwc_kind() {
+        let filter = Filter {
+            kinds: Some(vec![1]),
+            p_tags: Some(vec!["pk1".into()]),
+            ..Default::default()
+        };
+        assert!(!filter.is_valid());
+    }
+
+    #[test]
+    fn test_filter_is_valid_narrowing_with_mixed_kinds() {
+        let filter = Filter {
+            kinds: Some(vec![23194, 1]),
+            p_tags: Some(vec!["pk1".into()]),
+            ..Default::default()
+        };
+        assert!(!filter.is_valid());
+    }
+
+    #[test]
+    fn test_filter_is_valid_no_authors_or_tags() {
+        let filter = Filter {
+            kinds: Some(vec![13194]),
+            ..Default::default()
+        };
+        assert!(!filter.is_valid());
+    }
+
+    #[test]
+    fn test_filter_is_valid_empty_authors_valid_kinds() {
+        let filter = Filter {
+            kinds: Some(vec![23194]),
+            authors: Some(vec![]),
+            ..Default::default()
+        };
+        assert!(filter.is_valid());
     }
 }

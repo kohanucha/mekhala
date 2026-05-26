@@ -86,10 +86,10 @@ impl DurableObject for CloudflareTransport {
 
         if path.starts_with("/lnaddress/") && path.ends_with("/callback") {
             let username = path.strip_prefix("/lnaddress/").and_then(|s| s.strip_suffix("/callback")).unwrap_or("");
-            if !crate::lnaddress::is_valid_username(&username) {
+            if !crate::lnaddress::is_valid_username(username) {
                 return Response::error("Not Found", 404);
             }
-            let handler = crate::lnaddress::LnAddressHandler::new(&self.kv);
+            let handler = crate::cloudflare::handler::LnAddressHandler::new(&self.kv);
             return handler.handle_callback(req, username, self).await;
         }
 
@@ -101,7 +101,7 @@ impl DurableObject for CloudflareTransport {
         if let WebSocketIncomingMessage::String(text) = message {
             if text.len() > 131072 {
                 log_warn!("message too large: {} bytes", text.len());
-                let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Notice("message too large".into()).to_json());
+                let _ = websocket.send_with_str(crate::nostr::RelayMessage::Notice("message too large".into()).to_json());
                 return Ok(());
             }
 
@@ -114,7 +114,7 @@ impl DurableObject for CloudflareTransport {
                         Some(id) => id,
                         None => {
                             log_error!("connection not found for incoming EVENT, sending reconnect notice");
-                            let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Notice("connection lost: please reconnect".into()).to_json());
+                            let _ = websocket.send_with_str(crate::nostr::RelayMessage::Notice("connection lost: please reconnect".into()).to_json());
                             return Ok(());
                         }
                     };
@@ -126,7 +126,7 @@ impl DurableObject for CloudflareTransport {
                             log_debug!("✓ EVENT accepted kind={} pk={} id={}", event.kind, short(&event.pubkey, 8), short(&event.id, 8));
                             let ok_msg = crate::nostr::RelayMessage::Ok(event.id.clone(), true, "".to_string()).to_json();
                             log_info!("→ conn={} SEND {}", connection_id, ok_msg);
-                            let _ = websocket.send_with_str(&ok_msg);
+                            let _ = websocket.send_with_str(ok_msg);
                             let responses = engine.route_verified_event(connection_id, event.clone()).await;
                             self.process_responses(responses, &mut engine).await?;
                         }
@@ -144,7 +144,7 @@ impl DurableObject for CloudflareTransport {
                         Some(id) => id,
                         None => {
                             log_error!("connection not found for incoming message, sending reconnect notice");
-                            let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Notice("connection lost: please reconnect".into()).to_json());
+                            let _ = websocket.send_with_str(crate::nostr::RelayMessage::Notice("connection lost: please reconnect".into()).to_json());
                             return Ok(());
                         }
                     };
@@ -182,7 +182,7 @@ impl DurableObject for CloudflareTransport {
         } else {
             let _engine = self.engine.lock().await;
             log_warn!("binary message not supported");
-            let _ = websocket.send_with_str(&crate::nostr::RelayMessage::Notice("binary not supported".into()).to_json());
+            let _ = websocket.send_with_str(crate::nostr::RelayMessage::Notice("binary not supported".into()).to_json());
             Ok(())
         }
     }
@@ -275,9 +275,7 @@ impl CloudflareTransport {
 
     fn route_send(&self, id: u32, message: String) -> bool {
         log_info!("→ conn={} SEND {}", id, message);
-        if self.websockets.borrow_mut().send(id, message.clone()) {
-            true
-        } else if self.internal.borrow_mut().send(id, message) {
+        if self.websockets.borrow_mut().send(id, message.clone()) || self.internal.borrow_mut().send(id, message) {
             true
         } else {
             log_warn!("✗ send failed: conn={} not found", id);
@@ -305,7 +303,7 @@ impl CloudflareTransport {
     }
 
     async fn load_connection_with_handler(&self, pubkey: &str, engine: &mut NostrEngine<CloudflareStorage>) -> Result<Option<u32>> {
-        for id in engine.load_by_pubkey(pubkey).await {
+        if let Some(id) = engine.load_by_pubkey(pubkey).await.into_iter().next() {
             let ws = self.websockets.borrow().find_by_id(&self.state, id);
             if let Some(ws) = ws {
                 let _ = self.wake_up_with_handler(&ws, engine).await;
@@ -369,7 +367,7 @@ impl CloudflareTransport {
 
         self.process_responses(responses, &mut engine).await?;
 
-        Ok(Response::from_websocket(client)?)
+        Response::from_websocket(client)
     }
 
     async fn handle_disconnect(&self, ws: &WebSocket) -> Result<()> {

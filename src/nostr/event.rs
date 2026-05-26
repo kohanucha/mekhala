@@ -179,4 +179,116 @@ mod tests {
             other => panic!("expected id/sig error, got {:?}", other),
         }
     }
+
+    #[test]
+    fn test_verify_invalid_kind() {
+        let event = Event {
+            id: "id1".into(),
+            pubkey: "pk1".into(),
+            created_at: 1700000000,
+            kind: 1,
+            tags: vec![],
+            content: "".into(),
+            sig: "sig".into(),
+        };
+        let result = event.verify(1700000000, &Limits::default());
+        assert_eq!(result, Err(RelayError::InvalidKind));
+    }
+
+    #[test]
+    fn test_verify_content_too_large() {
+        let event = Event {
+            id: "id1".into(),
+            pubkey: "pk1".into(),
+            created_at: 1700000000,
+            kind: 13194,
+            tags: vec![],
+            content: "a".repeat(65537),
+            sig: "sig".into(),
+        };
+        let result = event.verify(1700000000, &Limits::default());
+        match result {
+            Err(RelayError::LimitExceeded(msg)) => assert!(msg.contains("content too large")),
+            _ => panic!("expected LimitExceeded, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_verify_kind_23196_missing_p_tag() {
+        let event = Event {
+            id: "id1".into(),
+            pubkey: "pk1".into(),
+            created_at: 1700000000,
+            kind: 23196,
+            tags: vec![],
+            content: "".into(),
+            sig: "sig".into(),
+        };
+        let result = event.verify(1700000000, &Limits::default());
+        assert_eq!(result, Err(RelayError::MissingTag("p".into())));
+    }
+
+    #[test]
+    fn test_verify_kind_23197_missing_p_tag() {
+        let event = Event {
+            id: "id2".into(),
+            pubkey: "pk1".into(),
+            created_at: 1700000000,
+            kind: 23197,
+            tags: vec![Tag::E("eid1".into(), vec![])],
+            content: "".into(),
+            sig: "sig".into(),
+        };
+        let result = event.verify(1700000000, &Limits::default());
+        assert_eq!(result, Err(RelayError::MissingTag("p".into())));
+    }
+
+    #[test]
+    fn test_verify_kind_23195_missing_p_tag() {
+        let event = Event {
+            id: "id3".into(),
+            pubkey: "pk1".into(),
+            created_at: 1700000000,
+            kind: 23195,
+            tags: vec![Tag::E("eid1".into(), vec![])],
+            content: "".into(),
+            sig: "sig".into(),
+        };
+        let result = event.verify(1700000000, &Limits::default());
+        assert_eq!(result, Err(RelayError::MissingTag("p".into())));
+    }
+
+    #[test]
+    fn test_verify_kind_23195_missing_e_tag() {
+        let event = Event {
+            id: "id4".into(),
+            pubkey: "pk1".into(),
+            created_at: 1700000000,
+            kind: 23195,
+            tags: vec![Tag::p("pk2")],
+            content: "".into(),
+            sig: "sig".into(),
+        };
+        let result = event.verify(1700000000, &Limits::default());
+        assert_eq!(result, Err(RelayError::MissingTag("e".into())));
+    }
+
+    #[test]
+    fn test_verify_kind_23196_with_p_tag_passes_kind_check() {
+        let event = Event {
+            id: "id5".into(),
+            pubkey: "pk1".into(),
+            created_at: 1700000000,
+            kind: 23196,
+            tags: vec![Tag::p("pk2")],
+            content: "".into(),
+            sig: "badsig".into(),
+        };
+        let result = event.verify(1700000000, &Limits::default());
+        match result {
+            Err(RelayError::InvalidId) | Err(RelayError::InvalidSignature) => {}
+            Err(e) => panic!("expected id/sig error for kind 23196 with p tag, got {:?}", e),
+            Ok(_) => panic!("expected error for kind 23196 with bad sig"),
+        }
+    }
 }

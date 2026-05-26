@@ -9,7 +9,7 @@ use std::cell::Cell;
 
 #[cfg(test)]
 thread_local! {
-    static TEST_TIME: Cell<u64> = Cell::new(1700000000);
+    static TEST_TIME: Cell<u64> = const { Cell::new(1700000000) };
 }
 
 #[cfg(test)]
@@ -468,12 +468,8 @@ mod tests {
 
             // Routed EVENT SHOULD go to connection 100 as Send
             assert!(responses.iter().any(|r| {
-                if let EngineResponse::Send { recipient_id, message } = r {
-                    if let RelayMessage::Event(_, event) = message {
-                        *recipient_id == 100 && event.id == "resp1"
-                    } else {
-                        false
-                    }
+                if let EngineResponse::Send { recipient_id, message: RelayMessage::Event(_, event) } = r {
+                    *recipient_id == 100 && event.id == "resp1"
                 } else {
                     false
                 }
@@ -507,12 +503,8 @@ mod tests {
             let responses = engine.process_event(2, event).await;
 
             assert!(responses.iter().any(|r| {
-                if let EngineResponse::Send { recipient_id, message } = r {
-                    if let RelayMessage::Event(_, event) = message {
-                        *recipient_id == 100 && event.id == "event1"
-                    } else {
-                        false
-                    }
+                if let EngineResponse::Send { recipient_id, message: RelayMessage::Event(_, event) } = r {
+                    *recipient_id == 100 && event.id == "event1"
                 } else {
                     false
                 }
@@ -671,10 +663,8 @@ mod tests {
             let responses = engine.handle_typed(1, msg).await;
 
             let ok_response = responses.iter().find_map(|r| {
-                if let EngineResponse::Send { message, .. } = r {
-                    if let RelayMessage::Ok(_, success, msg) = message {
-                        Some((success, msg.clone()))
-                    } else { None }
+                if let EngineResponse::Send { message: RelayMessage::Ok(_, success, msg), .. } = r {
+                    Some((success, msg.clone()))
                 } else { None }
             });
 
@@ -698,10 +688,8 @@ mod tests {
             let responses = engine.handle_typed(1, msg).await;
 
             let ok_response = responses.iter().find_map(|r| {
-                if let EngineResponse::Send { message, .. } = r {
-                    if let RelayMessage::Ok(_, success, msg) = message {
-                        Some((success, msg.clone()))
-                    } else { None }
+                if let EngineResponse::Send { message: RelayMessage::Ok(_, success, msg), .. } = r {
+                    Some((success, msg.clone()))
                 } else { None }
             });
 
@@ -815,6 +803,113 @@ mod tests {
             engine.process_deletion_event(&deletion_event).await;
 
             assert!(engine.get_wallet_info("alice").await.is_none());
+        });
+    }
+
+    #[test]
+    fn test_validate_event_rejects_invalid_kind() {
+        let engine = NostrEngine::new();
+        let event = Event {
+            id: "id1".into(),
+            pubkey: "pk1".into(),
+            created_at: test_now(),
+            kind: 1,
+            tags: vec![],
+            content: "".into(),
+            sig: "sig".into(),
+        };
+        let result = engine.validate_event(&event);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().1.contains("kind not allowed"));
+    }
+
+    #[test]
+    fn test_validate_event_accepts_valid_kind() {
+        let engine = NostrEngine::new();
+        let event = Event {
+            id: "id1".into(),
+            pubkey: "pk1".into(),
+            created_at: test_now(),
+            kind: 13194,
+            tags: vec![],
+            content: "".into(),
+            sig: "badsig".into(),
+        };
+        let result = engine.validate_event(&event);
+        assert!(result.is_err()); // fails at signature, not kind
+        assert!(!result.unwrap_err().1.contains("kind not allowed"));
+    }
+
+    #[test]
+    fn test_route_verified_event_with_info_kind() {
+        futures::executor::block_on(async {
+            let mut engine = NostrEngine::new();
+            engine.on_connect(1).await;
+
+            // Subscribe to track info events
+            let info_event = Event {
+                id: "info1".into(),
+                pubkey: "alice".into(),
+                created_at: test_now(),
+                kind: 13194,
+                tags: vec![],
+                content: "wallet info".into(),
+                sig: "sig1".into(),
+            };
+
+            let _ = engine.route_verified_event(1, info_event.clone()).await;
+            // route_verified_event does NOT send OK (caller's job) — just caches + routes
+            // Verify info was cached
+            assert!(engine.get_wallet_info("alice").await.is_some());
+        });
+    }
+
+    #[test]
+    fn test_handle_close_removes_subscription() {
+        futures::executor::block_on(async {
+            let mut engine = NostrEngine::new();
+            engine.on_connect(1).await;
+
+            let msg = ClientMessage::Close("sub1".into());
+            let responses = engine.handle_typed(1, msg).await;
+            // Close should not produce any responses
+            assert!(responses.is_empty());
+        });
+    }
+
+    #[test]
+    fn test_on_terminate_removes_state() {
+        futures::executor::block_on(async {
+            let mut engine = NostrEngine::new();
+            engine.on_connect(1).await;
+
+            let _ = engine.process_req(1, "sub1".into(), vec![Filter {
+                authors: Some(vec!["alice".into()]),
+                ..Default::default()
+            }]).await;
+
+            assert!(engine.has_subscription(1, "sub1"));
+
+            engine.on_terminate(1).await;
+            assert!(!engine.has_subscription(1, "sub1"));
+        });
+    }
+
+    #[test]
+    fn test_req_filter_too_broad() {
+        futures::executor::block_on(async {
+            let mut engine = NostrEngine::new();
+            engine.on_connect(1).await;
+
+            let msg = ClientMessage::Req("sub1".into(), vec![Filter::default()]);
+            let responses = engine.handle_typed(1, msg).await;
+            assert!(responses.iter().any(|r| {
+                if let EngineResponse::Send { message, .. } = r {
+                    matches!(message, RelayMessage::Closed(_, _))
+                } else {
+                    false
+                }
+            }));
         });
     }
 

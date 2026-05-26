@@ -1,3 +1,5 @@
+//! Utility functions: timestamp, string truncation, logging macros.
+
 pub fn now() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {

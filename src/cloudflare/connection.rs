@@ -18,7 +18,7 @@ impl WebSocketRegistry {
     }
 
     pub fn accept_and_register(&mut self, state: &State, id: u32, ws: &WebSocket) {
-        if let Err(e) = ws.serialize_attachment(&id) {
+        if let Err(e) = ws.serialize_attachment(id) {
             crate::log_warn!("serialize_attachment failed for conn={}: {}", id, e);
         }
         state.accept_web_socket(ws);

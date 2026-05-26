@@ -1,7 +1,12 @@
+//! Cloudflare Worker bindings: transport, durable object, KV, routing.
+
+pub mod auth;
 pub mod transport;
 pub mod durable_object;
 pub mod connection;
 pub mod kv;
+pub mod router;
+pub mod handler;
 
 pub use transport::CloudflareTransport;
 pub use durable_object::get_durable_stub;

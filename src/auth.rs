@@ -1,4 +1,5 @@
-use worker::Env;
+//! Access control: relay secret authentication via constant-time comparison.
+
 use sha2::{Sha256, Digest};
 
 #[derive(Debug, PartialEq)]
@@ -20,10 +21,6 @@ impl AccessPolicy {
             _ => None,
         };
         Self { expected_secret }
-    }
-
-    pub fn from_env(env: &Env) -> Self {
-        Self::new(env.var("RELAY_SECRET").map(|v| v.to_string()).ok())
     }
 
     /// Checks if the provided secret matches the expected policy.
@@ -146,5 +143,24 @@ mod tests {
         assert!(!constant_time_eq("🦀", "🐡"));
         assert!(constant_time_eq("こんにちは", "こんにちは"));
         assert!(!constant_time_eq("こんにちは", "こんばんは"));
+    }
+
+    #[test]
+    fn test_access_policy_new_some() {
+        let policy = AccessPolicy::new(Some("mypass".into()));
+        assert_eq!(policy.check_access("mypass"), Ok(()));
+        assert_eq!(policy.check_access("wrong"), Err(AuthError::Forbidden));
+    }
+
+    #[test]
+    fn test_access_policy_new_none() {
+        let policy = AccessPolicy::new(None);
+        assert_eq!(policy.check_access("anything"), Ok(()));
+    }
+
+    #[test]
+    fn test_access_policy_new_empty_string() {
+        let policy = AccessPolicy::new(Some("".into()));
+        assert_eq!(policy.check_access("anything"), Ok(()));
     }
 }

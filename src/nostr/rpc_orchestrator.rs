@@ -216,6 +216,22 @@ mod tests {
     }
 
     #[test]
+    fn test_malformed_relay_response() {
+        futures::executor::block_on(async {
+            let ctx = MockRpcContext::new();
+            let request = mock_request_event();
+
+            ctx.push_response(Ok("not json".to_string()));
+
+            let result = execute_nwc_rpc(&ctx, request).await;
+            match result {
+                Err(NwcError::ProtocolError(msg)) => assert!(msg.contains("malformed")),
+                other => panic!("expected ProtocolError with 'malformed', got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
     fn test_channel_closed() {
         futures::executor::block_on(async {
             let ctx = MockRpcContext::new();
