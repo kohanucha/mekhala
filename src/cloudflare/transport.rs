@@ -28,11 +28,20 @@ impl Storage for CloudflareStorage {
         self.storage.get(key).await.ok().flatten()
     }
     async fn put_batch(&self, entries: std::collections::HashMap<String, serde_json::Value>) {
-        self.storage.put_multiple(entries).await.ok();
+        if let Err(e) = self.storage.put_multiple(entries.clone()).await {
+            log_warn!("put_batch: put_multiple failed ({}), falling back to sequential puts", e);
+            for (k, v) in entries {
+                if let Err(e) = self.storage.put(&k, v).await {
+                    log_error!("put_batch: sequential put for '{}' failed: {}", k, e);
+                }
+            }
+        }
     }
     async fn delete_batch(&self, keys: Vec<String>) {
-        for k in keys {
-            let _ = self.storage.delete(&k).await;
+        for k in &keys {
+            if let Err(e) = self.storage.delete(k).await {
+                log_warn!("delete_batch: delete for '{}' failed: {}", k, e);
+            }
         }
     }
 }
