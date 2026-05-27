@@ -2,13 +2,15 @@ use std::collections::{HashMap, HashSet};
 use async_trait::async_trait;
 use serde_json::Value;
 use crate::log_debug;
+use crate::log_info;
+use crate::log_error;
 use crate::nostr::{Filter, Event, Limits};
 use crate::util::short;
 
 #[async_trait(?Send)]
 pub trait Storage {
     async fn get(&self, key: &str) -> Option<Value>;
-    async fn put_batch(&self, entries: HashMap<String, Value>);
+    async fn put_batch(&self, entries: HashMap<String, Value>) -> Result<(), String>;
     async fn delete_batch(&self, keys: Vec<String>);
 }
 
@@ -263,13 +265,15 @@ impl<S: Storage> WalletRegistry<S> {
             )));
         }
         self.index.subscribe(conn_id, sub_id, filters);
-        self.sync(conn_id).await;
+        self.sync(conn_id).await.map_err(|e| crate::nostr::RelayError::Generic(format!("persist failed: {}", e)))?;
         Ok(())
     }
 
     pub async fn unsubscribe(&mut self, conn_id: u32, sub_id: String) -> crate::nostr::Result<()> {
-        self.index.unsubscribe(conn_id, sub_id);
-        self.sync(conn_id).await;
+        self.index.unsubscribe(conn_id, sub_id.clone());
+        if let Err(e) = self.sync(conn_id).await {
+            log_error!("unsubscribe sync failed: conn={} sub={} err={}", conn_id, sub_id, e);
+        }
         Ok(())
     }
 
@@ -298,8 +302,11 @@ impl<S: Storage> WalletRegistry<S> {
         let key = format!("conn:{}", conn_id);
         if let Some(data) = self.storage.get(&key).await {
             self.index.restore(conn_id, data);
+            let count = self.index.get_subscriptions(conn_id).len();
+            log_info!("restored conn={} with {} subscriptions", conn_id, count);
             return true;
         }
+        log_debug!("load: conn={} not found in storage", conn_id);
         false
     }
 
@@ -332,7 +339,7 @@ impl<S: Storage> WalletRegistry<S> {
         } else if !stale.is_empty() {
             let mut entries = HashMap::new();
             entries.insert(key, serde_json::json!(loaded));
-            self.storage.put_batch(entries).await;
+            let _ = self.storage.put_batch(entries).await;
         }
         loaded
     }
@@ -368,7 +375,7 @@ impl<S: Storage> WalletRegistry<S> {
                 } else {
                     let mut entries = HashMap::new();
                     entries.insert(key, serde_json::json!(new_ids));
-                    self.storage.put_batch(entries).await;
+                    let _ = self.storage.put_batch(entries).await;
                 }
             }
         }
@@ -384,7 +391,7 @@ impl<S: Storage> WalletRegistry<S> {
         if !value.is_null() {
             let mut entries = HashMap::new();
             entries.insert(key, value);
-            self.storage.put_batch(entries).await;
+            let _ = self.storage.put_batch(entries).await;
         }
         self.index.cache_info(event);
     }
@@ -423,7 +430,7 @@ impl<S: Storage> WalletRegistry<S> {
         self.index.get_subscriptions(conn_id).contains_key(sub_id)
     }
 
-    async fn sync(&self, conn_id: u32) {
+    async fn sync(&self, conn_id: u32) -> Result<(), String> {
         if let Some(state) = self.index.save(conn_id) {
             let mut entries = HashMap::new();
             entries.insert(format!("conn:{}", conn_id), state.json);
@@ -435,10 +442,11 @@ impl<S: Storage> WalletRegistry<S> {
                 }
                 entries.insert(key, serde_json::json!(ids));
             }
-            self.storage.put_batch(entries).await;
+            self.storage.put_batch(entries).await?;
         } else {
             self.storage.delete_batch(vec![format!("conn:{}", conn_id)]).await;
         }
+        Ok(())
     }
 
     async fn read_pk_list(&self, key: &str) -> Vec<u32> {
@@ -462,12 +470,14 @@ pub mod tests {
 
     pub struct MockStorage {
         pub data: Arc<Mutex<HashMap<String, Value>>>,
+        pub fail_put_batch: bool,
     }
 
     impl MockStorage {
         pub fn new() -> Self {
             Self {
                 data: Arc::new(Mutex::new(HashMap::new())),
+                fail_put_batch: false,
             }
         }
     }
@@ -477,11 +487,15 @@ pub mod tests {
         async fn get(&self, key: &str) -> Option<Value> {
             self.data.lock().unwrap().get(key).cloned()
         }
-        async fn put_batch(&self, entries: HashMap<String, Value>) {
+        async fn put_batch(&self, entries: HashMap<String, Value>) -> Result<(), String> {
+            if self.fail_put_batch {
+                return Err("mock storage unavailable".into());
+            }
             let mut data = self.data.lock().unwrap();
             for (k, v) in entries {
                 data.insert(k, v);
             }
+            Ok(())
         }
         async fn delete_batch(&self, keys: Vec<String>) {
             let mut data = self.data.lock().unwrap();
@@ -496,7 +510,7 @@ pub mod tests {
     pub async fn simulate_hibernation(original: &MockStorage) -> WalletRegistry<MockStorage> {
         let snapshot = original.data.lock().unwrap().clone();
         let new_storage = MockStorage::new();
-        new_storage.put_batch(snapshot).await;
+        new_storage.put_batch(snapshot).await.unwrap();
         WalletRegistry::new(new_storage, Limits::default())
     }
 
@@ -704,7 +718,7 @@ pub mod tests {
                 },
                 "info_event": null
             }));
-            storage.put_batch(entries).await;
+            storage.put_batch(entries).await.unwrap();
             
             let mut registry = WalletRegistry::new(storage, Limits::default());
             
@@ -919,7 +933,7 @@ fn test_info_event_caching() {
             let storage = MockStorage::new();
             let mut entries = HashMap::new();
             entries.insert("pk:stale".to_string(), serde_json::json!(vec![99]));
-            storage.put_batch(entries).await;
+            storage.put_batch(entries).await.unwrap();
 
             let mut registry = WalletRegistry::new(storage, Limits::default());
 
@@ -948,6 +962,56 @@ fn test_info_event_caching() {
     }
 
     #[test]
+    fn test_subscribe_rejected_on_storage_failure() {
+        futures::executor::block_on(async {
+            let storage = MockStorage {
+                data: Arc::new(Mutex::new(HashMap::new())),
+                fail_put_batch: true,
+            };
+            let mut registry = WalletRegistry::new(storage, Limits::default());
+
+            let result = registry.subscribe(1, "sub1".into(), vec![Filter {
+                authors: Some(vec!["alice".into()]),
+                ..Default::default()
+            }]).await;
+
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("persist failed"), "expected persist failure, got: {}", err);
+            assert!(err.contains("mock storage unavailable"), "expected mock error message, got: {}", err);
+        });
+    }
+
+    #[test]
+    fn test_unsubscribe_graceful_on_storage_failure() {
+        futures::executor::block_on(async {
+            let storage = MockStorage::new();
+            let mut registry = WalletRegistry::new(storage, Limits::default());
+
+            // Subscribe with two subs so unsubscribing one still triggers put_batch
+            registry.subscribe(1, "sub1".into(), vec![Filter {
+                authors: Some(vec!["alice".into()]),
+                ..Default::default()
+            }]).await.unwrap();
+            registry.subscribe(1, "sub2".into(), vec![Filter {
+                authors: Some(vec!["alice".into()]),
+                ..Default::default()
+            }]).await.unwrap();
+
+            // Make storage fail
+            registry.storage.fail_put_batch = true;
+
+            // Unsubscribe should return Ok (logs error instead of propagating)
+            let result = registry.unsubscribe(1, "sub1".into()).await;
+            assert!(result.is_ok(), "unsubscribe should not propagate storage error");
+
+            // Subscription should be removed from memory
+            assert!(!registry.has_subscription(1, "sub1"), "sub1 should be removed in-memory");
+            assert!(registry.has_subscription(1, "sub2"), "sub2 should still exist");
+        });
+    }
+
+    #[test]
     fn test_delete_info_for_nonexistent_pubkey() {
         futures::executor::block_on(async {
             let storage = MockStorage::new();
@@ -970,7 +1034,7 @@ fn test_info_event_caching() {
                 },
                 "info_event": null
             }));
-            storage.put_batch(entries).await;
+            storage.put_batch(entries).await.unwrap();
 
             let mut registry = WalletRegistry::new(storage, Limits::default());
             let ids = registry.load_by_pubkey("single").await;
@@ -984,7 +1048,7 @@ fn test_info_event_caching() {
             let storage = MockStorage::new();
             let mut entries = HashMap::new();
             entries.insert("pk:weird".to_string(), serde_json::json!("string_value"));
-            storage.put_batch(entries).await;
+            storage.put_batch(entries).await.unwrap();
 
             let mut registry = WalletRegistry::new(storage, Limits::default());
             let ids = registry.load_by_pubkey("weird").await;
@@ -1028,7 +1092,7 @@ fn test_info_event_caching() {
             // Scenario 1: Route kind=23194 event — should match conn 1 (wallet)
             {
                 let storage2 = MockStorage::new();
-                storage2.put_batch(snapshot.clone()).await;
+                storage2.put_batch(snapshot.clone()).await.unwrap();
                 let mut registry2 = WalletRegistry::new(storage2, Limits::default());
 
                 let req_event = Event {
@@ -1050,7 +1114,7 @@ fn test_info_event_caching() {
             // Scenario 2: Route kind=23195 event — should match conn 2 (app)
             {
                 let storage3 = MockStorage::new();
-                storage3.put_batch(snapshot).await;
+                storage3.put_batch(snapshot).await.unwrap();
                 let mut registry3 = WalletRegistry::new(storage3, Limits::default());
 
                 let resp_event = Event {
