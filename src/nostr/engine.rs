@@ -530,7 +530,7 @@ mod tests {
                 },
                 "info_event": null
             }));
-            storage.put_batch(entries).await;
+            storage.put_batch(entries).await.unwrap();
             
             let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
 
@@ -910,6 +910,76 @@ mod tests {
                     false
                 }
             }));
+        });
+    }
+
+    #[test]
+    fn test_handle_req_returns_closed_on_storage_failure() {
+        futures::executor::block_on(async {
+            use std::sync::{Arc, Mutex};
+            use std::collections::HashMap;
+            let storage = super::super::wallet_registry::tests::MockStorage {
+                data: Arc::new(Mutex::new(HashMap::new())),
+                fail_put_batch: true,
+            };
+            let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
+            engine.on_connect(1).await;
+
+            let responses = engine.handle_req(1, "sub1".into(), vec![Filter {
+                kinds: Some(vec![23194]),
+                authors: Some(vec!["alice".into()]),
+                ..Default::default()
+            }]).await;
+
+            assert_eq!(responses.len(), 1, "should only have CLOSED response");
+            match &responses[0] {
+                EngineResponse::Send { recipient_id, message } => {
+                    assert_eq!(*recipient_id, 1);
+                    match message {
+                        RelayMessage::Closed(sub_id, reason) => {
+                            assert_eq!(sub_id, "sub1");
+                            assert!(reason.contains("persist failed"), "reason should mention persist failure, got: {}", reason);
+                        }
+                        other => panic!("expected CLOSED, got: {:?}", other),
+                    }
+                }
+                other => panic!("expected EngineResponse::Send, got: {:?}", other),
+            }
+        });
+    }
+
+    #[test]
+    fn test_handle_req_internal_returns_closed_on_storage_failure() {
+        futures::executor::block_on(async {
+            use std::sync::{Arc, Mutex};
+            use std::collections::HashMap;
+            let storage = super::super::wallet_registry::tests::MockStorage {
+                data: Arc::new(Mutex::new(HashMap::new())),
+                fail_put_batch: true,
+            };
+            let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
+            engine.on_connect(1).await;
+
+            let responses = engine.handle_req_internal(1, "sub1".into(), vec![Filter {
+                kinds: Some(vec![23194]),
+                authors: Some(vec!["alice".into()]),
+                ..Default::default()
+            }]).await;
+
+            assert_eq!(responses.len(), 1, "should only have CLOSED response");
+            match &responses[0] {
+                EngineResponse::Send { recipient_id, message } => {
+                    assert_eq!(*recipient_id, 1);
+                    match message {
+                        RelayMessage::Closed(sub_id, reason) => {
+                            assert_eq!(sub_id, "sub1");
+                            assert!(reason.contains("persist failed"), "reason should mention persist failure, got: {}", reason);
+                        }
+                        other => panic!("expected CLOSED, got: {:?}", other),
+                    }
+                }
+                other => panic!("expected EngineResponse::Send, got: {:?}", other),
+            }
         });
     }
 

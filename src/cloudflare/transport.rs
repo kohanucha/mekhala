@@ -3,6 +3,10 @@ use std::time::Duration;
 use futures::channel::oneshot;
 use futures::lock::Mutex;
 use futures_util::FutureExt;
+use js_sys::{Object, Reflect};
+use serde::Serialize;
+use serde_wasm_bindgen::Serializer;
+use wasm_bindgen::JsValue;
 use worker::*;
 use crate::nostr::engine::{NostrEngine, EngineResponse};
 use crate::nostr::wallet_registry::Storage;
@@ -27,15 +31,16 @@ impl Storage for CloudflareStorage {
     async fn get(&self, key: &str) -> Option<serde_json::Value> {
         self.storage.get(key).await.ok().flatten()
     }
-    async fn put_batch(&self, entries: std::collections::HashMap<String, serde_json::Value>) {
-        if let Err(e) = self.storage.put_multiple(entries.clone()).await {
-            log_warn!("put_batch: put_multiple failed ({}), falling back to sequential puts", e);
-            for (k, v) in entries {
-                if let Err(e) = self.storage.put(&k, v).await {
-                    log_error!("put_batch: sequential put for '{}' failed: {}", k, e);
-                }
+    async fn put_batch(&self, entries: std::collections::HashMap<String, serde_json::Value>) -> Result<(), String> {
+        let obj = Object::new();
+        for (k, v) in &entries {
+            let key = JsValue::from(k.as_str());
+            if let Ok(val) = v.serialize(&Serializer::json_compatible()) {
+                let _ = Reflect::set(&obj, &key, &val);
             }
         }
+        self.storage.put_multiple_raw(obj).await.map_err(|e| e.to_string())?;
+        Ok(())
     }
     async fn delete_batch(&self, keys: Vec<String>) {
         for k in &keys {
@@ -317,6 +322,9 @@ impl CloudflareTransport {
         match action {
             crate::nostr::rpc_machine::RpcAction::Subscribe(sub_id, filter) => {
                 let responses = engine.handle_req_internal(conn_id, sub_id, vec![filter]).await;
+                if responses.iter().any(|r| matches!(r, EngineResponse::Send { message: RelayMessage::Closed(..), .. })) {
+                    return Err(crate::common::NwcError::ProtocolError("subscribe rejected: storage unavailable".into()));
+                }
                 self.process_responses(responses, engine).await.map_err(|e| crate::common::NwcError::ProtocolError(e.to_string()))?;
             }
             crate::nostr::rpc_machine::RpcAction::Publish(event) => {
