@@ -32,6 +32,7 @@ impl Storage for CloudflareStorage {
         self.storage.get(key).await.ok().flatten()
     }
     async fn put_batch(&self, entries: std::collections::HashMap<String, serde_json::Value>) -> Result<(), String> {
+        // See docs/put_multiple_raw.md for why we use put_multiple_raw + Object.
         let obj = Object::new();
         for (k, v) in &entries {
             let key = JsValue::from(k.as_str());
