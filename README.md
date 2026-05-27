@@ -1,74 +1,70 @@
 # Mekhala - เมขลา ⚡️
 
-**A private, stateless Nostr relay optimized for NIP-47 (NWC) on Cloudflare Workers.**
+**A private, stateless Nostr relay optimized for Nostr Wallet Connect (NIP-47) on Cloudflare Workers.**
 
-> According to legend, the phenomena of lightning and thunder is produced from the flashing of Manimekhala's crystal ball.
+> According to legend, the phenomena of lightning and thunder are produced by the flashing of Manimekhala's crystal ball.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Rust: Wasm32](https://img.shields.io/badge/Rust-Wasm32-orange.svg)](https://www.rust-lang.org/)
+[![Cloudflare: Durable Objects](https://img.shields.io/badge/Cloudflare-Durable%20Objects-7A3E9D.svg)](https://developers.cloudflare.com/durable-objects/)
 
 ---
 
 ## 📖 Overview
 
-Mekhala is a specialized relay designed to act as a private communication bridge between Lightning applications (like Amethyst or Alby) and your wallet:
+Mekhala is a specialized, ephemeral Nostr relay built in Rust and compiled to WebAssembly. It acts as a private, zero-persistence communication bridge between Lightning wallet applications (e.g. Alby, Amethyst) and your wallet node:
 
-- **Stateless Architecture:** No persistent database is used. Events are processed in-memory and routed to active subscribers instantly.
-- **Privacy-First:** Access is restricted via a secret path to ensure the relay remains for personal use only.
-- **Resource Efficient:** Built with Rust/WebAssembly to run within the constraints of the Cloudflare Workers Free Tier.
-
----
-
-## 📦 Setup Guide
-
-1. **Fork this repository:** Create a copy of this project in your own GitHub account.
-2. **Deploy to Cloudflare:** 
-   - Log in to your [Cloudflare Dashboard](https://dash.cloudflare.com/).
-   - Navigate to **Workers & Pages** -> **Create application** -> **Connect to Git**.
-   - Select your `mekhala` repository and click **Save and Deploy**.
-3. **Set up your Secret Path:** 
-   - In your Worker dashboard, go to **Settings** -> **Variables and Secrets**.
-   - Add a new **Secret** named `RELAY_SECRET`. 
-   - Enter a long, unique string (e.g., `my-private-relay-secret-123`). This string will be used as your private access path.
-   - Click **Save and Deploy**.
-
-**Your Relay URL:** `wss://your-worker-name.workers.dev/your-secret-path`
+- **100% Stateless:** No event history or database storage. All events are routed instantly in-memory.
+- **WebSocket Hibernation:** Uses Cloudflare Durable Objects to hibernate idle connections, waking up seamlessly when new events arrive to save resources.
+- **Strictly Specialized:** Only routes NWC-related event kinds (`13194`, `23194-23197`). Social and generic Nostr events are rejected.
 
 ---
 
-## ⚠️ Project Status
+## 📦 Quick Setup
 
-### 🚧 Lightning Address Bridge (Experimental)
-The feature to bridge Lightning Addresses (e.g., `you@domain.com`) to NWC is **currently in progress**. It requires advanced manual configuration of Cloudflare KV namespaces and is not yet recommended for general use.
+1. **Fork & Deploy:**
+   - Fork this repository to your GitHub account.
+   - Connect it to your [Cloudflare Dashboard](https://dash.cloudflare.com/) via **Workers & Pages** -> **Create application** -> **Connect to Git** and deploy.
+2. **Configure Private Path:**
+   - Under your Worker's **Settings** -> **Variables and Secrets**, add a Secret named `RELAY_SECRET`.
+   - Set it to a long, secure, unique path identifier.
+3. **Connect Your Wallet:**
+   - **Your Relay URL:** `wss://your-worker.workers.dev/<your-secret-path>`
 
-### External Wallet Services
-If you use third-party services like Alby, they may require connections to their own relays. It is recommended to keep your wallet connected to **both** this private relay and your provider's default relay to ensure full compatibility.
+> [!WARNING]
+> **Lightning Address Bridge (Experimental):** The feature to bridge Lightning Addresses (e.g., `you@domain.com`) to NWC is highly experimental, under development, and not yet ready for production or general use.
 
 ---
 
-## 🔒 Security & Limits
+## ⚙️ Configuration & Limits
 
-Mekhala is pre-configured with restrictive limits optimized for a single user:
-- **Max Connections:** 20 (Supports multiple devices for one user).
-- **Max Content Length:** 16 KB (Fits encrypted invoices and history).
-- **Max Tags:** 10 (Restricts metadata bloating).
+Configurable via `wrangler.toml` or environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `RELAY_SECRET` | *None* | Optional secret path parameter for private routing. |
+| `WALLET_REGION` | `apac` | Physical DO location (`apac`, `weur`, `wnam`). |
+| `MAX_CONNECTIONS` | `100` | Max concurrent WebSocket connections per DO. |
+| `MAX_CONTENT_LENGTH` | `65536` | Max Nostr event size in bytes (16KB to 64KB recommended). |
 
 ---
 
 ## 🛠 For Developers
 
-### Supported Protocols
-- **NIP-01:** Basic protocol (Stateless REQ/EVENT flow).
-- **NIP-11:** Relay Information (NWC capability discovery).
-- **NIP-47:** Nostr Wallet Connect (Info, Request, Response, and Notifications).
-- **LUD-06/16:** (In Progress) LN Address to NWC bridging via Cloudflare KV.
+### Common Commands
+- **Build WASM:** `./scripts/build.sh` (Requires Rust + `wasm32` target + `worker-build`)
+- **Local Dev:** `npx wrangler dev` (Runs locally on port `8787`)
+- **Unit Tests:** `cargo test`
+- **Integration Tests:** `./scripts/test.sh` (Runs E2E compilation, DO setup, and Node.js checks)
 
-### Local Development
-- **Build:** `./scripts/build.sh` (Requires `worker-build` and `wasm-pack`).
-- **Dev Server:** `npx wrangler dev`.
-- **Unit Tests:** `cargo test`.
-- **Integration Tests:** `./scripts/test.sh` (Comprehensive Rust + Node.js E2E suite).
+### Coding Standards
+Mekhala compiles with `panic = "abort"`. To prevent isolates from crashing:
+- **No panics:** Never use `unwrap()` or `expect()`. Handle errors with `?` or `match`.
+- **Safe indexing:** Use `.get()` for slice/array access instead of bracket notation.
+- **Storage state:** Every subscription update must call `sync()` to ensure active filters survive DO hibernation.
 
-### Environment Variables
-- `RELAY_SECRET`: Path-based secret for authentication.
-- `WALLET_REGION`: (Optional) Physical location for the Durable Object (`apac`, `weur`, `wnam`).
-- `MAX_CONNECTIONS`, `MAX_FILTER_ITEMS`, `MAX_EVENT_TAGS`, `MAX_CONTENT_LENGTH`: Configurable limits in `wrangler.toml`.
+---
+
+## 📄 License
+
+Mekhala is open-source software under the [MIT License](LICENSE).
