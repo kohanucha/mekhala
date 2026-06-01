@@ -58,6 +58,27 @@ Default vocabulary. See `docs/agents/triage-labels.md`.
 
 Single-context layout. See `docs/agents/domain.md`.
 
+## Testing Conventions
+
+### Test file layout
+- Each source file has a sibling `*_test.rs` wired via `#[cfg(test)] #[path = "..."] mod xxx_test;` — **no `mod tests { }` blocks in source files**.
+- The only `#[cfg(test)]` item in a source file is the `mod xxx_test;` declaration. All test code (functions, helpers, impls) lives in the test file.
+
+### Shared test utilities
+- `MockStorage`, `simulate_hibernation`, and similar cross-module test helpers live in `src/common/test_helpers.rs`.
+- Import with `use crate::common::test_helpers::*;`.
+
+### Async tests
+- Use `futures::executor::block_on(async { ... })` inside `#[test]` functions.
+
+### Private field access
+- Test files are child modules of the source file they test, so they can access private fields directly.
+- Prefer **standalone functions** over inherent methods for test helpers (e.g. `fn new_engine()` instead of `impl NostrEngine<MockStorage> { pub fn new() }`).
+
+### Time mocking
+- `TEST_TIME` thread_local, `test_now()`, and `set_test_time()` live in `engine_test.rs`.
+- Available to all tests in that file via direct module scope.
+
 ## Coverage Gate
 - Maintain ≥90% line coverage on testable modules (everything outside `cloudflare/`)
 - Run: `cargo llvm-cov --ignore-filename-regex 'cloudflare/' --fail-under-lines 90`
