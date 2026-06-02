@@ -17,7 +17,7 @@ use super::*;
     #[test]
     fn test_limits_serde_roundtrip() {
         let limits = Limits::new(99999, 42);
-        let json = serde_json::to_value(&limits).unwrap();
+        let json = serde_json::to_value(limits).unwrap();
         let deserialized: Limits = serde_json::from_value(json).unwrap();
         assert_eq!(deserialized.max_content_length, 99999);
         assert_eq!(deserialized.max_subscriptions_per_connection, 42);
