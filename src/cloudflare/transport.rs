@@ -13,8 +13,9 @@ use crate::nostr::wallet_registry::Storage;
 use crate::nostr::Limits;
 use crate::nostr::rpc_machine::{NwcRpcMachine, RpcState};
 use crate::nostr::RelayMessage;
+use crate::cloudflare::config::CloudflareConfig;
 use crate::cloudflare::create_cors_response;
-use crate::cloudflare::connection::{WebSocketRegistry, InternalConnectionMap};
+use crate::cloudflare::connection::ConnectionRegistry;
 use crate::cloudflare::kv::CloudflareKvStore;
 use crate::util::short;
 use crate::log_info;
@@ -59,35 +60,27 @@ struct IdCounterState {
 
 #[durable_object]
 pub struct CloudflareTransport {
-    env: Env,
+    config: CloudflareConfig,
     state: State,
     engine: Mutex<NostrEngine<CloudflareStorage>>,
-    websockets: RefCell<WebSocketRegistry>,
-    internal: RefCell<InternalConnectionMap>,
+    connections: RefCell<ConnectionRegistry>,
     id_counter: Mutex<IdCounterState>,
     kv: CloudflareKvStore,
 }
 
 impl DurableObject for CloudflareTransport {
     fn new(state: State, env: Env) -> Self {
+        let config = CloudflareConfig::from_env(&env);
         let storage = CloudflareStorage { storage: state.storage() };
-        let limits = Limits::new(
-            env.var("MAX_CONTENT_LENGTH")
-                .and_then(|v| v.to_string().parse::<usize>().map_err(|e| Error::from(e.to_string())))
-                .unwrap_or(65536),
-            env.var("MAX_SUBSCRIPTIONS_PER_CONNECTION")
-                .and_then(|v| v.to_string().parse::<usize>().map_err(|e| Error::from(e.to_string())))
-                .unwrap_or(100),
-        );
+        let limits = Limits::new(config.max_content_length, config.max_subscriptions_per_connection);
         let engine = NostrEngine::new_with_storage(storage, limits, crate::util::now);
         let kv = CloudflareKvStore::new(env.kv("MEKHALA_NWC_KV").expect("MEKHALA_NWC_KV not configured"));
 
         Self {
-            env,
+            config,
             state,
             engine: Mutex::new(engine),
-            websockets: RefCell::new(WebSocketRegistry::new()),
-            internal: RefCell::new(InternalConnectionMap::new()),
+            connections: RefCell::new(ConnectionRegistry::new()),
             id_counter: Mutex::new(IdCounterState { current_id: 0, id_limit: 0 }),
             kv,
         }
@@ -239,7 +232,7 @@ impl crate::common::NwcTransport for CloudflareTransport {
         // Phase 3: cleanup — always disconnect, removing all subscriptions
         let mut engine = self.engine.lock().await;
         let _ = engine.on_disconnect(id).await;
-        self.internal.borrow_mut().remove(id);
+        self.connections.borrow_mut().remove(id);
 
         result
     }
@@ -269,7 +262,7 @@ impl CloudflareTransport {
 
     fn route_send(&self, id: u32, message: String) -> bool {
         log_info!("→ conn={} SEND {}", id, message);
-        if self.websockets.borrow_mut().send(id, message.clone()) || self.internal.borrow_mut().send(id, message) {
+        if self.connections.borrow_mut().send(id, message) {
             true
         } else {
             log_warn!("✗ send failed: conn={} not found", id);
@@ -287,7 +280,7 @@ impl CloudflareTransport {
             }
 
             let (tx, rx) = oneshot::channel();
-            self.internal.borrow_mut().add(id, tx);
+            self.connections.borrow_mut().add_internal(id, tx);
 
             let delay = Delay::from(Duration::from_secs(remaining)).fuse();
             let pinned_rx = rx.fuse();
@@ -343,13 +336,13 @@ impl CloudflareTransport {
 
     async fn load_connection_with_handler(&self, pubkey: &str, engine: &mut NostrEngine<CloudflareStorage>) -> Result<Option<u32>> {
         if let Some(id) = engine.load_by_pubkey(pubkey).await.into_iter().next() {
-            let ws = self.websockets.borrow().find_by_id(&self.state, id);
+            let ws = self.connections.borrow().find_ws_by_id(&self.state, id);
             if let Some(ws) = ws {
                 let _ = self.wake_up_with_handler(&ws, engine).await;
                 return Ok(Some(id));
             }
 
-            let all_ws = self.websockets.borrow().get_all_websockets(&self.state);
+            let all_ws = self.connections.borrow().get_all_websockets(&self.state);
             for ws in all_ws {
                 if let Some(actual_id) = self.wake_up_with_handler(&ws, engine).await {
                     if actual_id == id {
@@ -363,7 +356,7 @@ impl CloudflareTransport {
     }
 
     async fn wake_up_with_handler(&self, ws: &WebSocket, engine: &mut NostrEngine<CloudflareStorage>) -> Option<u32> {
-        let id = match self.websockets.borrow().identify(ws) {
+        let id = match self.connections.borrow().identify(ws) {
             Some(id) => id,
             None => {
                 log_warn!("wake_up: identify failed for ws");
@@ -373,15 +366,13 @@ impl CloudflareTransport {
 
         let _ = engine.load(id).await;
 
-        self.websockets.borrow_mut().add_active(id, ws.clone());
+        self.connections.borrow_mut().insert_active(id, ws.clone());
         log_debug!("↻ wake conn={}", id);
         Some(id)
     }
 
     async fn accept_new_connection(&self) -> Result<Response> {
-        let max_connections = self.env.var("MAX_CONNECTIONS")
-            .and_then(|v| v.to_string().parse::<usize>().map_err(|e| Error::from(e.to_string())))
-            .unwrap_or(100);
+        let max_connections = self.config.max_connections;
 
         let WebSocketPair { client, server } = WebSocketPair::new()?;
 
@@ -390,19 +381,19 @@ impl CloudflareTransport {
 
         // 2. Accept + register atomically with count re-check inside borrow_mut
         {
-            let mut websockets = self.websockets.borrow_mut();
-            if websockets.len(&self.state) >= max_connections {
+            let mut connections = self.connections.borrow_mut();
+            if connections.len(&self.state) >= max_connections {
                 log_warn!("✗ connection rejected: max={} connections reached", max_connections);
                 return Response::error("Too Many Requests", 429);
             }
-            websockets.accept_and_register(&self.state, connection_id, &server);
+            connections.accept_and_register(&self.state, connection_id, &server);
         }
 
         // 3. NOW safe to await — WS is accepted and in HashMap
         let mut engine = self.engine.lock().await;
         let responses = engine.on_connect(connection_id).await;
 
-        log_info!("+ conn={} accepted count={}/{}", connection_id, self.websockets.borrow().len(&self.state), max_connections);
+        log_info!("+ conn={} accepted count={}/{}", connection_id, self.connections.borrow().len(&self.state), max_connections);
 
         self.process_responses(responses, &mut engine).await?;
 
@@ -415,7 +406,7 @@ impl CloudflareTransport {
             log_info!("- conn={} disconnected", id);
             let responses = engine.on_terminate(id).await;
             self.process_responses(responses, &mut engine).await?;
-            self.websockets.borrow_mut().remove(id);
+            self.connections.borrow_mut().remove(id);
         }
         Ok(())
     }
@@ -427,7 +418,7 @@ impl CloudflareTransport {
                     self.route_send(recipient_id, message.to_json());
                 }
                 EngineResponse::WakeUp { connection_id } => {
-                    let ws = self.websockets.borrow().find_by_id(&self.state, connection_id);
+                    let ws = self.connections.borrow().find_ws_by_id(&self.state, connection_id);
                     if let Some(ws) = ws {
                         let _ = self.wake_up_with_handler(&ws, engine).await;
                     }
@@ -439,7 +430,8 @@ impl CloudflareTransport {
 }
 
 pub async fn connect(req: Request, env: &Env) -> Result<Response> {
-    crate::cloudflare::get_durable_stub(env)?.fetch_with_request(req).await
+    let config = CloudflareConfig::from_env(env);
+    crate::cloudflare::get_durable_stub(env, config.wallet_region.as_deref())?.fetch_with_request(req).await
 }
 
 pub fn create_response(info: serde_json::Value, content_type: &str) -> Result<Response> {

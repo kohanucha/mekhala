@@ -1,5 +1,6 @@
 use crate::auth::AuthError;
 use crate::cloudflare::auth;
+use crate::cloudflare::config::CloudflareConfig;
 use crate::cloudflare::{apply_security_headers, create_cors_response, CloudflareKvStore};
 use crate::cloudflare::handler::LnAddressHandler;
 use worker::*;
@@ -54,7 +55,8 @@ fn handle_options() -> Result<Response> {
 }
 
 fn handle_auth(_req: &Request, ctx: &RouteContext<()>) -> Result<Option<Response>> {
-    let policy = auth::from_env(&ctx.env);
+    let config = CloudflareConfig::from_env(&ctx.env);
+    let policy = auth::from_config(&config);
     let provided_secret = ctx.param("secret").map(|s| s.as_str()).unwrap_or_default();
 
     match policy.check_access(provided_secret) {
