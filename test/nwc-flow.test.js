@@ -597,9 +597,9 @@ export async function testMaxConnections() {
   });
 
   const cleanup = () => {
-    try { wranglerProcess.kill("SIGKILL"); } catch (e) {}
-    // Kill any remaining processes on the limit port
-    try { execSync(`lsof -ti :${LIMIT_PORT} | xargs kill -9 2>/dev/null || true`); } catch (e) {}
+    try { wranglerProcess.kill("SIGTERM"); } catch (e) {}
+    // Synchronous fallback: kill anything still on the limit port
+    try { execSync(`sleep 1 && lsof -ti :${LIMIT_PORT} | xargs kill -9 2>/dev/null || true`); } catch (e) {}
   };
 
   let serverReady = false;

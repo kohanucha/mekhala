@@ -6,7 +6,7 @@ LOG_FILE="test/wrangler.log"
 
 # --- Pre-flight: kill stale processes from prior runs ---
 pkill -9 -f "npm exec wrangler" 2>/dev/null || true
-pkill -9 -f "node.*wrangler" 2>/dev/null || true
+pkill -9 -f "workerd" 2>/dev/null || true
 
 # --- Cleanup Function ---
 cleanup() {
@@ -23,9 +23,8 @@ cleanup() {
         # SIGKILL if still alive
         kill -9 $WRANGLER_PID 2>/dev/null
     fi
-    # Safety net: kill any remaining wrangler/node processes (children, grandchildren)
+    # Safety net: kill any remaining wrangler/workerd processes
     pkill -9 -f "npm exec wrangler" 2>/dev/null || true
-    pkill -9 -f "node.*wrangler" 2>/dev/null || true
     pkill -9 -f "workerd" 2>/dev/null || true
     # Port 8788 cleanup (from testMaxConnections)
     lsof -ti :8788 2>/dev/null | xargs kill -9 2>/dev/null || true
