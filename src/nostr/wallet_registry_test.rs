@@ -1,9 +1,10 @@
 use super::*;
-use crate::common::test_helpers::*;
+use crate::common::test_helpers::{MockStorage, simulate_hibernation, seed_subscription};
 use crate::nostr::Tag;
-use std::sync::{Arc, Mutex};
 
-
+fn has_subscription(registry: &WalletRegistry<MockStorage>, conn_id: u32, sub_id: &str) -> bool {
+    registry.index.get_subscriptions(conn_id).contains_key(sub_id)
+}
 
 #[test]
 fn test_registry_sub_persistence() {
@@ -187,15 +188,10 @@ fn test_registry_lazy_load() {
         let wallet_pk = "hibernated_pk";
         let conn_id = 42;
         
-        let mut entries = HashMap::new();
-        entries.insert(format!("pk:{}", wallet_pk), serde_json::json!(vec![conn_id]));
-        entries.insert(format!("conn:{}", conn_id), serde_json::json!({
-            "subscriptions": {
-                "sub1": [{"#p": [wallet_pk]}]
-            },
-            "info_event": null
-        }));
-        storage.put_batch(entries).await.unwrap();
+        seed_subscription(&storage, conn_id, "sub1", wallet_pk, vec![Filter {
+            p_tags: Some(vec![wallet_pk.into()]),
+            ..Default::default()
+        }]).await;
         
         let mut registry = WalletRegistry::new(storage, Limits::default());
         
@@ -357,7 +353,7 @@ fn test_delete_info_preserves_subscriptions() {
         registry.delete_info("alice").await;
 
         assert!(registry.get_info("alice").await.is_none());
-        assert!(registry.has_subscription(1, "sub1"));
+        assert!(has_subscription(&registry, 1, "sub1"));
     });
 }
 
@@ -394,7 +390,7 @@ fn test_registry_terminate() {
         let data = registry.storage.data.lock().unwrap();
         assert!(!data.contains_key("conn:1"));
         assert!(!data.contains_key("pk:alice"));
-        assert!(!registry.has_subscription(1, "sub1"));
+        assert!(!has_subscription(&registry, 1, "sub1"));
     });
 }
 
@@ -435,10 +431,7 @@ fn test_subscription_limit_exceeded() {
 #[test]
 fn test_subscribe_rejected_on_storage_failure() {
     futures::executor::block_on(async {
-        let storage = MockStorage {
-            data: Arc::new(Mutex::new(HashMap::new())),
-            fail_put_batch: true,
-        };
+        let storage = MockStorage::with_fail();
         let mut registry = WalletRegistry::new(storage, Limits::default());
 
         let result = registry.subscribe(1, "sub1".into(), vec![Filter {
@@ -473,8 +466,8 @@ fn test_unsubscribe_graceful_on_storage_failure() {
         let result = registry.unsubscribe(1, "sub1".into()).await;
         assert!(result.is_ok(), "unsubscribe should not propagate storage error");
 
-        assert!(!registry.has_subscription(1, "sub1"), "sub1 should be removed in-memory");
-        assert!(registry.has_subscription(1, "sub2"), "sub2 should still exist");
+        assert!(!has_subscription(&registry, 1, "sub1"), "sub1 should be removed in-memory");
+        assert!(has_subscription(&registry, 1, "sub2"), "sub2 should still exist");
     });
 }
 

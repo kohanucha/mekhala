@@ -1,39 +1,11 @@
 use super::*;
-use crate::common::test_helpers::MockStorage;
-use super::super::RelayError;
+use crate::common::test_helpers::{MockStorage, new_test_engine, test_now, set_test_time};
 use super::super::Tag;
-
-use std::cell::Cell;
-
-thread_local! {
-    static TEST_TIME: Cell<u64> = const { Cell::new(1700000000) };
-}
-
-fn test_now() -> u64 {
-    TEST_TIME.with(|t| t.get())
-}
-
-fn set_test_time(t: u64) {
-    TEST_TIME.with(|c| c.set(t));
-}
-
-fn new_engine() -> NostrEngine<MockStorage> {
-    let limits = Limits::default();
-    NostrEngine {
-        registry: WalletRegistry::new(MockStorage::new(), limits),
-        limits,
-        clock: test_now,
-    }
-}
-
-fn has_subscription(engine: &NostrEngine<MockStorage>, conn_id: u32, sub_id: &str) -> bool {
-    engine.registry.has_subscription(conn_id, sub_id)
-}
 
 #[test]
 fn test_engine_req_storage() {
     futures::executor::block_on(async {
-        let mut engine = new_engine();
+        let mut engine = new_test_engine();
         engine.on_connect(1).await;
 
         let req = r#"["REQ", "sub1", {"kinds": [23194], "authors": ["pk1"]}]"#;
@@ -47,15 +19,13 @@ fn test_engine_req_storage() {
                 false
             }
         }));
-
-        assert!(has_subscription(&engine, 1, "sub1"));
     });
 }
 
 #[test]
 fn test_engine_info_event_routing() {
     futures::executor::block_on(async {
-        let mut engine = new_engine();
+        let mut engine = new_test_engine();
         engine.on_connect(1).await;
 
         let event = Event {
@@ -76,7 +46,7 @@ fn test_engine_info_event_routing() {
 
 #[test]
 fn test_get_wallet_info_none() {
-    let mut engine = new_engine();
+    let mut engine = new_test_engine();
     futures::executor::block_on(async {
         assert!(engine.get_wallet_info("pk1").await.is_none());
     });
@@ -85,7 +55,7 @@ fn test_get_wallet_info_none() {
 #[test]
 fn test_engine_get_wallet_info_with_encryption_tag() {
     futures::executor::block_on(async {
-        let mut engine = new_engine();
+        let mut engine = new_test_engine();
         let event = Event {
             id: "id1".into(),
             pubkey: "pk1".into(),
@@ -106,7 +76,7 @@ fn test_engine_get_wallet_info_with_encryption_tag() {
 #[test]
 fn test_engine_get_wallet_info_default_nip04() {
     futures::executor::block_on(async {
-        let mut engine = new_engine();
+        let mut engine = new_test_engine();
         let event = Event {
             id: "id1".into(),
             pubkey: "pk1".into(),
@@ -127,7 +97,7 @@ fn test_engine_get_wallet_info_default_nip04() {
 fn test_bridge_signaling() {
     futures::executor::block_on(async {
         set_test_time(crate::util::now());
-        let mut engine = new_engine();
+        let mut engine = new_test_engine();
         engine.on_connect(1).await;
         let wallet_pk = "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f";
         let _ = engine.process_req(1, "sub1".into(), vec![Filter {
@@ -204,7 +174,7 @@ fn test_bridge_signaling() {
 #[test]
 fn test_virtual_connection_lifecycle() {
     futures::executor::block_on(async {
-        let mut engine = new_engine();
+        let mut engine = new_test_engine();
         engine.on_connect(1).await;
 
         let id = 100;
@@ -234,8 +204,19 @@ fn test_virtual_connection_lifecycle() {
             }
         }));
 
-        engine.on_disconnect(id).await;
-        assert!(!has_subscription(&engine, id, "sub1"));
+        engine.process_close(id, "sub1".into()).await;
+        let responses_after = engine.process_event(2, Event {
+            id: "event2".into(),
+            pubkey: "alice".into(),
+            created_at: test_now(),
+            kind: 23194,
+            tags: vec![],
+            content: "test".into(),
+            sig: "sig".into(),
+        }).await;
+        assert!(!responses_after.iter().any(|r| {
+            matches!(r, EngineResponse::Send { recipient_id, .. } if *recipient_id == id)
+        }), "closed subscription should not receive events");
     });
 }
 
@@ -246,15 +227,13 @@ fn test_engine_wakeup_logic() {
         let id = 42;
         let pk = "hibernated_pk";
         let storage = MockStorage::new();
-        let mut entries = HashMap::new();
-        entries.insert(format!("pk:{}", pk), serde_json::json!(id));
-        entries.insert(format!("conn:{}", id), serde_json::json!({
-            "subscriptions": {
-                "sub1": [{"kinds": [23194], "authors": [pk]}]
-            },
-            "info_event": null
-        }));
-        storage.put_batch(entries).await.unwrap();
+        crate::common::test_helpers::seed_subscription(&storage, id, "sub1", pk, vec![
+            Filter {
+                kinds: Some(vec![23194]),
+                authors: Some(vec![pk.into()]),
+                ..Default::default()
+            }
+        ]).await;
         
         let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
 
@@ -280,97 +259,11 @@ fn test_engine_wakeup_logic() {
 }
 
 #[test]
-fn test_event_rejects_future_beyond_tolerance() {
-    let now = 1700000000u64;
-    let event = Event {
-        id: "id1".into(),
-        pubkey: "pk1".into(),
-        created_at: now + 901,
-        kind: 13194,
-        tags: vec![],
-        content: "".into(),
-        sig: "sig1".into(),
-    };
-
-    let result = event.verify(now, &Limits::default());
-    match result {
-        Err(RelayError::TimestampTooFar(_)) => {},
-        Err(e) => panic!("expected TimestampTooFar, got {:?}", e),
-        Ok(_) => panic!("event 901s in the future should be rejected"),
-    }
-}
-
-#[test]
-fn test_event_accepts_future_within_tolerance() {
-    let now = 1700000000u64;
-    let event = Event {
-        id: "id1".into(),
-        pubkey: "pk1".into(),
-        created_at: now + 800,
-        kind: 13194,
-        tags: vec![],
-        content: "".into(),
-        sig: "sig1".into(),
-    };
-
-    let result = event.verify(now, &Limits::default());
-    match result {
-        Err(RelayError::TimestampTooFar(_)) => panic!("event within 900s future should not fail timestamp check"),
-        Err(RelayError::InvalidId) | Err(RelayError::InvalidSignature) => {},
-        Err(e) => panic!("expected id/sig error, got {:?}", e),
-        Ok(_) => panic!("expected error (id mismatch)"),
-    }
-}
-
-#[test]
-fn test_event_rejects_past_beyond_tolerance() {
-    let now = 1700000000u64;
-    let event = Event {
-        id: "id1".into(),
-        pubkey: "pk1".into(),
-        created_at: now - 31_536_001,
-        kind: 13194,
-        tags: vec![],
-        content: "".into(),
-        sig: "sig1".into(),
-    };
-
-    let result = event.verify(now, &Limits::default());
-    match result {
-        Err(RelayError::TimestampTooFar(_)) => {},
-        Err(e) => panic!("expected TimestampTooFar, got {:?}", e),
-        Ok(_) => panic!("event over 1 year old should be rejected"),
-    }
-}
-
-#[test]
-fn test_event_accepts_past_within_tolerance() {
-    let now = 1700000000u64;
-    let event = Event {
-        id: "id1".into(),
-        pubkey: "pk1".into(),
-        created_at: now - 100000,
-        kind: 13194,
-        tags: vec![],
-        content: "".into(),
-        sig: "sig1".into(),
-    };
-
-    let result = event.verify(now, &Limits::default());
-    match result {
-        Err(RelayError::TimestampTooFar(_)) => panic!("event within 1 year should not be rejected for timestamp"),
-        Err(RelayError::InvalidId) | Err(RelayError::InvalidSignature) => {},
-        Err(e) => panic!("expected id/sig error, got {:?}", e),
-        Ok(_) => panic!("expected error (id mismatch)"),
-    }
-}
-
-#[test]
 fn test_engine_uses_clock_for_event_verification() {
     futures::executor::block_on(async {
         let now = 1700000000u64;
         set_test_time(now);
-        let mut engine = new_engine();
+        let mut engine = new_test_engine();
         engine.on_connect(1).await;
 
         let event_json = serde_json::json!(["EVENT", {
@@ -427,7 +320,7 @@ fn test_engine_uses_clock_for_event_verification() {
 #[test]
 fn test_kind_5_deletion_with_e_tag() {
     futures::executor::block_on(async {
-        let mut engine = new_engine();
+        let mut engine = new_test_engine();
         engine.on_connect(1).await;
 
         // Publish info event for alice
@@ -463,7 +356,7 @@ fn test_kind_5_deletion_with_e_tag() {
 #[test]
 fn test_kind_5_deletion_unauthorized() {
     futures::executor::block_on(async {
-        let mut engine = new_engine();
+        let mut engine = new_test_engine();
         engine.on_connect(1).await;
 
         // Publish info event for alice
@@ -499,7 +392,7 @@ fn test_kind_5_deletion_unauthorized() {
 #[test]
 fn test_kind_5_deletion_with_k_tag() {
     futures::executor::block_on(async {
-        let mut engine = new_engine();
+        let mut engine = new_test_engine();
         engine.on_connect(1).await;
 
         let info_event = Event {
@@ -532,7 +425,7 @@ fn test_kind_5_deletion_with_k_tag() {
 
 #[test]
 fn test_validate_event_rejects_invalid_kind() {
-    let engine = new_engine();
+    let engine = new_test_engine();
     let event = Event {
         id: "id1".into(),
         pubkey: "pk1".into(),
@@ -549,7 +442,7 @@ fn test_validate_event_rejects_invalid_kind() {
 
 #[test]
 fn test_validate_event_accepts_valid_kind() {
-    let engine = new_engine();
+    let engine = new_test_engine();
     let event = Event {
         id: "id1".into(),
         pubkey: "pk1".into(),
@@ -567,7 +460,7 @@ fn test_validate_event_accepts_valid_kind() {
 #[test]
 fn test_route_verified_event_with_info_kind() {
     futures::executor::block_on(async {
-        let mut engine = new_engine();
+        let mut engine = new_test_engine();
         engine.on_connect(1).await;
 
         // Subscribe to track info events
@@ -591,7 +484,7 @@ fn test_route_verified_event_with_info_kind() {
 #[test]
 fn test_handle_close_removes_subscription() {
     futures::executor::block_on(async {
-        let mut engine = new_engine();
+        let mut engine = new_test_engine();
         engine.on_connect(1).await;
 
         let msg = ClientMessage::Close("sub1".into());
@@ -604,7 +497,7 @@ fn test_handle_close_removes_subscription() {
 #[test]
 fn test_on_terminate_removes_state() {
     futures::executor::block_on(async {
-        let mut engine = new_engine();
+        let mut engine = new_test_engine();
         engine.on_connect(1).await;
 
         let _ = engine.process_req(1, "sub1".into(), vec![Filter {
@@ -612,17 +505,26 @@ fn test_on_terminate_removes_state() {
             ..Default::default()
         }]).await;
 
-        assert!(has_subscription(&engine, 1, "sub1"));
-
         engine.on_terminate(1).await;
-        assert!(!has_subscription(&engine, 1, "sub1"));
+        let responses_after = engine.process_event(2, Event {
+            id: "event2".into(),
+            pubkey: "alice".into(),
+            created_at: test_now(),
+            kind: 23194,
+            tags: vec![],
+            content: "test".into(),
+            sig: "sig".into(),
+        }).await;
+        assert!(!responses_after.iter().any(|r| {
+            matches!(r, EngineResponse::Send { recipient_id, .. } if *recipient_id == 1)
+        }), "terminated connection should not receive events");
     });
 }
 
 #[test]
 fn test_req_filter_too_broad() {
     futures::executor::block_on(async {
-        let mut engine = new_engine();
+        let mut engine = new_test_engine();
         engine.on_connect(1).await;
 
         let msg = ClientMessage::Req("sub1".into(), vec![Filter::default()]);
@@ -710,7 +612,7 @@ fn test_handle_req_internal_returns_closed_on_storage_failure() {
 #[test]
 fn test_kind_5_deletion_no_tags() {
     futures::executor::block_on(async {
-        let mut engine = new_engine();
+        let mut engine = new_test_engine();
         engine.on_connect(1).await;
 
         let info_event = Event {

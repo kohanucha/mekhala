@@ -2,15 +2,7 @@ use super::*;
     use crate::nostr::Tag;
 
     fn make_event(id: &str, pubkey: &str, kind: u64, tags: Vec<Tag>, created_at: u64) -> Event {
-        Event {
-            id: id.into(),
-            pubkey: pubkey.into(),
-            kind,
-            tags,
-            content: "test".into(),
-            sig: "sig".into(),
-            created_at,
-        }
+        crate::common::test_helpers::test_event(id, pubkey, kind, tags, created_at)
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use super::*;
+use k256::schnorr::{signature::hazmat::PrehashSigner, SigningKey};
 
     #[test]
     fn test_target_pubkeys_author_only() {
@@ -189,4 +190,28 @@ use super::*;
             Err(e) => panic!("expected id/sig error for kind 23196 with p tag, got {:?}", e),
             Ok(_) => panic!("expected error for kind 23196 with bad sig"),
         }
+    }
+
+    #[test]
+    fn test_verify_valid_signature() {
+        let sk_hex = crate::common::test_helpers::TEST_WALLET_SK;
+        let pk_hex = crate::common::test_helpers::TEST_WALLET_PK;
+        let sk_bytes = hex::decode(sk_hex).unwrap();
+        let sk_arr: [u8; 32] = sk_bytes.try_into().unwrap();
+        let sk = SigningKey::from_bytes(&sk_arr).unwrap();
+
+        let (id, id_bytes) = Event::compute_id(pk_hex, 1700000000, 23194, &[], "test").unwrap();
+        let sig = hex::encode(sk.sign_prehash(&id_bytes).unwrap().to_bytes());
+
+        let event = Event {
+            id,
+            pubkey: pk_hex.into(),
+            created_at: 1700000000,
+            kind: 23194,
+            tags: vec![],
+            content: "test".into(),
+            sig,
+        };
+        let result = event.verify(1700000000, &Limits::default());
+        assert_eq!(result, Ok(()));
     }

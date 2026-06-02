@@ -62,19 +62,8 @@ use super::*;
     #[test]
     fn test_create_invoice_invalid_uri() {
         let _url = Url::parse("https://relay.com/lnurlp/test").unwrap();
-        let result = create_invoice(&MockTransport, "not-a-valid-uri", "test", 1000);
+        let transport = crate::common::test_helpers::MockTransport::wallet_not_found();
+        let result = create_invoice(&transport, "not-a-valid-uri", "test", 1000);
         let err = futures::executor::block_on(result).unwrap_err();
         assert!(matches!(err, NwcError::ProtocolError(_)));
-    }
-
-    struct MockTransport;
-
-    #[async_trait::async_trait(?Send)]
-    impl NwcTransport for MockTransport {
-        async fn get_wallet_info(&self, _pubkey: &str) -> Option<crate::nostr::WalletInfo> {
-            None
-        }
-        async fn execute_nwc_rpc(&self, _request: crate::nostr::Event) -> Result<crate::nostr::Event, NwcError> {
-            Err(NwcError::WalletNotFound)
-        }
     }

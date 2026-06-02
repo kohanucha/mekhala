@@ -54,7 +54,10 @@ pub trait UserStore {
 }
 
 #[cfg(test)]
-mod common_test;
+#[path = "test_helpers.rs"]
+pub(crate) mod test_helpers;
 
 #[cfg(test)]
-pub(crate) mod test_helpers;
+#[path = "common_test.rs"]
+mod common_test;
+

@@ -61,3 +61,14 @@ use super::*;
         assert!(action.is_none());
         assert_eq!(machine.state, RpcState::Initial);
     }
+
+    #[test]
+    fn test_rpc_machine_notice_transition() {
+        let req = mock_event("req1", "pk1");
+        let mut machine = NwcRpcMachine::new(req);
+        machine.start();
+
+        let action = machine.transition(RelayMessage::Notice("rate limited".into()));
+        assert_eq!(action, Some(RpcAction::Unsubscribe("rpc_sub".into())));
+        assert_eq!(machine.state, RpcState::Failed("Relay notice: rate limited".into()));
+    }

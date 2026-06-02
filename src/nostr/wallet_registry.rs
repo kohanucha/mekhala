@@ -236,7 +236,7 @@ impl WalletIndex {
 }
 
 pub struct WalletRegistry<S: Storage> {
-    pub(crate) storage: S,
+    storage: S,
     index: WalletIndex,
     limits: Limits,
 }
@@ -425,11 +425,6 @@ impl<S: Storage> WalletRegistry<S> {
         self.index.find_info_pubkey_by_id(event_id)
     }
 
-    #[cfg(test)]
-    pub fn has_subscription(&self, conn_id: u32, sub_id: &str) -> bool {
-        self.index.get_subscriptions(conn_id).contains_key(sub_id)
-    }
-
     async fn sync(&self, conn_id: u32) -> Result<(), String> {
         if let Some(state) = self.index.save(conn_id) {
             let mut entries = HashMap::new();
@@ -464,4 +459,4 @@ impl<S: Storage> WalletRegistry<S> {
 
 #[cfg(test)]
 #[path = "wallet_registry_test.rs"]
-pub(crate) mod wallet_registry_test;
+mod wallet_registry_test;
