@@ -1,8 +1,6 @@
-use worker::Env;
 use crate::auth::AccessPolicy;
+use crate::cloudflare::config::CloudflareConfig;
 
-pub fn from_env(env: &Env) -> AccessPolicy {
-    AccessPolicy::new(
-        env.var("RELAY_SECRET").map(|v| v.to_string()).ok()
-    )
+pub fn from_config(config: &CloudflareConfig) -> AccessPolicy {
+    AccessPolicy::new(config.relay_secret.clone())
 }

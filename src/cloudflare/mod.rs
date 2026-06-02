@@ -1,6 +1,7 @@
 //! Cloudflare Worker bindings: transport, durable object, KV, routing.
 
 pub mod auth;
+pub mod config;
 pub mod transport;
 pub mod durable_object;
 pub mod connection;
