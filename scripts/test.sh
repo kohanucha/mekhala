@@ -4,18 +4,25 @@
 PORT=8787
 LOG_FILE="test/wrangler.log"
 
+# --- Pre-flight: kill stale processes from prior runs ---
+pkill -9 -f "wrangler dev" 2>/dev/null || true
+pkill -9 -f "workerd" 2>/dev/null || true
+
 # --- Cleanup Function ---
 cleanup() {
     echo ""
     echo "Stopping wrangler dev server..."
-    PID=$(lsof -ti :$PORT)
-    if [ ! -z "$PID" ]; then
-        kill -9 -$PID 2>/dev/null || kill -9 $PID 2>/dev/null
+    # Kill the background wrangler we started (SIGTERM then SIGKILL)
+    if [ ! -z "$WRANGLER_PID" ]; then
+        kill $WRANGLER_PID 2>/dev/null
+        sleep 1
+        kill -9 $WRANGLER_PID 2>/dev/null
     fi
-    PID2=$(lsof -ti :8788 2>/dev/null)
-    if [ ! -z "$PID2" ]; then
-        kill -9 $PID2 2>/dev/null
-    fi
+    # Safety net: match any level of the wrangler dev process tree
+    pkill -9 -f "wrangler dev" 2>/dev/null || true
+    pkill -9 -f "workerd" 2>/dev/null || true
+    # Port 8788 cleanup (from testMaxConnections in JS)
+    lsof -ti :8788 2>/dev/null | xargs kill -9 2>/dev/null || true
     echo "Cleanup complete."
     echo "Wrangler logs saved to: $LOG_FILE"
 }
@@ -44,13 +51,10 @@ fi
 echo "Checking port $PORT..."
 PIDS=$(lsof -ti :$PORT 2>/dev/null)
 if [ ! -z "$PIDS" ]; then
-    KILL_PIDS=""
     BLOCKED_PIDS=""
     for PID in $PIDS; do
         CMD=$(ps -p $PID -o command= 2>/dev/null)
-        if echo "$CMD" | grep -qi "wrangler"; then
-            KILL_PIDS="$KILL_PIDS $PID"
-        else
+        if ! echo "$CMD" | grep -qi "wrangler"; then
             BLOCKED_PIDS="$BLOCKED_PIDS $PID"
         fi
     done
@@ -64,29 +68,23 @@ if [ ! -z "$PIDS" ]; then
         exit 1
     fi
 
-    if [ ! -z "$KILL_PIDS" ]; then
-        echo "Killing stale wrangler process(es) on port $PORT (PID$KILL_PIDS)..."
-        for PID in $KILL_PIDS; do
-            kill -9 $PID 2>/dev/null
-        done
-        echo "Waiting for port $PORT to be released..."
-        RETRY=0
-        while [ $RETRY -lt 5 ]; do
-            if lsof -ti :$PORT 2>/dev/null | grep -q .; then
-                sleep 1
-                RETRY=$((RETRY + 1))
-            else
-                break
-            fi
-        done
-        PIDS_AFTER=$(lsof -ti :$PORT 2>/dev/null)
-        if [ ! -z "$PIDS_AFTER" ]; then
-            echo "❌ Port $PORT still occupied after killing wrangler:"
-            lsof -i :$PORT 2>/dev/null
-            exit 1
+    echo "Waiting for port $PORT to be released..."
+    RETRY=0
+    while [ $RETRY -lt 5 ]; do
+        if lsof -ti :$PORT 2>/dev/null | grep -q .; then
+            sleep 1
+            RETRY=$((RETRY + 1))
+        else
+            break
         fi
-        echo "Port $PORT is now free."
+    done
+    PIDS_AFTER=$(lsof -ti :$PORT 2>/dev/null)
+    if [ ! -z "$PIDS_AFTER" ]; then
+        echo "❌ Port $PORT still occupied after cleanup:"
+        lsof -i :$PORT 2>/dev/null
+        exit 1
     fi
+    echo "Port $PORT is now free."
 fi
 
 # 3. Start Local Relay (redirect output to log file)

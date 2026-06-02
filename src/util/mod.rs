@@ -57,3 +57,7 @@ macro_rules! log_error {
         { let _ = format_args!($($arg)*); }
     };
 }
+
+#[cfg(test)]
+#[path = "util_test.rs"]
+mod util_test;
