@@ -5,28 +5,23 @@ PORT=8787
 LOG_FILE="test/wrangler.log"
 
 # --- Pre-flight: kill stale processes from prior runs ---
-pkill -9 -f "npm exec wrangler" 2>/dev/null || true
+pkill -9 -f "wrangler dev" 2>/dev/null || true
 pkill -9 -f "workerd" 2>/dev/null || true
 
 # --- Cleanup Function ---
 cleanup() {
     echo ""
     echo "Stopping wrangler dev server..."
+    # Kill the background wrangler we started (SIGTERM then SIGKILL)
     if [ ! -z "$WRANGLER_PID" ]; then
-        # Kill child processes of WRANGLER_PID first (node, workerd, esbuild)
-        for cpid in $(pgrep -P $WRANGLER_PID 2>/dev/null); do
-            kill -9 $cpid 2>/dev/null
-        done
-        # SIGTERM on the npm exec process
         kill $WRANGLER_PID 2>/dev/null
         sleep 1
-        # SIGKILL if still alive
         kill -9 $WRANGLER_PID 2>/dev/null
     fi
-    # Safety net: kill any remaining wrangler/workerd processes
-    pkill -9 -f "npm exec wrangler" 2>/dev/null || true
+    # Safety net: match any level of the wrangler dev process tree
+    pkill -9 -f "wrangler dev" 2>/dev/null || true
     pkill -9 -f "workerd" 2>/dev/null || true
-    # Port 8788 cleanup (from testMaxConnections)
+    # Port 8788 cleanup (from testMaxConnections in JS)
     lsof -ti :8788 2>/dev/null | xargs kill -9 2>/dev/null || true
     echo "Cleanup complete."
     echo "Wrangler logs saved to: $LOG_FILE"
