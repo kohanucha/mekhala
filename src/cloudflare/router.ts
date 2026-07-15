@@ -1,0 +1,118 @@
+import { fromEnv } from './config.ts';
+import { getDurableStub } from './durable_object.ts';
+import { AccessPolicy } from '../auth.ts';
+import { CloudflareKvStore } from './kv.ts';
+
+export async function handleRequest(
+  request: Request,
+  env: Record<string, unknown>,
+): Promise<Response> {
+  const url = new URL(request.url);
+  const path = url.pathname;
+
+  if (request.method === 'OPTIONS') {
+    return corsResponse(null, 204);
+  }
+
+  const lnurlMatch = path.match(/^\/\.well-known\/lnurlp\/(.+)$/);
+  if (lnurlMatch) {
+    return handleLnurlp(lnurlMatch[1], env);
+  }
+
+  if (path.startsWith('/lnaddress/') && path.endsWith('/callback')) {
+    return forwardToDo(request, env);
+  }
+
+  const secret = path === '/' ? '' : path.slice(1);
+  return handleRelay(request, env, secret);
+}
+
+function corsResponse(body: unknown, status: number): Response {
+  return new Response(body != null ? JSON.stringify(body) : null, {
+    status,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Headers': '*',
+      'Content-Type': 'application/json',
+    },
+  });
+}
+
+function securityHeaders(headers: Headers): Headers {
+  headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  headers.set('X-Content-Type-Options', 'nosniff');
+  headers.set('Content-Security-Policy', "default-src 'self'");
+  return headers;
+}
+
+function authResponse(): Response {
+  const body = JSON.stringify({ status: 'ERROR', reason: 'Not Found' });
+  const headers = new Headers({
+    'Content-Type': 'application/json',
+  });
+  securityHeaders(headers);
+  return new Response(body, { status: 404, headers });
+}
+
+function nip11Response(): Response {
+  const body = JSON.stringify({ supported_nips: [1, 9, 11, 47] });
+  const headers = new Headers({
+    'Content-Type': 'application/nostr+json',
+  });
+  securityHeaders(headers);
+  return new Response(body, { status: 200, headers });
+}
+
+function isWebSocketUpgrade(request: Request): boolean {
+  const upgrade = request.headers.get('Upgrade');
+  return upgrade != null && upgrade.toLowerCase() === 'websocket';
+}
+
+function handleRelay(
+  request: Request,
+  env: Record<string, unknown>,
+  secret: string,
+): Response | Promise<Response> {
+  const config = fromEnv(env as Record<string, string | undefined>);
+  const policy = new AccessPolicy(config.relaySecret);
+
+  try {
+    policy.checkAccess(secret);
+  } catch {
+    return authResponse();
+  }
+
+  if (isWebSocketUpgrade(request)) {
+    return forwardToDo(request, env);
+  }
+
+  return nip11Response();
+}
+
+async function handleLnurlp(
+  username: string,
+  env: Record<string, unknown>,
+): Promise<Response> {
+  const kv = env.MEKHALA_NWC_KV as KVNamespace;
+  const store = new CloudflareKvStore(kv);
+  const nwcUri = await store.getNwcUri(username);
+
+  if (nwcUri == null) {
+    return corsResponse({ status: 'ERROR', reason: 'Not Found' }, 404);
+  }
+
+  const callbackUrl = `/.well-known/lnurlp/${username}`;
+  const body = {
+    status: 'OK',
+    callback: callbackUrl,
+    metadata: [['text/plain', `Pay ${username}`]],
+  };
+  return corsResponse(body, 200);
+}
+
+function forwardToDo(request: Request, env: Record<string, unknown>): Promise<Response> {
+  const config = fromEnv(env as Record<string, string | undefined>);
+  const stub = getDurableStub(env, config.walletRegion ?? undefined);
+  return stub.fetch(request);
+}
