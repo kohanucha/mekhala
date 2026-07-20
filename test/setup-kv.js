@@ -15,7 +15,7 @@ const setup = (username, walletSecretByte, bridgeSecretByte) => {
     console.log(`Setting up KV for ${username}...`);
     console.log(`  Wallet PK: ${pk}`);
     console.log(`  Bridge Secret: ${secretHex}`);
-    const config = process.env.WRANGLER_CONFIG || "../wrangler.toml";
+    const config = process.env.WRANGLER_CONFIG || "wrangler.toml";
     execSync(`npx wrangler kv key put --binding MEKHALA_NWC_KV --local --config ${config} "${username}" "${nwcUri}"`, { stdio: 'inherit' });
 };
 

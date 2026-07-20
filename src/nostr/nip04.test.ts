@@ -30,4 +30,12 @@ describe('NIP-04', () => {
     const tamperedEncrypted = `${tamperedCt}?iv=${parts[1]}`;
     await expect(decryptNip04(SHARED_SECRET, tamperedEncrypted)).rejects.toThrow();
   });
+
+  it('tolerates &mac= suffix from some JS implementations', async () => {
+    const plaintext = 'Compatibility test';
+    const encrypted = await encryptNip04(SHARED_SECRET, plaintext);
+    const withMac = encrypted + '&mac=AAAA';  // non-standard suffix some clients append
+    const decrypted = await decryptNip04(SHARED_SECRET, withMac);
+    expect(decrypted).toBe(plaintext);
+  });
 });

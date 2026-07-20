@@ -1,5 +1,7 @@
 # Mekhala — Bug Journal
 
+> **Note:** Mekhala has been ported from Rust/WASM to TypeScript. Entries below reference the original Rust codebase.
+
 All bugs encountered during development, organized by domain. Each entry includes
 symptom, root cause, fix, and lesson.
 

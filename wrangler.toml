@@ -1,5 +1,5 @@
-name = "mekhala"
-main = "build/worker/shim.mjs"
+name = "mekhala-ts"
+main = "src/cloudflare/index.ts"
 compatibility_date = "2026-04-30"
 
 [vars]
@@ -19,7 +19,3 @@ id = "MEKHALA_NWC_KV_ID"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["CloudflareTransport"]
-
-[build]
-command = "./scripts/build.sh"
-watch_dir = "src"

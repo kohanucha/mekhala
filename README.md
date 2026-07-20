@@ -5,14 +5,14 @@
 > According to legend, the phenomena of lightning and thunder are produced by the flashing of Manimekhala's crystal ball.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Rust: Wasm32](https://img.shields.io/badge/Rust-Wasm32-orange.svg)](https://www.rust-lang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.8-blue)](https://www.typescriptlang.org/)
 [![Cloudflare: Durable Objects](https://img.shields.io/badge/Cloudflare-Durable%20Objects-7A3E9D.svg)](https://developers.cloudflare.com/durable-objects/)
 
 ---
 
 ## 📖 Overview
 
-Mekhala is a specialized, ephemeral Nostr relay built in Rust and compiled to WebAssembly. It acts as a private, zero-persistence communication bridge between Lightning wallet applications (e.g. Alby, Amethyst) and your wallet node:
+Mekhala is a specialized, ephemeral Nostr relay built in TypeScript. It acts as a private, zero-persistence communication bridge between Lightning wallet applications (e.g. Alby, Amethyst) and your wallet node:
 
 - **100% Stateless:** No event history or database storage. All events are routed instantly in-memory.
 - **WebSocket Hibernation:** Uses Cloudflare Durable Objects to hibernate idle connections, waking up seamlessly when new events arrive to save resources.
@@ -52,15 +52,13 @@ Configurable via `wrangler.toml` or environment variables:
 ## 🛠 For Developers
 
 ### Common Commands
-- **Build WASM:** `./scripts/build.sh` (Requires Rust + `wasm32` target + `worker-build`)
+- **Type-check:** `npx tsc --noEmit`
 - **Local Dev:** `npx wrangler dev` (Runs locally on port `8787`)
-- **Unit Tests:** `cargo test`
-- **Integration Tests:** `./scripts/test.sh` (Runs E2E compilation, DO setup, and Node.js checks)
+- **Integration Tests:** `./scripts/test.sh` (Runs type-check, starts DO, runs Node.js checks)
 
 ### Coding Standards
-Mekhala compiles with `panic = "abort"`. To prevent isolates from crashing:
-- **No panics:** Never use `unwrap()` or `expect()`. Handle errors with `?` or `match`.
-- **Safe indexing:** Use `.get()` for slice/array access instead of bracket notation.
+- **No panics:** Always use `?` or proper error handling.
+- **Safe indexing:** Use `.get()` for array/slice access.
 - **Storage state:** Every subscription update must call `sync()` to ensure active filters survive DO hibernation.
 
 ---

@@ -248,6 +248,13 @@ export class CloudflareTransport implements DurableObject {
   }
 
   private async acceptNewConnection(): Promise<Response> {
+    if (this.connections.size >= this.config.maxConnections) {
+      return new Response(JSON.stringify({ status: 'ERROR', reason: 'Too Many Connections' }), {
+        status: 429,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];

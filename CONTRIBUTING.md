@@ -14,14 +14,14 @@ Thank you for your interest in improving Mekhala! We welcome contributions from 
 
 ## 📜 Coding Standards
 
-- **No `unwrap()` or `expect()`:** Mekhala is compiled with `panic = "abort"`. Always handle errors gracefully using `?` or `match`.
+- **No panics:** Always handle errors gracefully using `try`/`catch` or `?`.
 - **Security First:** Never log sensitive information or bypass security limits.
 - **Strict NWC focus:** We aim to keep this relay specialized for NIP-47. General social features are out of scope.
 
 ## 🧪 Testing
 
 All contributions must pass the existing test suite:
-- **Rust Unit Tests:** `cargo test`
+- **Type-check:** `npx tsc --noEmit`
 - **Full E2E Integration:** `./scripts/test.sh`
 
 ---

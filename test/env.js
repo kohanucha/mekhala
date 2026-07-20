@@ -32,7 +32,7 @@ export { baseURL, httpProtocol, relaySecret };
 export async function setupTempKV(username, nwcUri) {
   const { execSync } = await import("child_process");
   const configFile = process.env.WRANGLER_CONFIG || "wrangler.toml";
-  const configArg = configFile.startsWith('/') ? configFile : `../${configFile}`;
+  const configArg = configFile.startsWith('/') ? configFile : `./${configFile}`;
   execSync(`npx wrangler kv key put --binding MEKHALA_NWC_KV --local --config ${configArg} "${username}" "${nwcUri}"`);
 }
 

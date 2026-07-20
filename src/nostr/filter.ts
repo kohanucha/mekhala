@@ -1,4 +1,5 @@
 import { Event } from './event.ts';
+import { isNwcKind } from './limits.ts';
 
 export interface Filter {
   ids?: string[];
@@ -9,12 +10,6 @@ export interface Filter {
   since?: number;
   until?: number;
   limit?: number;
-}
-
-const NWC_KINDS = new Set([5, 13194, 23194, 23195, 23196, 23197]);
-
-function isNwcKind(k: number): boolean {
-  return NWC_KINDS.has(k);
 }
 
 export function filterFromJSON(json: Record<string, unknown>): Filter {

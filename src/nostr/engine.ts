@@ -1,6 +1,7 @@
 import type { Event } from './event.ts';
 import type { Filter } from './filter.ts';
 import type { Limits } from './limits.ts';
+import { isNwcKind } from './limits.ts';
 import type { ClientMessage, RelayMessage } from './nip01.ts';
 import { verifyEvent } from './event.ts';
 import { filterPubkeys, filterMatches, filterIsValid } from './filter.ts';
@@ -38,21 +39,15 @@ export class NostrEngine<S extends Storage> {
 
   validateEvent(event: Event): { ok: true } | { ok: false; id: string; error: string } {
     const ts = this.clock();
-    switch (event.kind) {
-      case 5:
-      case 13194:
-      case 23194:
-      case 23195:
-      case 23196:
-      case 23197:
-        try {
-          verifyEvent(event, ts, this.limits);
-          return { ok: true };
-        } catch (e) {
-          return { ok: false, id: event.id, error: (e as RelayError).message };
-        }
-      default:
-        return { ok: false, id: event.id, error: 'blocked: event kind not allowed' };
+    if (isNwcKind(event.kind)) {
+      try {
+        verifyEvent(event, ts, this.limits);
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, id: event.id, error: (e as RelayError).message };
+      }
+    } else {
+      return { ok: false, id: event.id, error: 'blocked: event kind not allowed' };
     }
   }
 
@@ -68,45 +63,37 @@ export class NostrEngine<S extends Storage> {
   private async handleEvent(connectionId: number, event: Event): Promise<EngineResponse[]> {
     const ts = this.clock();
 
-    switch (event.kind) {
-      case 5:
-      case 13194:
-      case 23194:
-      case 23195:
-      case 23196:
-      case 23197:
-        try {
-          verifyEvent(event, ts, this.limits);
-        } catch (e) {
-          return [
-            {
-              kind: 'send',
-              recipientId: connectionId,
-              message: { type: 'OK', id: event.id, ok: false, message: (e as RelayError).message },
-            },
-          ];
-        }
-
-        if (event.kind === 13194) {
-          await this.processInfoEvent(event);
-          return this.processEvent(connectionId, event);
-        } else if (event.kind === 5) {
-          await this.processDeletionEvent(event);
-          return this.processEvent(connectionId, event);
-        } else {
-          return this.processEvent(connectionId, event);
-        }
-
-      default: {
-        let message: RelayMessage;
-        try {
-          verifyEvent(event, ts, this.limits);
-          message = { type: 'OK', id: event.id, ok: false, message: 'blocked: event kind not allowed' };
-        } catch (e) {
-          message = { type: 'OK', id: event.id, ok: false, message: (e as RelayError).message };
-        }
-        return [{ kind: 'send', recipientId: connectionId, message }];
+    if (isNwcKind(event.kind)) {
+      try {
+        verifyEvent(event, ts, this.limits);
+      } catch (e) {
+        return [
+          {
+            kind: 'send',
+            recipientId: connectionId,
+            message: { type: 'OK', id: event.id, ok: false, message: (e as RelayError).message },
+          },
+        ];
       }
+
+      if (event.kind === 13194) {
+        await this.processInfoEvent(event);
+        return this.processEvent(connectionId, event);
+      } else if (event.kind === 5) {
+        await this.processDeletionEvent(event);
+        return this.processEvent(connectionId, event);
+      } else {
+        return this.processEvent(connectionId, event);
+      }
+    } else {
+      let message: RelayMessage;
+      try {
+        verifyEvent(event, ts, this.limits);
+        message = { type: 'OK', id: event.id, ok: false, message: 'blocked: event kind not allowed' };
+      } catch (e) {
+        message = { type: 'OK', id: event.id, ok: false, message: (e as RelayError).message };
+      }
+      return [{ kind: 'send', recipientId: connectionId, message }];
     }
   }
 

@@ -1,47 +1,44 @@
 # Project: Mekhala
 
-A high-performance, 100% stateless Nostr relay built with **Rust** for **Cloudflare Workers**, specifically optimized for **NIP-47 (Nostr Wallet Connect)**.
+A high-performance, 100% stateless Nostr relay built with **TypeScript** for **Cloudflare Workers**, specifically optimized for **NIP-47 (Nostr Wallet Connect)**.
 
 ## Project Overview
 The relay acts as an ephemeral "routing engine" between Lightning wallet applications and nodes. Unlike traditional relays, it operates entirely in-memory with zero persistent storage, ensuring maximum privacy and minimal latency. It is strictly enforced for personal NWC use.
 
 ### Key Technologies
-- **Rust**: Core logic compiled to WebAssembly for high-performance verification.
+- **TypeScript**: Core logic running on Cloudflare Workers runtime.
 - **Cloudflare Workers**: Global edge runtime.
 - **Durable Objects**: Manages stateful WebSocket connections and subscriptions using the **Hibernation API** for cost efficiency.
-- **Nostr Protocol**: Implements NIP-01 (Basic), NIP-11 (Relay Information), and NIP-47 (Wallet Connect).
+- **Nostr Protocol**: Implements NIP-01 (Basic), NIP-11 (Relay Information), NIP-44 (Encryption), and NIP-47 (Wallet Connect).
 
 ### Architecture
 - **Stateless Routing**: Events are verified and broadcasted to active subscribers instantly. No event history is kept.
-- **WebSocket Hibernation**: Subscription filters are serialized into WebSocket "attachments," allowing the Durable Object to hibernate when idle and resume state upon new messages.
-- **High-Performance Verification**: ID verification is optimized using tuple-based serialization to avoid `serde_json::Value` overhead and unnecessary allocations.
+- **WebSocket Hibernation**: Subscription filters are persisted to Durable Object storage, allowing the DO to hibernate when idle and resume state upon new messages.
 - **Strict NWC Focus**: Only NWC-related event kinds (13194, 23194-23197) are processed. General Nostr kinds (0, 1) are rejected.
 - **Connection Capping**: Limits concurrent connections (default 100) per Durable Object to prevent resource exhaustion, returning HTTP 429 when exceeded.
 - **Optional Authentication**: Authorization via a secret path (e.g., `wss://relay.com/<SECRET>`) is supported but optional. If `RELAY_SECRET` is unset, the relay functions as a public relay on the root path.
 
 ## Project Structure
 - `.github/workflows/`: CI/CD pipelines.
-- `src/`: Core Rust source code.
-    - `lib.rs`: Worker entry point and Durable Object implementation.
-    - `server.rs`: Main router and HTTP handlers.
-    - `auth.rs`: Authentication logic.
-    - `cloudflare/`: Cloudflare-specific logic (DO, Hibernation, WebSocket, ConnectionState).
+- `src/`: Core TypeScript source code.
+    - `cloudflare/index.ts`: Worker entry point and Durable Object implementation.
+    - `cloudflare/router.ts`: Request router and HTTP handlers.
+    - `cloudflare/transport.ts`: Cloudflare Transport Durable Object (WebSocket, Hibernation).
+    - `cloudflare/kv.ts`: KV namespace operations.
+    - `auth.ts`: Authentication logic.
     - `lnaddress/`: LN Address to NWC bridging logic.
-    - `nostr/`: Nostr protocol implementation (NIPs, Event, Filter, Limits, RelayError).
-    - `util/`: Shared utility functions.
-- `test/`: Integration tests.
-    - `setup-kv.js`: Utility to seed KV for testing LN Addresses.
-    - `test-relay.js`: Comprehensive integration tests using `nostr-tools`.
+    - `nostr/`: Nostr protocol implementation (NIPs, Event, Filter, Limits, Engine).
+    - `common/`: Shared utilities, types, and test helpers.
+- `test/`: Integration tests (Node.js via nostr-tools).
 - `scripts/`: Shell scripts for development and CI.
-    - `build.sh`: Build script for compiling Rust to Wasm.
-    - `generate_secret.sh`: Utility to generate a secure relay secret.
+    - `build.sh`: Type-check script (`npx tsc --noEmit`).
     - `setup-kv.sh`: Script to initialize KV for local testing.
     - `test.sh`: Main entry point for running the full test suite.
 - `wrangler.toml`: Main configuration and security limits.
 
 ## Configuration (Environment Variables)
 Mekhala is highly configurable via `wrangler.toml`:
-- `MAX_CONNECTIONS`: Max concurrent WebSockets per Durable Object (Default: 20 - Optimized for 1 user across devices).
+- `MAX_CONNECTIONS`: Max concurrent WebSockets per Durable Object (Default: 100).
 - `MAX_FILTER_ITEMS`: Max items allowed in filter arrays (ids, authors, etc.) (Default: 10 - NWC filters are narrow).
 - `MAX_EVENT_TAGS`: Max tags allowed per event (Default: 10 - NWC events are functional).
 - `MAX_CONTENT_LENGTH`: Max event content size in bytes (Default: 16384 - Fits invoices and history).
@@ -52,29 +49,23 @@ Mekhala is highly configurable via `wrangler.toml`:
 
 ### Key Commands
 - **Test Everything**: `./scripts/test.sh`
-  - **MANDATORY**: Run this script after every code change. It verifies Rust unit tests, builds the WASM binary, and runs the Node.js integration suite against a local relay.
-- **Build**: `./build.sh`
+  - **MANDATORY**: Run this script after every code change. It runs type-check, starts a local relay, and runs the Node.js integration suite.
+- **Type-check**: `npx tsc --noEmit`
 - **Local Development**: `npx wrangler dev`
-- **Unit Tests**: `cargo test` (Core logic, crypto, and filters).
-- **Integration Tests**: `cd test && npm test` (Full protocol and E2E flows).
+- **Unit Tests**: `npx vitest run`
+- **Integration Tests**: `cd test && npm test`
 
 ## Development Conventions
 
 ### Coding Standards
-- **Test Before Push**: NEVER commit or push code without a successful `./scripts/test.sh` run. This ensures that the Durable Object hibernation recovery logic is verified and no regressions are introduced in the NWC flow.
+- **Test Before Push**: NEVER commit or push code without a successful `./scripts/test.sh` run.
 - **Strict NWC Enforcement**: Reject any event or subscription not matching NWC kinds (13194, 23194-23197).
-- **Security-Hardened Limits**: Use restrictive limits (20 connections, 10 tags, 16KB content) optimized for personal NWC use to reduce attack surface and DO memory pressure.
+- **Security-Hardened Limits**: Use restrictive limits optimized for personal NWC use.
 - **Mandatory Filter Narrowing**: All `REQ` filters must include at least one criterion (`ids`, `authors`, `#p`, `#e`) to prevent broad snooping.
-- **Security First**: Use constant-time comparisons for secrets and random 16-byte IVs for NIP-04 encryption.
-
-- **Performance Focused**: Use `serde_json::to_string(&(0, ...))` for fast NIP-01 ID verification.
-- **Panic = Abort Resilience**: Since the project is compiled with `panic = "abort"`, any panic terminates the WebAssembly isolate and drops all concurrent requests. To prevent this:
-  - **No `unwrap()` / `expect()`**: Exclusively use `?` or explicit `match` statements to propagate errors and return graceful HTTP 5xx responses.
-  - **Safe Indexing**: Never access slices/arrays directly (e.g. `vec[0]`). Always use `.get()` to handle out-of-bounds safely.
-  - **Checked Math**: Use checked math operations (e.g. `checked_add()`, `saturating_add()`) to prevent panic on overflow.
-  - **Short-Lived State**: Flush critical state to storage frequently to avoid losing data if an isolate crashes.
+- **Security First**: Use constant-time comparisons for secrets and proper encryption (NIP-04, NIP-44).
+- **`sync()` for Persistence**: Always call `sync()` after `subscribe()`/`unsubscribe()` to persist in-memory state to Durable Object storage.
 
 ### Testing Practices
-- **100% Coverage**: Core business logic in `nostr/event.rs` and `nostr/nip_47.rs` must have full unit test coverage.
-- **Integration**: Every new feature or protocol restriction must be verified with `test-relay.js`.
-- **Reproducibility**: Bug fixes must include a failing test case in `cargo test` or `test-relay.js` before the fix is applied.
+- **Coverage**: Core business logic in `nostr/` must have unit test coverage.
+- **Integration**: Every new feature or protocol restriction must be verified with `test/run-all.js`.
+- **Reproducibility**: Bug fixes must include a failing test case before the fix is applied.

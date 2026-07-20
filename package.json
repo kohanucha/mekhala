@@ -6,6 +6,7 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:integration": "node test/setup-kv.js && node test/run-all.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -15,7 +16,9 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260714.1",
+    "nostr-tools": "^2.10.3",
     "typescript": "^5.8.0",
-    "vitest": "^3.0.0"
+    "vitest": "^3.0.0",
+    "ws": "^8.18.0"
   }
 }

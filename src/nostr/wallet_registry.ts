@@ -22,6 +22,17 @@ export type RegistryResponse =
 
 type PkEntry = { subs: Set<string>; info: Event | null };
 
+function normalizeStorageIds(val: unknown): number[] {
+  if (val !== null) {
+    if (Array.isArray(val)) {
+      return val.map(v => Number(v));
+    } else if (typeof val === 'number') {
+      return [val];
+    }
+  }
+  return [];
+}
+
 function subKey(subId: string, filters: Filter[]): string {
   return subId + '::' + JSON.stringify(filters);
 }
@@ -320,13 +331,7 @@ export class WalletRegistry<S extends Storage> {
 
     let storageIds: number[];
     if (val !== null) {
-      if (Array.isArray(val)) {
-        storageIds = val.map(v => Number(v));
-      } else if (typeof val === 'number') {
-        storageIds = [val];
-      } else {
-        storageIds = [];
-      }
+      storageIds = normalizeStorageIds(val);
     } else {
       const id = this.index.getConnectionId(pubkey);
       return id !== null ? [id] : [];
@@ -372,14 +377,7 @@ export class WalletRegistry<S extends Storage> {
       const key = `pk:${pk}`;
       const val = await this.storage.get(key);
       if (val !== null) {
-        let ids: number[];
-        if (Array.isArray(val)) {
-          ids = val.map(v => Number(v));
-        } else if (typeof val === 'number') {
-          ids = [val];
-        } else {
-          ids = [];
-        }
+        const ids = normalizeStorageIds(val);
         const newIds = ids.filter(x => x !== id);
         if (newIds.length === 0) {
           await this.storage.deleteBatch([key]);
@@ -451,13 +449,6 @@ export class WalletRegistry<S extends Storage> {
 
   private async readPkList(key: string): Promise<number[]> {
     const val = await this.storage.get(key);
-    if (val !== null) {
-      if (Array.isArray(val)) {
-        return val.map(v => Number(v));
-      } else if (typeof val === 'number') {
-        return [val];
-      }
-    }
-    return [];
+    return normalizeStorageIds(val);
   }
 }

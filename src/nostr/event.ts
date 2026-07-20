@@ -2,7 +2,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { schnorr } from '@noble/curves/secp256k1.js';
 import { Tag } from './tag.ts';
 import { RelayError } from './error.ts';
-import { Limits, DEFAULT_LIMITS } from './limits.ts';
+import { Limits, DEFAULT_LIMITS, isNwcKind } from './limits.ts';
 import { hexEncode, hexDecode } from '../util.ts';
 
 export interface Event {
@@ -32,17 +32,21 @@ export function targetPubkeys(event: Event): Set<string> {
   return keys;
 }
 
+export function serializeEvent(event: Event): Record<string, unknown> {
+  return {
+    id: event.id,
+    pubkey: event.pubkey,
+    created_at: event.createdAt,
+    kind: event.kind,
+    tags: event.tags,
+    content: event.content,
+    sig: event.sig,
+  };
+}
+
 export function verifyEvent(event: Event, currentTime: number, limits: Limits = DEFAULT_LIMITS): void {
-  switch (event.kind) {
-    case 5:
-    case 13194:
-    case 23194:
-    case 23195:
-    case 23196:
-    case 23197:
-      break;
-    default:
-      throw RelayError.InvalidKind();
+  if (!isNwcKind(event.kind)) {
+    throw RelayError.InvalidKind();
   }
 
   switch (event.kind) {

@@ -1,28 +1,26 @@
 # Mekhala Agent Context
 
 ## Overview
-Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay with WebSocket Hibernation.
+Cloudflare Worker (TypeScript) implementing Nostr Wallet Connect (NIP-47) relay with WebSocket Hibernation.
 
 ## Key Commands
 | Action | Command | Notes |
 |--------|---------|-------|
-| Build WASM | `./scripts/build.sh` | Requires Rust + wasm32 target + worker-build |
+| Type-check | `./scripts/build.sh` or `npx tsc --noEmit` | |
 | Dev server | `npx wrangler dev` | Local on port 8787 |
-| Unit tests | `cargo test` | Rust-only tests |
-| Integration tests | `./scripts/test.sh` | Full pipeline: test → build → wrangler → node |
+| Integration tests | `./scripts/test.sh` | Full pipeline: typecheck → wrangler → node |
 
 ## Build Requirements
-- `rustup target add wasm32-unknown-unknown`
-- `cargo install worker-build`
 - Node.js + npm
 
 ## Architecture
-- **Durable Object**: `NwcRelay` (lib.rs:75)
-- **Modules**: auth.rs, lib.rs, server.rs, cloudflare/, lnaddress/, model/, nostr/, util/
+- **Durable Object**: `CloudflareTransport` (src/cloudflare/transport.ts)
+- **Modules**: auth.ts, engine.ts, server.ts, cloudflare/, lnaddress/, nostr/, util/
 
 ## Critical Dependencies
-- `worker` 0.8.x runtime
-- `k256` for Schnorr signatures
+- `@noble/curves` for Schnorr signatures
+- `@noble/hashes` for SHA-256, HKDF, HMAC
+- `@noble/ciphers` for ChaCha20
 
 ## Required Env Vars
 - `RELAY_SECRET` - password (set via Cloudflare dashboard)
@@ -34,15 +32,14 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 - `MAX_CONTENT_LENGTH` - default: 16384 (16 KB)
 
 ## Wrangler Config
-- Output: `build/worker/shim.mjs`
-- Durable Object: `NwcRelay`
+- Entry: `src/cloudflare/index.ts`
+- Durable Object: `CloudflareTransport`
 - Compatibility date: 2026-04-25
 
 ## Common Gotchas
-1. **DO state**: Use `self.state.storage()`
-2. **WebSocket tags**: Use `utils::HibernationState` trait
-3. **Panic = Abort**: The project uses `panic = "abort"`. **NEVER** use `unwrap()` or `expect()`. Use `?`, `.get()` for indexing, and checked math to prevent isolate crashes.
-4. **`sync()` required for persistence**: Every `subscribe()`/`unsubscribe()` must call `sync()`. The in-memory index is lost on DO hibernation — only `state.storage()` survives. Removing `sync()` breaks event routing after wake. Regression test: `test_hibernation_contract`.
+1. **DO state**: Use `ctx.storage` (DurableObjectState.storage)
+2. **WebSocket messages**: WebSocket hibernation is implicit in the DO lifecycle — no manual tag management needed in TS
+3. **`sync()` required for persistence**: Every `subscribe()`/`unsubscribe()` must call `sync()`. The in-memory index is lost on DO hibernation — only `state.storage()` survives. Removing `sync()` breaks event routing after wake.
 
 ## Agent skills
 
@@ -61,26 +58,16 @@ Single-context layout. See `docs/agents/domain.md`.
 ## Testing Conventions
 
 ### Test file layout
-- Each source file has a sibling `*_test.rs` wired via `#[cfg(test)] #[path = "..."] mod xxx_test;` — **no `mod tests { }` blocks in source files**.
-- The only `#[cfg(test)]` item in a source file is the `mod xxx_test;` declaration. All test code (functions, helpers, impls) lives in the test file.
+- Unit tests live in `src/` as `*.test.ts` files alongside their source module.
+- Integration tests live in `test/` as `*.js` files.
+- Use `describe`/`it` from `vitest` for unit tests.
 
 ### Shared test utilities
-- `MockStorage`, `simulate_hibernation`, and similar cross-module test helpers live in `src/common/test_helpers.rs`.
-- Import with `use crate::common::test_helpers::*;`.
-
-### Async tests
-- Use `futures::executor::block_on(async { ... })` inside `#[test]` functions.
-
-### Private field access
-- Test files are child modules of the source file they test, so they can access private fields directly.
-- Prefer **standalone functions** over inherent methods for test helpers (e.g. `fn new_engine()` instead of `impl NostrEngine<MockStorage> { pub fn new() }`).
+- Cross-module test helpers like `MockStorage` live in `src/common/test_helpers.ts`.
 
 ### Time mocking
-- `TEST_TIME` thread_local, `test_now()`, and `set_test_time()` live in `engine_test.rs`.
-- Available to all tests in that file via direct module scope.
+- Use `vi.setSystemTime()` (vitest) for time mocking in unit tests.
 
 ## Coverage Gate
 - Maintain ≥90% line coverage on testable modules (everything outside `cloudflare/`)
-- Run: `cargo llvm-cov --ignore-filename-regex 'cloudflare/' --fail-under-lines 90`
-
-> All worker-dependent modules live under `cloudflare/`. The core relay logic (`nostr/*`, `auth.rs`, `lnaddress/*`) has zero `worker` crate dependency and is fully testable.
+- Run: `npx vitest --coverage --coverage.exclude='src/cloudflare/**'`

@@ -1,5 +1,7 @@
 # `put_multiple_raw` vs `put_multiple` — DO Hibernation & JS Map Pitfall
 
+> **Note:** Mekhala has been ported from Rust/WASM to TypeScript. This pitfall applies to Rust's `serde_wasm_bindgen` serialization; the TS equivalent uses Durable Object's native `ctx.storage.put()` which does not have this bug.
+
 ## Problem
 
 `put_multiple` with a `HashMap<String, Value>` silently stores **zero entries** in Durable Object storage, returning `Ok(())` with no error. All subscription state vanishes after DO hibernation wake, producing NWC reply timeouts.

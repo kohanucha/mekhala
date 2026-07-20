@@ -2,6 +2,7 @@ import { fromEnv } from './config.ts';
 import { getDurableStub } from './durable_object.ts';
 import { AccessPolicy } from '../auth.ts';
 import { CloudflareKvStore } from './kv.ts';
+import { isValidUsername } from '../lnaddress/validation.ts';
 
 export async function handleRequest(
   request: Request,
@@ -28,15 +29,14 @@ export async function handleRequest(
 }
 
 function corsResponse(body: unknown, status: number): Response {
-  return new Response(body != null ? JSON.stringify(body) : null, {
-    status,
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
-      'Access-Control-Allow-Headers': '*',
-      'Content-Type': 'application/json',
-    },
+  const headers = new Headers({
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': '*',
+    'Content-Type': 'application/json',
   });
+  securityHeaders(headers);
+  return new Response(body != null ? JSON.stringify(body) : null, { status, headers });
 }
 
 function securityHeaders(headers: Headers): Headers {
@@ -96,20 +96,30 @@ async function handleLnurlp(
   request: Request,
   env: Record<string, unknown>,
 ): Promise<Response> {
+  if (!isValidUsername(username)) {
+    return corsResponse({ status: 'ERROR', reason: 'Not Found' }, 404);
+  }
+
   const kv = env.MEKHALA_NWC_KV as KVNamespace;
   const store = new CloudflareKvStore(kv);
   const nwcUri = await store.getNwcUri(username);
 
   if (nwcUri == null) {
-    return corsResponse({ status: 'ERROR', reason: 'not found' }, 200);
+    return corsResponse({ status: 'ERROR', reason: 'User not found' }, 200);
   }
 
   const url = new URL(request.url);
-  const callbackUrl = `${url.origin}/lnaddress/${username}/callback`;
+  const host = url.hostname;
+  const port = url.port ? `:${url.port}` : '';
+  const protocol = host === 'localhost' || host === '127.0.0.1' ? 'http' : 'https';
+  const callbackUrl = `${protocol}://${host}${port}/lnaddress/${username}/callback`;
+  const metadata = JSON.stringify([['text/plain', `Payment to ${username}`]]);
   const body = {
-    status: 'OK',
     callback: callbackUrl,
-    metadata: [['text/plain', `Pay ${username}`]],
+    maxSendable: 100_000_000,
+    minSendable: 1_000,
+    metadata,
+    tag: 'payRequest',
   };
   return corsResponse(body, 200);
 }

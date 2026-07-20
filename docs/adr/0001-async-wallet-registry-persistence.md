@@ -13,5 +13,5 @@ We will transition the core domain logic (`WalletRegistry` and `NostrEngine`) fr
 - `NostrEngine` methods like `on_message` and `handle_verified_event` will become `async`.
 - `WalletRegistry` methods will become `async`.
 - `EngineResponse::StoreState` will be removed, making `NostrEngine` a pure routing engine.
-- Increased complexity in unit tests (requiring an async runtime like `tokio` or `wasm_bindgen_test`).
+- Increased complexity in unit tests (requiring async test support).
 - Cleaner separation of concerns: Transport only handles I/O, Engine handles routing, and Registry handles state/indexing.

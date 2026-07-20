@@ -1,5 +1,5 @@
 import { Tag } from './tag.ts';
-import { Event } from './event.ts';
+import { Event, serializeEvent } from './event.ts';
 import { Filter, filterFromJSON } from './filter.ts';
 
 export type ClientMessage =
@@ -115,7 +115,7 @@ export function relayMessageToJSON(msg: RelayMessage): string {
     case 'OK':
       return JSON.stringify(['OK', msg.id, msg.ok, msg.message]);
     case 'EVENT':
-      return JSON.stringify(['EVENT', msg.subscriptionId, msg.event]);
+      return JSON.stringify(['EVENT', msg.subscriptionId, serializeEvent(msg.event)]);
     case 'EOSE':
       return JSON.stringify(['EOSE', msg.subscriptionId]);
     case 'NOTICE':
