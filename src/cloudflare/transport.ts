@@ -1,4 +1,6 @@
+import { tagsArrayFromJSON, type JsonValue } from '../nostr/tag.ts';
 import type { Event } from '../nostr/event.ts';
+import type { NwcUri } from '../nostr/nip47.ts';
 import type { ClientMessage, RelayMessage } from '../nostr/nip01.ts';
 import { parseClientMessage, relayMessageToJSON } from '../nostr/nip01.ts';
 import { NostrEngine } from '../nostr/engine.ts';
@@ -13,6 +15,7 @@ import { NwcRpcMachine } from '../nostr/rpc_machine.ts';
 import type { RpcAction } from '../nostr/rpc_machine.ts';
 import { NwcError } from '../common/mod.ts';
 import type { WalletInfo } from '../nostr/nip47.ts';
+import { NwcClient, parseNwcUri, EncryptionMethod } from '../nostr/nip47.ts';
 import { DEFAULT_LIMITS } from '../nostr/limits.ts';
 
 const RPC_TIMEOUT_MS = 10_000;
@@ -29,6 +32,8 @@ export class CloudflareTransport implements DurableObject {
   private idCounter = 0;
   private kv: CloudflareKvStore;
   private ctx: DurableObjectState;
+  // Pending LNURL callback: { resolve, requestId, deadline }
+  private pendingCallback: { resolve: (val: unknown) => void; requestId: string; deadline: number } | null = null;
 
   constructor(ctx: DurableObjectState, env: Record<string, unknown>) {
     this.ctx = ctx;
@@ -51,7 +56,7 @@ export class CloudflareTransport implements DurableObject {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    if (path.startsWith('/lnaddress/') && path.endsWith('/callback')) {
+    if (path.includes('/lnaddress/') && path.endsWith('/callback')) {
       return this.handleLnaddressCallback(request, path);
     }
 
@@ -67,6 +72,41 @@ export class CloudflareTransport implements DurableObject {
     if (message.length > MAX_MESSAGE_LENGTH) {
       ws.send(JSON.stringify(['NOTICE', 'message too large']));
       return;
+    }
+
+    // Before processing, try to detect NWC responses for pending callbacks
+    if (message.includes('"kind":23195') || message.includes('"kind":23196') || message.includes('"kind":23197')) {
+      try {
+        const parsed = JSON.parse(message);
+        if (Array.isArray(parsed) && parsed[0] === 'EVENT') {
+          const rawEvent = parsed[1] as { tags?: string[][]; id?: string };
+          if (rawEvent?.tags) {
+            // Check pending callback first (non-blocking, no storage I/O)
+            for (const tag of rawEvent.tags) {
+              if (tag[0] === 'e' && tag[1]) {
+                const eid = tag[1];
+                if (this.pendingCallback && this.pendingCallback.requestId === eid) {
+                  this.pendingCallback.resolve(rawEvent);
+                  this.pendingCallback = null;
+                  break;
+                }
+              }
+            }
+            // Also store in DO storage as fallback
+            for (const tag of rawEvent.tags) {
+              if (tag[0] === 'e' && tag[1]) {
+                const eid = tag[1];
+                const rpcKey = `lnrpc:${eid}`;
+                const pending = await this.ctx.storage.get(rpcKey);
+                if (pending) {
+                  await this.ctx.storage.put(`lnrpc_result:${eid}`, parsed[1]);
+                  break;
+                }
+              }
+            }
+          }
+        }
+      } catch { /* ignore parse errors */ }
     }
 
     await processMessage(message, ws, this.engine, this.connections);
@@ -183,6 +223,13 @@ export class CloudflareTransport implements DurableObject {
 
   // ── Response dispatch ──
 
+  private recoverConnections(): void {
+    const websockets = this.ctx.getWebSockets();
+    for (const ws of websockets) {
+      this.connections.identify(ws);
+    }
+  }
+
   private sendToWsOnly(responses: EngineResponse[]): void {
     for (const resp of responses) {
       if (resp.kind === 'send') {
@@ -226,19 +273,96 @@ export class CloudflareTransport implements DurableObject {
   }
 
   private async handleLnaddressCallback(request: Request, path: string): Promise<Response> {
-    const username = path.replace('/lnaddress/', '').replace('/callback', '');
+    const username = path.substring(path.indexOf('/lnaddress/') + '/lnaddress/'.length, path.lastIndexOf('/callback'));
     const url = new URL(request.url);
     const amountMsat = parseInt(url.searchParams.get('amount') || '', 10);
-    if (isNaN(amountMsat)) {
+    if (isNaN(amountMsat) || amountMsat <= 0) {
       return jsonResponse({ status: 'ERROR', reason: 'Missing amount' }, 200);
     }
 
-    const nwcUri = await this.kv.getNwcUri(username);
-    if (nwcUri == null) {
+    const nwcUriStr = await this.kv.getNwcUri(username);
+    if (nwcUriStr == null) {
       return jsonResponse({ status: 'ERROR', reason: 'User not found' }, 200);
     }
 
-    return jsonResponse({ pr: 'placeholder_invoice', routes: [] }, 200);
+    let nwcUri: NwcUri;
+    try {
+      nwcUri = parseNwcUri(nwcUriStr);
+    } catch {
+      return jsonResponse({ status: 'ERROR', reason: 'Invalid NWC URI' }, 200);
+    }
+
+    const client = new NwcClient(nwcUri);
+
+    // Detect wallet's preferred encryption method from its cached info event
+    const walletInfo = await this.engine.getWalletInfo(nwcUri.walletPubkey);
+    if (walletInfo?.encryptionAlgorithms.includes(EncryptionMethod.Nip44)) {
+      client.encryptionMethod = EncryptionMethod.Nip44;
+    }
+
+    const { event } = await client.createRequestEvent('make_invoice', { amount: amountMsat }, []);
+
+    // Recover WebSocket connections — DO may have hibernated since last handler
+    this.recoverConnections();
+
+    const rpcId = this.allocateId();
+    const subId = 'lnrpc';
+
+    const subResponses = await this.engine.handleReqInternal(rpcId, subId, [
+      { eTags: [event.id], pTags: [event.pubkey] },
+    ]);
+    this.sendToWsOnly(subResponses);
+
+    const pubResponses = await this.engine.handleTyped(rpcId, { type: 'EVENT', event });
+    this.sendToWsOnly(pubResponses);
+
+    const rpcKey = `lnrpc:${event.id}`;
+    await this.ctx.storage.put(rpcKey, { walletPubkey: nwcUri.walletPubkey, clientPubkey: event.pubkey, createdAt: Date.now() });
+
+    // Wait for the wallet's response via a Promise resolved by webSocketMessage.
+    // This avoids busy-polling and lets the DO runtime process WebSocket messages.
+    const rawEvent = await new Promise<unknown>((resolve) => {
+      this.pendingCallback = { resolve, requestId: event.id, deadline: Date.now() + RPC_TIMEOUT_MS };
+      // Fallback: resolve via timeout
+      setTimeout(() => {
+        if (this.pendingCallback?.requestId === event.id) {
+          this.pendingCallback = null;
+          resolve(null);
+        }
+      }, RPC_TIMEOUT_MS);
+    });
+
+    if (rawEvent) {
+      await this.ctx.storage.delete(rpcKey);
+      await this.ctx.storage.delete(`lnrpc_result:${event.id}`);
+      await this.engine.processClose(rpcId, subId);
+      try {
+        const raw = rawEvent as Record<string, unknown>;
+        const parsedEvent: Event = {
+          id: raw.id as string,
+          pubkey: raw.pubkey as string,
+          createdAt: (raw.created_at ?? raw.createdAt) as number,
+          kind: raw.kind as number,
+          tags: tagsArrayFromJSON((raw.tags as JsonValue[][] | undefined) ?? []),
+          content: raw.content as string,
+          sig: raw.sig as string,
+        };
+        // Manually decrypt and parse the response to avoid verifyEvent issues
+        const decryptedContent = await client.decrypt(parsedEvent.content);
+        const responseJson = JSON.parse(decryptedContent) as { result?: Record<string, unknown> };
+        const invoice = responseJson?.result?.invoice;
+        if (invoice) {
+          return jsonResponse({ pr: invoice, routes: [] }, 200);
+        }
+      } catch {
+        // fall through to error
+      }
+      return jsonResponse({ status: 'ERROR', reason: 'Failed to parse wallet response' }, 200);
+    }
+
+    await this.ctx.storage.delete(rpcKey);
+    await this.engine.processClose(rpcId, subId);
+    return jsonResponse({ status: 'ERROR', reason: 'Wallet not connected' }, 200);
   }
 }
 
@@ -258,6 +382,23 @@ function jsonResponse(body: unknown, status: number): Response {
   });
 }
 
+// ── Response dispatch helper ──
+
+function sendToConnection(
+  connections: ConnectionRegistry,
+  fallbackWs: WebSocketHandle,
+  responses: EngineResponse[],
+): void {
+  for (const resp of responses) {
+    if (resp.kind === 'send') {
+      const sent = connections.send(resp.recipientId, relayMessageToJSON(resp.message));
+      if (!sent) {
+        fallbackWs.send(relayMessageToJSON(resp.message));
+      }
+    }
+  }
+}
+
 // ── Extracted message processing ──
 
 export async function processMessage(
@@ -269,16 +410,17 @@ export async function processMessage(
   let parsed: ClientMessage;
   try {
     parsed = parseClientMessage(text);
-  } catch {
+  } catch (e) {
+    const errMsg = e instanceof Error ? e.message : String(e);
     try {
       const partial = JSON.parse(text);
       if (Array.isArray(partial) && partial[0] === 'EVENT' && partial[1]?.id) {
-        ws.send(JSON.stringify(['OK', partial[1].id, false, 'parse failed']));
+        ws.send(JSON.stringify(['OK', partial[1].id, false, `parse failed: ${errMsg}`]));
       } else {
-        ws.send(JSON.stringify(['NOTICE', 'parse failed']));
+        ws.send(JSON.stringify(['NOTICE', `parse failed: ${errMsg}`]));
       }
     } catch {
-      ws.send(JSON.stringify(['NOTICE', 'parse failed']));
+      ws.send(JSON.stringify(['NOTICE', `parse failed: ${errMsg}`]));
     }
     return;
   }
@@ -291,28 +433,20 @@ export async function processMessage(
   await engine.load(connectionId);
   connections.addExternal(connectionId, ws);
 
-  if (parsed.type === 'EVENT') {
-    const event = parsed.event;
-    const result = engine.validateEvent(event);
-    if (result.ok) {
-      ws.send(relayMessageToJSON({ type: 'OK', id: event.id, ok: true, message: '' }));
-      const responses = await engine.routeVerifiedEvent(connectionId, event);
-      for (const resp of responses) {
-        if (resp.kind === 'send') {
-          ws.send(relayMessageToJSON(resp.message));
-        }
+    if (parsed.type === 'EVENT') {
+      const event = parsed.event;
+      const result = engine.validateEvent(event);
+      if (result.ok) {
+        ws.send(relayMessageToJSON({ type: 'OK', id: event.id, ok: true, message: '' }));
+        const responses = await engine.routeVerifiedEvent(connectionId, event);
+        sendToConnection(connections, ws, responses);
+      } else {
+        ws.send(relayMessageToJSON({ type: 'OK', id: result.id, ok: false, message: result.error }));
       }
     } else {
-      ws.send(relayMessageToJSON({ type: 'OK', id: result.id, ok: false, message: result.error }));
+      const responses = await handleNonEventMessage(parsed, connectionId, engine);
+      sendToConnection(connections, ws, responses);
     }
-  } else {
-    const responses = await handleNonEventMessage(parsed, connectionId, engine);
-    for (const resp of responses) {
-      if (resp.kind === 'send') {
-        ws.send(relayMessageToJSON(resp.message));
-      }
-    }
-  }
 }
 
 async function handleNonEventMessage(

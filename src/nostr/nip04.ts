@@ -1,6 +1,5 @@
 import { RelayError } from './error.ts';
 import { base64Encode, base64Decode } from '../util.ts';
-
 export async function encryptNip04(sharedSecret: Uint8Array, plaintext: string): Promise<string> {
   const iv = crypto.getRandomValues(new Uint8Array(16));
   const key = await crypto.subtle.importKey('raw', sharedSecret as BufferSource, { name: 'AES-CBC' }, false, ['encrypt']);
@@ -18,8 +17,11 @@ export async function decryptNip04(sharedSecret: Uint8Array, encryptedContent: s
     throw RelayError.Generic('Invalid NIP-04 format');
   }
 
+  // Strip trailing &mac=... that some clients append
+  const ivPart = parts[1].split('&')[0];
+
   const ctBytes = base64Decode(parts[0]);
-  const ivBytes = base64Decode(parts[1]);
+  const ivBytes = base64Decode(ivPart);
 
   const key = await crypto.subtle.importKey('raw', sharedSecret as BufferSource, { name: 'AES-CBC' }, false, ['decrypt']);
   const decrypted = await crypto.subtle.decrypt({ name: 'AES-CBC', iv: ivBytes as BufferSource }, key, ctBytes as BufferSource);

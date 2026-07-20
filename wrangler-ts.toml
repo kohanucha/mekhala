@@ -1,0 +1,21 @@
+name = "mekhala-ts"
+main = "src/cloudflare/index.ts"
+compatibility_date = "2026-04-30"
+
+[vars]
+WALLET_REGION = "apac"
+MAX_CONNECTIONS = "100"
+MAX_CONTENT_LENGTH = "65536"
+MAX_SUBSCRIPTIONS_PER_CONNECTION = "100"
+
+[[durable_objects.bindings]]
+name = "MEKHALA_NWC_DO"
+class_name = "CloudflareTransport"
+
+[[kv_namespaces]]
+binding = "MEKHALA_NWC_KV"
+id = "MEKHALA_NWC_KV_ID"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CloudflareTransport"]

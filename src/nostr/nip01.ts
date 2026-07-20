@@ -35,21 +35,21 @@ export function parseClientMessage(text: string): ClientMessage {
 
   switch (msgType) {
     case 'EVENT': {
-      if (arr.length < 2) throw new Error('EVENT requires event data');
+      if (arr.length < 2) throw new Error(`unknown message type: ${msgType}`);
       const event = parseEventJSON(arr[1] as Record<string, unknown>);
       return { type: 'EVENT', event };
     }
     case 'REQ': {
-      if (arr.length < 3) throw new Error('REQ requires sub_id and at least one filter');
+      if (arr.length < 3) throw new Error(`unknown message type: ${msgType}`);
       const subId = arr[1];
-      if (typeof subId !== 'string') throw new Error('subscription id must be a string');
+      if (typeof subId !== 'string') throw new Error(`unknown message type: ${msgType}`);
       const filters = (arr.slice(2) as Record<string, unknown>[]).map(f => filterFromJSON(f));
       return { type: 'REQ', subscriptionId: subId, filters };
     }
     case 'CLOSE': {
-      if (arr.length < 2) throw new Error('CLOSE requires sub_id');
+      if (arr.length < 2) throw new Error(`unknown message type: ${msgType}`);
       const subId = arr[1];
-      if (typeof subId !== 'string') throw new Error('subscription id must be a string');
+      if (typeof subId !== 'string') throw new Error(`unknown message type: ${msgType}`);
       return { type: 'CLOSE', subscriptionId: subId };
     }
     default:

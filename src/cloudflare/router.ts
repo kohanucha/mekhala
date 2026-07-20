@@ -14,12 +14,12 @@ export async function handleRequest(
     return corsResponse(null, 204);
   }
 
-  const lnurlMatch = path.match(/^\/\.well-known\/lnurlp\/(.+)$/);
+  const lnurlMatch = path.match(/\/\.well-known\/lnurlp\/([^/]+)$/);
   if (lnurlMatch) {
-    return handleLnurlp(lnurlMatch[1], env);
+    return handleLnurlp(lnurlMatch[1], request, env);
   }
 
-  if (path.startsWith('/lnaddress/') && path.endsWith('/callback')) {
+  if (path.includes('/lnaddress/') && path.endsWith('/callback')) {
     return forwardToDo(request, env);
   }
 
@@ -59,6 +59,7 @@ function nip11Response(): Response {
   const body = JSON.stringify({ supported_nips: [1, 9, 11, 47] });
   const headers = new Headers({
     'Content-Type': 'application/nostr+json',
+    'Access-Control-Allow-Origin': '*',
   });
   securityHeaders(headers);
   return new Response(body, { status: 200, headers });
@@ -92,6 +93,7 @@ function handleRelay(
 
 async function handleLnurlp(
   username: string,
+  request: Request,
   env: Record<string, unknown>,
 ): Promise<Response> {
   const kv = env.MEKHALA_NWC_KV as KVNamespace;
@@ -99,10 +101,11 @@ async function handleLnurlp(
   const nwcUri = await store.getNwcUri(username);
 
   if (nwcUri == null) {
-    return corsResponse({ status: 'ERROR', reason: 'Not Found' }, 404);
+    return corsResponse({ status: 'ERROR', reason: 'not found' }, 200);
   }
 
-  const callbackUrl = `/.well-known/lnurlp/${username}`;
+  const url = new URL(request.url);
+  const callbackUrl = `${url.origin}/lnaddress/${username}/callback`;
   const body = {
     status: 'OK',
     callback: callbackUrl,

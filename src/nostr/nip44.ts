@@ -1,16 +1,16 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { hmac } from '@noble/hashes/hmac.js';
-import { hkdf } from '@noble/hashes/hkdf.js';
+import { extract, expand } from '@noble/hashes/hkdf.js';
 import { chacha20 } from '@noble/ciphers/chacha.js';
 import { RelayError } from './error.ts';
 import { base64Encode, base64Decode } from '../util.ts';
 
 function deriveConversationKey(sharedSecret: Uint8Array): Uint8Array {
-  return hmac(sha256, new TextEncoder().encode('nip44-v2'), sharedSecret);
+  return extract(sha256, sharedSecret, new TextEncoder().encode('nip44-v2'));
 }
 
 function deriveMessageKeys(conversationKey: Uint8Array, nonce: Uint8Array): { chachaKey: Uint8Array; chachaNonce: Uint8Array; hmacKey: Uint8Array } {
-  const okm = hkdf(sha256, conversationKey, new Uint8Array(0), nonce, 76);
+  const okm = expand(sha256, conversationKey, nonce, 76);
   return {
     chachaKey: okm.slice(0, 32),
     chachaNonce: okm.slice(32, 44),
