@@ -4,7 +4,7 @@ import { Tag } from './tag.ts';
 import { RelayError } from './error.ts';
 import { DEFAULT_LIMITS } from './limits.ts';
 import { schnorr } from '@noble/curves/secp256k1.js';
-import { hexDecode, hexEncode } from '../util.ts';
+import { hexDecode, hexEncode } from '../common/util.ts';
 
 const TEST_WALLET_SK = '0101010101010101010101010101010101010101010101010101010101010101';
 const TEST_WALLET_PK = '1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f';
@@ -56,7 +56,7 @@ describe('verifyEvent', () => {
 
   it('rejects invalid kind', () => {
     const event = makeEvent('id1', 'pk1', 1, [], '', 1700000000);
-    expect(() => verifyEvent(event, 1700000000, DEFAULT_LIMITS)).toThrow('blocked: event kind not allowed');
+    expect(() => { verifyEvent(event, 1700000000, DEFAULT_LIMITS); }).toThrow('blocked: event kind not allowed');
   });
 
   it('rejects content too large', () => {
@@ -71,22 +71,22 @@ describe('verifyEvent', () => {
 
   it('kind 23196 missing p-tag', () => {
     const event = makeEvent('id1', 'pk1', 23196, [], '', 1700000000);
-    expect(() => verifyEvent(event, 1700000000, DEFAULT_LIMITS)).toThrow('invalid: missing p');
+    expect(() => { verifyEvent(event, 1700000000, DEFAULT_LIMITS); }).toThrow('invalid: missing p');
   });
 
   it('kind 23197 missing p-tag', () => {
     const event = makeEvent('id2', 'pk1', 23197, [Tag.e('eid1')], '', 1700000000);
-    expect(() => verifyEvent(event, 1700000000, DEFAULT_LIMITS)).toThrow('invalid: missing p');
+    expect(() => { verifyEvent(event, 1700000000, DEFAULT_LIMITS); }).toThrow('invalid: missing p');
   });
 
   it('kind 23195 missing p-tag', () => {
     const event = makeEvent('id3', 'pk1', 23195, [Tag.e('eid1')], '', 1700000000);
-    expect(() => verifyEvent(event, 1700000000, DEFAULT_LIMITS)).toThrow('invalid: missing p');
+    expect(() => { verifyEvent(event, 1700000000, DEFAULT_LIMITS); }).toThrow('invalid: missing p');
   });
 
   it('kind 23195 missing e-tag', () => {
     const event = makeEvent('id4', 'pk1', 23195, [Tag.p('pk2')], '', 1700000000);
-    expect(() => verifyEvent(event, 1700000000, DEFAULT_LIMITS)).toThrow('invalid: missing e');
+    expect(() => { verifyEvent(event, 1700000000, DEFAULT_LIMITS); }).toThrow('invalid: missing e');
   });
 
   it('kind 23196 with p-tag passes kind check', () => {

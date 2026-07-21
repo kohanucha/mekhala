@@ -1,8 +1,8 @@
 import { fromEnv } from './config.ts';
 import { getDurableStub } from './durable_object.ts';
-import { AccessPolicy } from '../auth.ts';
+import { AccessPolicy } from './auth.ts';
 import { CloudflareKvStore } from './kv.ts';
-import { isValidUsername } from '../lnaddress/validation.ts';
+import { isValidUsername } from '../lnaddress/index.ts';
 
 export async function handleRequest(
   request: Request,
@@ -15,7 +15,7 @@ export async function handleRequest(
     return corsResponse(null, 204);
   }
 
-  const lnurlMatch = path.match(/\/\.well-known\/lnurlp\/([^/]+)$/);
+  const lnurlMatch = /\/\.well-known\/lnurlp\/([^/]+)$/.exec(path);
   if (lnurlMatch) {
     return handleLnurlp(lnurlMatch[1], request, env);
   }
@@ -67,7 +67,7 @@ function nip11Response(): Response {
 
 function isWebSocketUpgrade(request: Request): boolean {
   const upgrade = request.headers.get('Upgrade');
-  return upgrade != null && upgrade.toLowerCase() === 'websocket';
+  return upgrade?.toLowerCase() === 'websocket';
 }
 
 function handleRelay(

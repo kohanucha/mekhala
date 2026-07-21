@@ -21,8 +21,8 @@ export function filterFromJSON(json: Record<string, unknown>): Filter {
   if (Array.isArray(pRaw)) f.pTags = pRaw as string[];
   const eRaw = json['#e'];
   if (Array.isArray(eRaw)) f.eTags = eRaw as string[];
-  if (typeof json.since === 'number') f.since = json.since as number;
-  if (typeof json.until === 'number') f.until = json.until as number;
+  if (typeof json.since === 'number') f.since = json.since;
+  if (typeof json.until === 'number') f.until = json.until;
   if (typeof json.limit === 'number' || typeof json.limit === 'string') {
     f.limit = Number(json.limit);
   }

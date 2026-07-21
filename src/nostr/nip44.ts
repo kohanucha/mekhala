@@ -3,7 +3,7 @@ import { hmac } from '@noble/hashes/hmac.js';
 import { extract, expand } from '@noble/hashes/hkdf.js';
 import { chacha20 } from '@noble/ciphers/chacha.js';
 import { RelayError } from './error.ts';
-import { base64Encode, base64Decode } from '../util.ts';
+import { base64Encode, base64Decode } from '../common/util.ts';
 
 function deriveConversationKey(sharedSecret: Uint8Array): Uint8Array {
   return extract(sha256, sharedSecret, new TextEncoder().encode('nip44-v2'));

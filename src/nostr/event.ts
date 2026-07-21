@@ -3,7 +3,7 @@ import { schnorr } from '@noble/curves/secp256k1.js';
 import { Tag } from './tag.ts';
 import { RelayError } from './error.ts';
 import { Limits, DEFAULT_LIMITS, isNwcKind } from './limits.ts';
-import { hexEncode, hexDecode } from '../util.ts';
+import { hexEncode, hexDecode } from '../common/util.ts';
 
 export interface Event {
   id: string;

@@ -1,7 +1,7 @@
-import type { NwcTransport } from '../common/mod.ts';
+import type { NwcTransport } from '../common/index.ts';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { hexEncode } from '../util.ts';
-import { NwcSession } from './wallet_connector.ts';
+import { hexEncode } from '../common/util.ts';
+import { NwcSession } from './wallet-connector.ts';
 
 export function payRequestInfo(username: string, requestUrl: URL): Record<string, unknown> {
   const callbackUrl = buildCallbackUrl(username, requestUrl);

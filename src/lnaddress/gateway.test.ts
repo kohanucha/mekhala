@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { payRequestInfo, createInvoice, buildCallbackUrl, generateMetadata, getDescriptionHash } from './gateway.ts';
-import { MockTransport } from '../common/test_helpers.ts';
+import { MockTransport } from '../common/test-helpers.ts';
 
 describe('buildCallbackUrl', () => {
   it('local dev', () => {

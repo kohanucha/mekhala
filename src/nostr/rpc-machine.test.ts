@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { NwcRpcMachine } from './rpc_machine.ts';
+import { NwcRpcMachine } from './rpc-machine.ts';
 import type { Event } from './event.ts';
 import type { RelayMessage } from './nip01.ts';
 import { Tag } from './tag.ts';

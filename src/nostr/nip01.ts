@@ -131,7 +131,7 @@ function parseEventJSON(json: Record<string, unknown>): Event {
     pubkey: json.pubkey as string,
     createdAt: json.created_at as number,
     kind: json.kind as number,
-    tags: ((json.tags as Array<Array<unknown>>) ?? []).map(t => Tag.fromJSON(t as never)),
+    tags: ((json.tags as unknown[][]) ?? []).map(t => Tag.fromJSON(t as never)),
     content: json.content as string,
     sig: json.sig as string,
   };

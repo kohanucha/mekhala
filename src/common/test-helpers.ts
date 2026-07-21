@@ -1,10 +1,7 @@
-import { NwcClient, EncryptionMethod } from '../nostr/nip47.ts';
-import type { NwcUri, WalletInfo } from '../nostr/nip47.ts';
-import type { Event } from '../nostr/event.ts';
-import { Tag } from '../nostr/tag.ts';
-import { NwcError } from './mod.ts';
-import { NostrEngine } from '../nostr/engine.ts';
-import { DEFAULT_LIMITS } from '../nostr/limits.ts';
+/* eslint-disable @typescript-eslint/require-await */
+
+import { NwcClient, EncryptionMethod, type NwcUri, type WalletInfo, type Event, Tag, NostrEngine, DEFAULT_LIMITS } from '../nostr/index.ts';
+import { NwcError } from './index.ts';
 
 // ── Constants ──
 

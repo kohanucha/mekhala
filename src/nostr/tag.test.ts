@@ -124,7 +124,7 @@ describe('Tags in Event JSON', () => {
       sig: 'sig1',
     };
 
-    const tags = tagsArrayFromJSON(eventJson.tags as any);
+    const tags = tagsArrayFromJSON(eventJson.tags);
     expect(tags.length).toBe(3);
     expect(tags[0].equals(Tag.p('wallet_pk'))).toBe(true);
     expect(tags[1].equals(Tag.e('event1'))).toBe(true);

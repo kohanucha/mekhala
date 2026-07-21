@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { NwcSession } from './wallet_connector.ts';
-import { MockTransport, TEST_NWC_URI, TEST_WALLET_SK } from '../common/test_helpers.ts';
-import { NwcClient, parseNwcUri, EncryptionMethod } from '../nostr/nip47.ts';
-import type { WalletInfo } from '../nostr/nip47.ts';
+import { NwcSession } from './wallet-connector.ts';
+import { MockTransport, TEST_NWC_URI, TEST_WALLET_SK } from '../common/test-helpers.ts';
+import { NwcClient, parseNwcUri, EncryptionMethod, type WalletInfo } from '../nostr/index.ts';
 
 describe('NwcSession', () => {
   it('makeInvoice with NIP-04', async () => {

@@ -1,10 +1,10 @@
 import { RelayError } from './error.ts';
-import { base64Encode, base64Decode } from '../util.ts';
+import { base64Encode, base64Decode } from '../common/util.ts';
 export async function encryptNip04(sharedSecret: Uint8Array, plaintext: string): Promise<string> {
   const iv = crypto.getRandomValues(new Uint8Array(16));
   const key = await crypto.subtle.importKey('raw', sharedSecret as BufferSource, { name: 'AES-CBC' }, false, ['encrypt']);
   const ptBytes = new TextEncoder().encode(plaintext);
-  const encrypted = await crypto.subtle.encrypt({ name: 'AES-CBC', iv }, key, ptBytes as BufferSource);
+  const encrypted = await crypto.subtle.encrypt({ name: 'AES-CBC', iv }, key, ptBytes);
 
   const ctB64 = base64Encode(new Uint8Array(encrypted));
   const ivB64 = base64Encode(iv);

@@ -21,14 +21,24 @@ The relay acts as an ephemeral "routing engine" between Lightning wallet applica
 ## Project Structure
 - `.github/workflows/`: CI/CD pipelines.
 - `src/`: Core TypeScript source code.
-    - `cloudflare/index.ts`: Worker entry point and Durable Object implementation.
-    - `cloudflare/router.ts`: Request router and HTTP handlers.
-    - `cloudflare/transport.ts`: Cloudflare Transport Durable Object (WebSocket, Hibernation).
-    - `cloudflare/kv.ts`: KV namespace operations.
-    - `auth.ts`: Authentication logic.
+    - `cloudflare/`: Cloudflare Workers transport layer.
+        - `index.ts`: Worker entry point.
+        - `router.ts`: Request router and HTTP handlers.
+        - `transport.ts`: Cloudflare Transport Durable Object (WebSocket, Hibernation).
+        - `auth.ts`: Relay access control.
+        - `kv.ts`: KV namespace operations.
+        - `ws-handler.ts`: WebSocket message processing.
+        - `http.ts`: HTTP response helpers.
+        - `connection.ts`: Connection registry.
+        - `config.ts`: Environment configuration.
+        - `storage.ts`: Durable Object storage adapter.
     - `lnaddress/`: LN Address to NWC bridging logic.
     - `nostr/`: Nostr protocol implementation (NIPs, Event, Filter, Limits, Engine).
     - `common/`: Shared utilities, types, and test helpers.
+        - `util.ts`: Hex/base64 encoding, logging helpers.
+        - `nwc-error.ts`: NWC error types.
+        - `nwc-transport.ts`: NWC transport and user store interfaces.
+        - `test-helpers.ts`: Cross-module test utilities (MockStorage, MockTransport).
 - `test/`: Integration tests (Node.js via nostr-tools).
 - `scripts/`: Shell scripts for development and CI.
     - `build.sh`: Type-check script (`npx tsc --noEmit`).

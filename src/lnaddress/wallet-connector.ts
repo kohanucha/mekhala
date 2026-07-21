@@ -1,10 +1,6 @@
-import type { NwcTransport } from '../common/mod.ts';
-import { NwcError } from '../common/mod.ts';
-import type { NwcMethod } from '../nostr/nip47.ts';
-import { parseNwcUri } from '../nostr/nip47.ts';
-import { NwcClient } from '../nostr/nip47.ts';
-import { EncryptionMethod } from '../nostr/nip47.ts';
-import type { NwcResponse } from '../nostr/nip47.ts';
+import type { NwcTransport } from '../common/index.ts';
+import { NwcError } from '../common/index.ts';
+import { parseNwcUri, NwcClient, EncryptionMethod, type NwcResponse, type NwcMethod } from '../nostr/index.ts';
 
 export class NwcSession {
   private transport: NwcTransport;
@@ -18,7 +14,7 @@ export class NwcSession {
 
   async makeInvoice(amountMsat: number, descriptionHash: string): Promise<string> {
     const params = { amount: amountMsat, description_hash: descriptionHash };
-    const result = await this.call('make_invoice' as NwcMethod, params);
+    const result = await this.call('make_invoice', params);
     const invoice = result?.invoice;
     if (typeof invoice !== 'string') {
       throw NwcError.protocolError('Missing invoice in response');

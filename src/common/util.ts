@@ -11,8 +11,8 @@ const HEX_CHARS = '0123456789abcdef';
 
 export function hexEncode(bytes: Uint8Array): string {
   let hex = '';
-  for (let i = 0; i < bytes.length; i++) {
-    hex += HEX_CHARS[bytes[i] >> 4] + HEX_CHARS[bytes[i] & 0x0f];
+  for (const byte of bytes) {
+    hex += HEX_CHARS[byte >> 4] + HEX_CHARS[byte & 0x0f];
   }
   return hex;
 }
@@ -27,8 +27,8 @@ export function hexDecode(hex: string): Uint8Array {
 
 export function base64Encode(bytes: Uint8Array): string {
   let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
   }
   return btoa(binary);
 }

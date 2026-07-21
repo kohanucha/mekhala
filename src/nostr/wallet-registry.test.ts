@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { MockStorage, seedSubscription } from '../common/test_helpers.ts';
+import { MockStorage, seedSubscription } from '../common/test-helpers.ts';
 import { DEFAULT_LIMITS, createLimits } from './limits.ts';
-import { WalletRegistry } from './wallet_registry.ts';
+import { WalletRegistry } from './wallet-registry.ts';
 import type { Event } from './event.ts';
 import type { Filter } from './filter.ts';
 import { Tag } from './tag.ts';
@@ -39,7 +39,7 @@ describe('WalletRegistry', () => {
   });
 
   describe('hibernation contract', () => {
-    async function simulateHibernation(original: MockStorage): Promise<WalletRegistry<MockStorage>> {
+    function simulateHibernation(original: MockStorage): WalletRegistry<MockStorage> {
       const newStorage = new MockStorage();
       for (const [k, v] of original.data) {
         newStorage.data.set(k, v);
@@ -53,7 +53,7 @@ describe('WalletRegistry', () => {
 
       await registry.subscribe(1, 'sub1', [{ authors: ['alice'] }]);
 
-      const registry2 = await simulateHibernation(storage);
+      const registry2 = simulateHibernation(storage);
 
       const event = makeEvent();
       const responses = await registry2.matchEvent(event);
@@ -74,7 +74,7 @@ describe('WalletRegistry', () => {
       });
       await registry.cacheInfo(info);
 
-      const registry2 = await simulateHibernation(storage);
+      const registry2 = simulateHibernation(storage);
 
       const retrieved = await registry2.getInfo('alice');
       expect(retrieved).not.toBeNull();
@@ -94,7 +94,7 @@ describe('WalletRegistry', () => {
       await registry.unsubscribe(1, 'sub1');
       await registry.subscribe(1, 'sub1', [{ authors: ['bob'] }]);
 
-      const registry2 = await simulateHibernation(storage);
+      const registry2 = simulateHibernation(storage);
 
       const aliceEvent = makeEvent({ pubkey: 'alice', id: 'e1' });
       const aliceResponses = await registry2.matchEvent(aliceEvent);

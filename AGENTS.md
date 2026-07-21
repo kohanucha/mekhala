@@ -15,7 +15,7 @@ Cloudflare Worker (TypeScript) implementing Nostr Wallet Connect (NIP-47) relay 
 
 ## Architecture
 - **Durable Object**: `CloudflareTransport` (src/cloudflare/transport.ts)
-- **Modules**: auth.ts, engine.ts, server.ts, cloudflare/, lnaddress/, nostr/, util/
+- **Modules**: common/, cloudflare/, lnaddress/, nostr/
 
 ## Critical Dependencies
 - `@noble/curves` for Schnorr signatures
@@ -63,10 +63,17 @@ Single-context layout. See `docs/agents/domain.md`.
 - Use `describe`/`it` from `vitest` for unit tests.
 
 ### Shared test utilities
-- Cross-module test helpers like `MockStorage` live in `src/common/test_helpers.ts`.
+- Cross-module test helpers like `MockStorage` live in `src/common/test-helpers.ts`.
 
 ### Time mocking
 - Use `vi.setSystemTime()` (vitest) for time mocking in unit tests.
+
+## Naming Conventions
+- **kebab-case** for all filenames (except NIP files like `nip01.ts` — nostr ecosystem convention)
+- **`index.ts`** barrel at each module root re-exports only the public API
+- **Cross-module** imports use the barrel (`../nostr/index.ts`)
+- **Intra-module** imports use direct paths (`./event.ts`)
+- **Private internals** are not re-exported from barrels (e.g. `WalletRegistry`, `NwcRpcMachine`)
 
 ## Coverage Gate
 - Maintain ≥90% line coverage on testable modules (everything outside `cloudflare/`)

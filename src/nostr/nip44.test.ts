@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { encryptNip44, decryptNip44, pad, unpad } from './nip44.ts';
-import { base64Encode, base64Decode } from '../util.ts';
+import { base64Encode, base64Decode } from '../common/util.ts';
 
 describe('NIP-44 padding', () => {
   it('pads short messages to 32 bytes + 2 byte header', () => {

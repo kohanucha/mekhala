@@ -5,8 +5,8 @@ import { isNwcKind } from './limits.ts';
 import type { ClientMessage, RelayMessage } from './nip01.ts';
 import { verifyEvent } from './event.ts';
 import { filterPubkeys, filterMatches, filterIsValid } from './filter.ts';
-import { WalletRegistry } from './wallet_registry.ts';
-import type { Storage } from './wallet_registry.ts';
+import { WalletRegistry } from './wallet-registry.ts';
+import type { Storage } from './wallet-registry.ts';
 import { RelayError } from './error.ts';
 import { parseWalletInfo } from './nip47.ts';
 import type { WalletInfo } from './nip47.ts';
@@ -219,7 +219,7 @@ export class NostrEngine<S extends Storage> {
       }
     }
 
-    if (globalLimit !== undefined && globalLimit < Infinity) {
+    if (globalLimit < Infinity) {
       const eventCount = responses.filter(
         (r): r is { kind: 'send'; recipientId: number; message: RelayMessage & { type: 'EVENT' } } =>
           r.kind === 'send' && r.message.type === 'EVENT',
@@ -247,8 +247,8 @@ export class NostrEngine<S extends Storage> {
     return [];
   }
 
-  async onDisconnect(id: number): Promise<EngineResponse[]> {
-    await this.registry.onDisconnect(id);
+  onDisconnect(id: number): EngineResponse[] {
+    this.registry.onDisconnect(id);
     return [];
   }
 

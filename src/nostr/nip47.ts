@@ -2,7 +2,7 @@ import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { schnorr } from '@noble/curves/secp256k1.js';
 import { Tag } from './tag.ts';
 import { RelayError } from './error.ts';
-import { hexEncode, hexDecode } from '../util.ts';
+import { hexEncode, hexDecode } from '../common/util.ts';
 import { encryptNip04, decryptNip04 } from './nip04.ts';
 import { encryptNip44, decryptNip44 } from './nip44.ts';
 import { computeEventId, verifyEvent } from './event.ts';

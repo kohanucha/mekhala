@@ -20,7 +20,7 @@ export type RegistryResponse =
   | { kind: 'send'; recipientId: number; subId: string }
   | { kind: 'wakeUp'; connectionId: number };
 
-type PkEntry = { subs: Set<string>; info: Event | null };
+interface PkEntry { subs: Set<string>; info: Event | null }
 
 function normalizeStorageIds(val: unknown): number[] {
   if (val !== null) {
@@ -169,7 +169,7 @@ class WalletIndex {
       const entry = this.pkIndex.get(pk);
       if (!entry) continue;
 
-      const matching: Array<{ subId: string; connId: number }> = [];
+      const matching: { subId: string; connId: number }[] = [];
       for (const key of entry.subs) {
         const sepIdx = key.indexOf('::');
         const subId = key.substring(0, sepIdx);
@@ -228,9 +228,7 @@ class WalletIndex {
       for (const filter of filters) {
         for (const pk of filterPubkeys(filter)) {
           if (!pubkeys.includes(pk)) pubkeys.push(pk);
-          if (!infoEvent) {
-            infoEvent = this.getInfo(pk);
-          }
+          infoEvent ??= this.getInfo(pk);
         }
       }
     }
@@ -289,7 +287,7 @@ export class WalletRegistry<S extends Storage> {
     this.index.unsubscribe(connId, subId);
     try {
       await this.sync(connId);
-    } catch (e) {
+    } catch {
       // log error but don't propagate (graceful on storage failure)
     }
   }
@@ -356,7 +354,7 @@ export class WalletRegistry<S extends Storage> {
     return loaded;
   }
 
-  async onDisconnect(id: number): Promise<void> {
+  onDisconnect(id: number): void {
     this.index.disconnect(id);
   }
 

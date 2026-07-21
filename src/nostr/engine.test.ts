@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { MockStorage, newTestEngine, testNow, setTestTime, seedSubscription } from '../common/test_helpers.ts';
+import { MockStorage, newTestEngine, testNow, setTestTime, seedSubscription } from '../common/test-helpers.ts';
 import { DEFAULT_LIMITS } from './limits.ts';
 import { NostrEngine } from './engine.ts';
 import type { EngineResponse } from './engine.ts';
@@ -136,7 +136,7 @@ describe('NostrEngine', () => {
 
       // Should get OK: true for the event
       expect(hasResponse(responses, r =>
-        r.kind === 'send' && r.recipientId === bridgeId && r.message.type === 'OK' && r.message.ok === true,
+        r.kind === 'send' && r.recipientId === bridgeId && r.message.type === 'OK' && r.message.ok,
       )).toBe(true);
     });
   });

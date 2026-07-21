@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hexEncode, hexDecode } from '../util.ts';
+import { hexEncode, hexDecode } from '../common/util.ts';
 import { schnorr } from '@noble/curves/secp256k1.js';
 import { Tag } from './tag.ts';
 import { computeEventId } from './event.ts';
@@ -48,19 +48,19 @@ describe('NIP-47', () => {
   });
 
   describe('NwcClient', () => {
-    async function createClient() {
+    function createClient() {
       const nwcUri = parseNwcUri(TEST_NWC_URI);
       return new NwcClient(nwcUri, mockClock);
     }
 
-    it('has required fields on construction', async () => {
-      const client = await createClient();
+    it('has required fields on construction', () => {
+      const client = createClient();
       expect(client.myPubkey).toBeTruthy();
       expect(client.myPubkey.length).toBeGreaterThan(0);
     });
 
     it('encrypt/decrypt roundtrip (NIP-04)', async () => {
-      const client = await createClient();
+      const client = createClient();
       const payload = { test: 'data' };
       const encrypted = await client.encrypt(payload);
       const decrypted = await client.decrypt(encrypted);
@@ -68,7 +68,7 @@ describe('NIP-47', () => {
     });
 
     it('encrypt/decrypt roundtrip (NIP-44)', async () => {
-      const client = await createClient();
+      const client = createClient();
       client.encryptionMethod = EncryptionMethod.Nip44;
       const payload = { test: 'nip44 data' };
       const encrypted = await client.encrypt(payload);
@@ -77,7 +77,7 @@ describe('NIP-47', () => {
     });
 
     it('produces different ciphertexts for same plaintext', async () => {
-      const client = await createClient();
+      const client = createClient();
       const payload = { same: 'data' };
       const encrypted1 = await client.encrypt(payload);
       const encrypted2 = await client.encrypt(payload);
@@ -85,7 +85,7 @@ describe('NIP-47', () => {
     });
 
     it('create request event has required fields', async () => {
-      const client = await createClient();
+      const client = createClient();
       const { event, requestId } = await client.createRequestEvent('make_invoice', {}, []);
       expect(event.pubkey).toBe(client.myPubkey);
       expect(event.kind).toBe(KIND_NWC_REQUEST);
@@ -93,7 +93,7 @@ describe('NIP-47', () => {
     });
 
     it('full request/response roundtrip', async () => {
-      const client = await createClient();
+      const client = createClient();
       const payload = { test: 'data' };
 
       const { requestId } = await client.createRequestEvent('make_invoice', payload, []);

@@ -7,7 +7,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "node test/setup-kv.js && node test/run-all.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --check src/",
+    "format:fix": "prettier --write src/"
   },
   "dependencies": {
     "@noble/ciphers": "2.2.0",
@@ -16,8 +20,12 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260714.1",
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.7.0",
     "nostr-tools": "^2.10.3",
+    "prettier": "^3.9.5",
     "typescript": "^5.8.0",
+    "typescript-eslint": "^8.65.0",
     "vitest": "^3.0.0",
     "ws": "^8.18.0"
   }

@@ -1,22 +1,20 @@
-import { tagsArrayFromJSON, type JsonValue } from '../nostr/tag.ts';
-import type { Event } from '../nostr/event.ts';
-import type { NwcUri } from '../nostr/nip47.ts';
-import type { ClientMessage, RelayMessage } from '../nostr/nip01.ts';
-import { parseClientMessage, relayMessageToJSON } from '../nostr/nip01.ts';
-import { NostrEngine } from '../nostr/engine.ts';
-import type { EngineResponse } from '../nostr/engine.ts';
+import {
+  tagsArrayFromJSON, type JsonValue, type Event, type NwcUri,
+  type ClientMessage, type RelayMessage,
+  relayMessageToJSON,
+  NostrEngine, type EngineResponse,
+  NwcClient, parseNwcUri, EncryptionMethod, type WalletInfo,
+  DEFAULT_LIMITS,
+} from '../nostr/index.ts';
+import { NwcError } from '../common/index.ts';
+import { NwcRpcMachine, type RpcAction } from '../nostr/rpc-machine.ts';
 import { CloudflareStorage } from './storage.ts';
 import { fromEnv } from './config.ts';
 import type { CloudflareConfig } from './config.ts';
 import { ConnectionRegistry } from './connection.ts';
-import type { WebSocketHandle } from './connection.ts';
 import { CloudflareKvStore } from './kv.ts';
-import { NwcRpcMachine } from '../nostr/rpc_machine.ts';
-import type { RpcAction } from '../nostr/rpc_machine.ts';
-import { NwcError } from '../common/mod.ts';
-import type { WalletInfo } from '../nostr/nip47.ts';
-import { NwcClient, parseNwcUri, EncryptionMethod } from '../nostr/nip47.ts';
-import { DEFAULT_LIMITS } from '../nostr/limits.ts';
+import { processMessage } from './ws-handler.ts';
+import { jsonResponse } from './http.ts';
 
 const RPC_TIMEOUT_MS = 10_000;
 const MAX_MESSAGE_LENGTH = 131_072;
@@ -46,7 +44,7 @@ export class CloudflareTransport implements DurableObject {
     };
     this.engine = new NostrEngine(storage, limits, now);
     this.kv = new CloudflareKvStore(
-      (env as Record<string, unknown>).MEKHALA_NWC_KV as KVNamespace,
+      (env).MEKHALA_NWC_KV as KVNamespace,
     );
   }
 
@@ -85,7 +83,7 @@ export class CloudflareTransport implements DurableObject {
             for (const tag of rawEvent.tags) {
               if (tag[0] === 'e' && tag[1]) {
                 const eid = tag[1];
-                if (this.pendingCallback && this.pendingCallback.requestId === eid) {
+                if (this.pendingCallback?.requestId === eid) {
                   this.pendingCallback.resolve(rawEvent);
                   this.pendingCallback = null;
                   break;
@@ -167,7 +165,7 @@ export class CloudflareTransport implements DurableObject {
         text = await Promise.race([
           this.connections.addInternal(id),
           new Promise<string>((_, reject) =>
-            setTimeout(() => reject(NwcError.timeout()), remaining),
+            setTimeout(() => { reject(NwcError.timeout()); }, remaining),
           ),
         ]);
       } catch (e) {
@@ -282,7 +280,7 @@ export class CloudflareTransport implements DurableObject {
   private async handleLnaddressCallback(request: Request, path: string): Promise<Response> {
     const username = path.substring(path.indexOf('/lnaddress/') + '/lnaddress/'.length, path.lastIndexOf('/callback'));
     const url = new URL(request.url);
-    const amountMsat = parseInt(url.searchParams.get('amount') || '', 10);
+    const amountMsat = parseInt(url.searchParams.get('amount') ?? '', 10);
     if (isNaN(amountMsat) || amountMsat <= 0) {
       return jsonResponse({ status: 'ERROR', reason: 'Missing amount' }, 200);
     }
@@ -373,100 +371,4 @@ export class CloudflareTransport implements DurableObject {
   }
 }
 
-// ── Helpers ──
-
-function jsonResponse(body: unknown, status: number): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
-      'Access-Control-Allow-Headers': '*',
-      'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
-      'X-Content-Type-Options': 'nosniff',
-    },
-  });
-}
-
-// ── Response dispatch helper ──
-
-function sendToConnection(
-  connections: ConnectionRegistry,
-  fallbackWs: WebSocketHandle,
-  responses: EngineResponse[],
-): void {
-  for (const resp of responses) {
-    if (resp.kind === 'send') {
-      const sent = connections.send(resp.recipientId, relayMessageToJSON(resp.message));
-      if (!sent) {
-        fallbackWs.send(relayMessageToJSON(resp.message));
-      }
-    }
-  }
-}
-
-// ── Extracted message processing ──
-
-export async function processMessage(
-  text: string,
-  ws: WebSocketHandle,
-  engine: NostrEngine<CloudflareStorage>,
-  connections: ConnectionRegistry,
-): Promise<void> {
-  let parsed: ClientMessage;
-  try {
-    parsed = parseClientMessage(text);
-  } catch (e) {
-    const errMsg = e instanceof Error ? e.message : String(e);
-    try {
-      const partial = JSON.parse(text);
-      if (Array.isArray(partial) && partial[0] === 'EVENT' && partial[1]?.id) {
-        ws.send(JSON.stringify(['OK', partial[1].id, false, `parse failed: ${errMsg}`]));
-      } else {
-        ws.send(JSON.stringify(['NOTICE', `parse failed: ${errMsg}`]));
-      }
-    } catch {
-      ws.send(JSON.stringify(['NOTICE', `parse failed: ${errMsg}`]));
-    }
-    return;
-  }
-
-  const connectionId = connections.identify(ws);
-  if (connectionId == null) {
-    ws.send(JSON.stringify(['NOTICE', 'connection lost: please reconnect']));
-    return;
-  }
-  await engine.load(connectionId);
-  connections.addExternal(connectionId, ws);
-
-    if (parsed.type === 'EVENT') {
-      const event = parsed.event;
-      const result = engine.validateEvent(event);
-      if (result.ok) {
-        ws.send(relayMessageToJSON({ type: 'OK', id: event.id, ok: true, message: '' }));
-        const responses = await engine.routeVerifiedEvent(connectionId, event);
-        sendToConnection(connections, ws, responses);
-      } else {
-        ws.send(relayMessageToJSON({ type: 'OK', id: result.id, ok: false, message: result.error }));
-      }
-    } else {
-      const responses = await handleNonEventMessage(parsed, connectionId, engine);
-      sendToConnection(connections, ws, responses);
-    }
-}
-
-async function handleNonEventMessage(
-  msg: ClientMessage,
-  connectionId: number,
-  engine: NostrEngine<CloudflareStorage>,
-): Promise<EngineResponse[]> {
-  switch (msg.type) {
-    case 'REQ':
-      return engine.handleReq(connectionId, msg.subscriptionId, msg.filters);
-    case 'CLOSE':
-      return engine.processClose(connectionId, msg.subscriptionId);
-    default:
-      return [];
-  }
-}
+// ── Helpers imported from ws-handler.ts and http.ts ──

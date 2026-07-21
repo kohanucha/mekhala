@@ -1,4 +1,4 @@
-import type { Storage } from '../nostr/wallet_registry.ts';
+import type { Storage } from '../nostr/wallet-registry.ts';
 
 export class CloudflareStorage implements Storage {
   constructor(private storage: DurableObjectStorage) {}

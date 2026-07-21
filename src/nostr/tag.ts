@@ -52,21 +52,21 @@ export class Tag {
 
   pubkey(): string | null {
     if (this.raw[0] === 'p' && typeof this.raw[1] === 'string') {
-      return this.raw[1] as string;
+      return this.raw[1];
     }
     return null;
   }
 
   eventId(): string | null {
     if (this.raw[0] === 'e' && typeof this.raw[1] === 'string') {
-      return this.raw[1] as string;
+      return this.raw[1];
     }
     return null;
   }
 
   encryptionScheme(): string | null {
     if (this.raw[0] === 'encryption' && typeof this.raw[1] === 'string') {
-      return this.raw[1] as string;
+      return this.raw[1];
     }
     return null;
   }

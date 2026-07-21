@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { NwcError } from './mod.ts';
+import { NwcError } from './index.ts';
 
 describe('NwcError', () => {
   it('WalletNotFound display', () => {

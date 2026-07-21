@@ -5,7 +5,7 @@ import type { WebSocketHandle } from './connection.ts';
 function mockWs(): WebSocketHandle {
   let attachment: number | null = null;
   return {
-    send(_data: string) {},
+    send(_data: string) { void _data; },
     serializeAttachment(id: number) { attachment = id; },
     deserializeAttachment() { return attachment; },
   };
@@ -34,14 +34,14 @@ describe('ConnectionRegistry', () => {
     let resolved = false;
     await Promise.race([
       promise.then(v => { resolved = true; return v; }),
-      new Promise<string>(r => setTimeout(() => r('timeout'), 10)),
+      new Promise<string>(r => setTimeout(() => { r('timeout'); }, 10)),
     ]);
     expect(resolved).toBe(false);
   });
 
   it('internal send consumes entry', () => {
     const reg = new ConnectionRegistry();
-    reg.addInternal(1);
+    void reg.addInternal(1);
     expect(reg.send(1, 'first')).toBe(true);
     expect(reg.send(1, 'second')).toBe(false);
   });
@@ -86,7 +86,7 @@ describe('ConnectionRegistry', () => {
 
   it('findWsById returns null for internal', () => {
     const reg = new ConnectionRegistry();
-    reg.addInternal(5);
+    void reg.addInternal(5);
     expect(reg.findWsById(5)).toBeNull();
   });
 

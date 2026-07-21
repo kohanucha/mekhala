@@ -1,6 +1,3 @@
-import type { Event } from '../nostr/event.ts';
-import type { WalletInfo } from '../nostr/nip47.ts';
-
 export class NwcError extends Error {
   readonly kind: string;
 
@@ -38,13 +35,4 @@ export class NwcError extends Error {
     const msg = e instanceof Error ? e.message : String(e);
     return NwcError.protocolError(msg);
   }
-}
-
-export interface NwcTransport {
-  getWalletInfo(pubkey: string): Promise<WalletInfo | null>;
-  executeNwcRpc(request: Event): Promise<Event>;
-}
-
-export interface UserStore {
-  getNwcUri(username: string): Promise<string | null>;
 }
