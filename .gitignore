@@ -1,17 +1,14 @@
-/target
-*.sled
-Cargo.lock
 .env
 .DS_Store
 *.pdb
 
 # Node.js
 node_modules/
-package-lock.json
 .wrangler/
 
 # Build
 /build/
+/dist/
 /target/
 
 # IDE
@@ -19,3 +16,4 @@ package-lock.json
 
 # Test
 test/wrangler.log
+test/wrangler-ts.log

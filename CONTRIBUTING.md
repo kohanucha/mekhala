@@ -14,14 +14,17 @@ Thank you for your interest in improving Mekhala! We welcome contributions from 
 
 ## 📜 Coding Standards
 
-- **No `unwrap()` or `expect()`:** Mekhala is compiled with `panic = "abort"`. Always handle errors gracefully using `?` or `match`.
+- **No panics:** Always handle errors gracefully using `try`/`catch`.
 - **Security First:** Never log sensitive information or bypass security limits.
 - **Strict NWC focus:** We aim to keep this relay specialized for NIP-47. General social features are out of scope.
+- **File naming:** Use kebab-case for all filenames (e.g., `wallet-registry.ts`). Exceptions: NIP files follow nostr convention (`nip01.ts`).
+- **Module boundaries:** Each module has `index.ts` barrel re-exporting only public API. Cross-module imports use the barrel. Intra-module imports use direct file paths.
+- **Formatting:** Run `npm run format:fix` before committing. Uses Prettier (single quotes, trailing commas).
 
 ## 🧪 Testing
 
 All contributions must pass the existing test suite:
-- **Rust Unit Tests:** `cargo test`
+- **Type-check:** `npx tsc --noEmit`
 - **Full E2E Integration:** `./scripts/test.sh`
 
 ---

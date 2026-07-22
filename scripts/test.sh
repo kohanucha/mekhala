@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 # --- Configuration ---
 PORT=8787
@@ -12,16 +13,13 @@ pkill -9 -f "workerd" 2>/dev/null || true
 cleanup() {
     echo ""
     echo "Stopping wrangler dev server..."
-    # Kill the background wrangler we started (SIGTERM then SIGKILL)
     if [ ! -z "$WRANGLER_PID" ]; then
-        kill $WRANGLER_PID 2>/dev/null
+        kill $WRANGLER_PID 2>/dev/null || true
         sleep 1
-        kill -9 $WRANGLER_PID 2>/dev/null
+        kill -9 $WRANGLER_PID 2>/dev/null || true
     fi
-    # Safety net: match any level of the wrangler dev process tree
     pkill -9 -f "wrangler dev" 2>/dev/null || true
     pkill -9 -f "workerd" 2>/dev/null || true
-    # Port 8788 cleanup (from testMaxConnections in JS)
     lsof -ti :8788 2>/dev/null | xargs kill -9 2>/dev/null || true
     echo "Cleanup complete."
     echo "Wrangler logs saved to: $LOG_FILE"
@@ -31,64 +29,48 @@ trap cleanup EXIT
 echo "🚀 Starting Mekhala Test Suite"
 echo "=============================="
 
-# 1. Run Rust Unit Tests
-echo "Step 1: Running Rust unit tests..."
-cargo test
-if [ $? -ne 0 ]; then
-    echo "❌ Rust unit tests failed!"
-    exit 1
-fi
+# 1. Type-check TypeScript
+echo "Step 1: Type-checking TypeScript..."
+npx tsc --noEmit
+echo "✅ Type-check passed."
 
-# 2. Build for WASM
-echo "Step 2: Building for WASM..."
-./scripts/build.sh
-if [ $? -ne 0 ]; then
-    echo "❌ WASM build failed!"
-    exit 1
-fi
-
-# 2.5. Check port availability
+# 2. Check port availability
 echo "Checking port $PORT..."
-PIDS=$(lsof -ti :$PORT 2>/dev/null)
+PIDS=$(lsof -ti :$PORT 2>/dev/null || true)
 if [ ! -z "$PIDS" ]; then
     BLOCKED_PIDS=""
     for PID in $PIDS; do
-        CMD=$(ps -p $PID -o command= 2>/dev/null)
+        CMD=$(ps -p $PID -o command= 2>/dev/null || true)
         if ! echo "$CMD" | grep -qi "wrangler"; then
             BLOCKED_PIDS="$BLOCKED_PIDS $PID"
         fi
     done
-
     if [ ! -z "$BLOCKED_PIDS" ]; then
         echo "❌ Port $PORT is in use by non-wrangler process(es):"
-        lsof -i :$PORT 2>/dev/null
-        echo ""
-        echo "To free the port, run:"
-        echo "  kill -9$BLOCKED_PIDS"
+        lsof -i :$PORT 2>/dev/null || true
         exit 1
     fi
-
     echo "Waiting for port $PORT to be released..."
     RETRY=0
     while [ $RETRY -lt 5 ]; do
-        if lsof -ti :$PORT 2>/dev/null | grep -q .; then
+        if lsof -ti :$PORT 2>/dev/null | grep -q . 2>/dev/null; then
             sleep 1
             RETRY=$((RETRY + 1))
         else
             break
         fi
     done
-    PIDS_AFTER=$(lsof -ti :$PORT 2>/dev/null)
+    PIDS_AFTER=$(lsof -ti :$PORT 2>/dev/null || true)
     if [ ! -z "$PIDS_AFTER" ]; then
         echo "❌ Port $PORT still occupied after cleanup:"
-        lsof -i :$PORT 2>/dev/null
+        lsof -i :$PORT 2>/dev/null || true
         exit 1
     fi
     echo "Port $PORT is now free."
 fi
 
-# 3. Start Local Relay (redirect output to log file)
-echo "Step 3: Starting local relay on port $PORT..."
+# 3. Start Local Relay
+echo "Step 2: Starting local relay on port $PORT..."
 npx wrangler dev --port $PORT --ip 127.0.0.1 > "$LOG_FILE" 2>&1 &
 WRANGLER_PID=$!
 
@@ -110,11 +92,10 @@ echo "Relay is up!"
 sleep 2
 
 # 5. Run Integration Tests
-echo "Step 4: Running Node.js integration tests..."
-cd test
-npm test -- "127.0.0.1:$PORT"
+echo "Step 3: Running Node.js integration tests..."
+node test/setup-kv.js "127.0.0.1:$PORT"
+node test/run-all.js "127.0.0.1:$PORT"
 TEST_RESULT=$?
-cd ..
 
 if [ $TEST_RESULT -eq 0 ]; then
     echo ""
@@ -123,7 +104,7 @@ else
     echo ""
     echo "❌ TESTS FAILED! Check the output above."
     echo "--- Wrangler Logs ---"
-    cat "$LOG_FILE"
+    tail -50 "$LOG_FILE"
     echo "---------------------"
 fi
 

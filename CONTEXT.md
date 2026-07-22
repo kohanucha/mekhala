@@ -29,61 +29,60 @@ Mekhala provides an LN Address bridge, allowing users to pay to an LN Address (e
 - **SavedState**: A structured object containing a connection's serialized state (for persistence) and an explicit set of associated pubkeys (for indexing). Used to maintain a clean boundary between domain logic and transport-level storage.
 - **WalletRegistry**: A deep module that manages NWC subscription indexing and event routing. It encapsulates the subscription index (filters → connection IDs), pubkey index (pubkey → subscriptions + info event), and coordinates with an asynchronous storage layer to persist and restore connection state.
 - **InternalConnection**: A connection tracked by WalletRegistry that has subscriptions but no backing WebSocket. Used by the LN Address bridge and RPC flow to receive routed NWC responses via oneshot channels instead of WebSocket delivery.
-- **NwcRpcMachine**: A pure state machine that drives the NWC RPC request-response cycle (subscribe → wait for response → success/failure). It is used internally by `CloudflareTransport::execute_nwc_rpc`. The `NwcTransport` trait is the public seam for RPC, with `CloudflareTransport` as the production adapter and `MockTransport` as the test double.
-- **RpcReceiveError**: The error type for the `receive_response` seam — `Timeout` or `ChannelClosed`, both representable without Cloudflare-specific types.
-- **Clock seam**: Both `NostrEngine` and `NwcClient` accept `fn() -> u64` as a clock parameter, defaulting to `crate::util::now`. No domain module calls `now()` directly — all timestamps flow through the injected seam.
-- **UserStore**: A `?Send` trait for looking up NWC connection URIs by username. `CloudflareKvStore` implements it using Workers KV. The seam enables unit-testing the LN Address handler without a worker runtime.
-- **LnAddressHandler<S>**: A struct generic over `UserStore` that orchestrates LNURL-pay requests and callbacks. It resolves usernames to NWC URIs via the `UserStore` seam and delegates invoice creation to `LnAddressGateway` and `NwcSession` via the `NwcTransport` seam.
+- **NwcRpcMachine**: A pure state machine that drives the NWC RPC request-response cycle (subscribe → wait for response → success/failure). It is used internally by `CloudflareTransport.executeNwcRpc`. `NwcTransport` is the public seam for RPC, with `CloudflareTransport` as the production adapter and `MockTransport` as the test double.
+- **Clock seam**: Both `NostrEngine` and `NwcClient` accept `() => number` as a clock parameter, defaulting to `common/util.ts now()`. No domain module calls `now()` directly — all timestamps flow through the injected seam.
+- **UserStore**: An interface for looking up NWC connection URIs by username. `CloudflareKvStore` implements it using Workers KV. The seam enables unit-testing the LN Address handler without a worker runtime.
+- **LnAddressHandler**: A module that orchestrates LNURL-pay requests and callbacks. It resolves usernames to NWC URIs via the `UserStore` seam and delegates invoice creation to `LnAddressGateway` and `NwcSession` via the `NwcTransport` seam.
 
 ## Architecture Map
 
 ### 1. Transport Layer (The Edge)
-**Module:** `CloudflareTransport` (`src/cloudflare/transport.rs`)
+**Module:** `CloudflareTransport` (`src/cloudflare/transport.ts`)
 - **Role:** The entry point living on Cloudflare's edge. It manages the Durable Object lifecycle, physical WebSockets, and **WebSocket Hibernation**. It translates raw incoming HTTP/WebSocket traffic into domain events.
-- **Provides:** `CloudflareStorage`, a concrete adapter for the `Storage` trait, interacting with the Durable Object's internal KV.
+- **Provides:** `CloudflareStorage`, a concrete adapter for the `Storage` interface, interacting with the Durable Object's internal KV.
 - **Composed of:**
-  - `WebSocketRegistry`: manages physical WebSocket connections and hibernation recovery.
-  - `InternalConnectionMap`: manages oneshot channels for RPC responses (InternalConnections).
+  - `ConnectionRegistry`: manages physical WebSocket connections and hibernation recovery.
+  - `processMessage` (`src/cloudflare/ws-handler.ts`): extracted WS message processing.
 - **Calls Down To:**
   - `NostrEngine` to process incoming messages.
   - `WalletRegistry` (via the engine) to proactively wake up hibernating WebSockets when an incoming event targets an offline **Subscription**.
 
 ### 2. The Core Domain (The Routing Engine)
-**Module:** `NostrEngine` (`src/nostr/engine.rs`)
+**Module:** `NostrEngine` (`src/nostr/engine.ts`)
 - **Role:** The stateless **Relay** brain. It is completely decoupled from Cloudflare and networking. It validates incoming NIP-01/NIP-47 messages, enforces security limits, verifies signatures, and determines which connections should receive an event based on active filters.
-- **Seams:** `clock: fn() -> u64` (injected for deterministic timestamp validation), `Storage` trait (injected for async persistence).
+- **Seams:** `clock: () => number` (injected for deterministic timestamp validation), `Storage` interface (injected for async persistence).
 - **Calls Down To:**
   - Protocol parsers (`Event`, `Filter`, `ClientMessage`).
   - `WalletRegistry` to find the recipients for a verified **NWC Event**.
 
 ### 2a. NWC Client Layer
-**Module:** `NwcClient` (`src/nostr/nip_47.rs`)
+**Module:** `NwcClient` (`src/nostr/nip47.ts`)
 - **Role:** Creates and parses NWC request/response events (encryption, signing, expiration tags).
-- **Seams:** `clock: fn() -> u64` (injected for deterministic event creation and verification timestamps).
-- **Production adapter:** `crate::util::now` (default in `NwcClient::new`).
-- **Test double:** `test_now` / custom clock function.
+- **Seams:** `clock: () => number` (injected for deterministic event creation and verification timestamps).
+- **Production adapter:** `common/util.ts now()` (default in `NwcClient`).
+- **Test double:** `testNow` / custom clock function.
 
 ### 2b. RPC Orchestration (inside CloudflareTransport)
-The NWC RPC orchestration loop lives directly in `CloudflareTransport::execute_nwc_rpc` (the `NwcTransport` impl). It uses `NwcRpcMachine` for pure state transitions and owns the oneshot-channel receive loop. The only public seam is `NwcTransport` with its single method `execute_nwc_rpc`.  
-- **Production Adapter:** `CloudflareTransport` (inlines the receive loop with oneshot channels + Delay timers + engine locks).  
-- **Test Double:** `MockTransport` in `wallet_connector.rs` and `gateway.rs` tests (pre-configured response construction).
+The NWC RPC orchestration loop lives directly in `CloudflareTransport.executeNwcRpc` (the `NwcTransport` impl). It uses `NwcRpcMachine` for pure state transitions and owns the oneshot-channel receive loop. The only public seam is `NwcTransport` with its single method `executeNwcRpc`.  
+- **Production Adapter:** `CloudflareTransport` (inlines the receive loop with oneshot channels + timers + engine locks).  
+- **Test Double:** `MockTransport` in `wallet-connector.ts` and `gateway.ts` tests (pre-configured response construction).
 
 ### 3. State & Indexing Layer
-**Module:** `WalletRegistry` (`src/nostr/wallet_registry.rs`)
+**Module:** `WalletRegistry` (`src/nostr/wallet-registry.ts`)
 - **Role:** A deep module that manages the state of the relay. It encapsulates two major concerns:
-  1.  **Asynchronous Persistence:** It takes the `Storage` trait and automatically synchronizes **SavedState** (subscriptions and cached info events) to disk when changes occur. It also handles hydrating state back into memory when an offline user receives an event.
-  2.  **Synchronous Indexing (`WalletIndex`):** An internal, pure data structure containing the `HashMap`s needed to quickly resolve a pubkey or event tag to a specific connection ID.
+  1.  **Asynchronous Persistence:** It takes the `Storage` interface and automatically synchronizes **SavedState** (subscriptions and cached info events) to disk when changes occur. It also handles hydrating state back into memory when an offline user receives an event.
+  2.  **Synchronous Indexing (`WalletIndex`):** An internal, pure data structure containing the `Map`s needed to quickly resolve a pubkey or event tag to a specific connection ID.
 - **Called By:** `NostrEngine`.
 
 ### 4. Integration Layer (The Bridge)
-**Module:** `LnAddressHandler<S: UserStore>` (`src/lnaddress/handler.rs`)
+**Module:** `LnAddressHandler` (`src/lnaddress/gateway.ts` + `wallet-connector.ts`)
 - **Role:** Orchestrates LNURL-pay requests and callbacks using domain logic (`LnAddressGateway`, `NwcSession`) accessed through seams (`UserStore`, `NwcTransport`).
 - **Seams:** `UserStore` (username → NWC URI lookup), `NwcTransport` (existing, for RPC).
-- **Production Adapter:** `CloudflareKvStore` wraps `worker::KvStore` for Workers KV.
-- **Test Double:** `MockUserStore` (HashMap-backed).
+- **Production Adapter:** `CloudflareKvStore` wraps Workers KV.
+- **Test Double:** `MockUserStore` (Map-backed).
 
 ### 4b. LN Address Domain Logic
-**Module:** `LnAddressGateway` (`src/lnaddress/gateway.rs`)
+**Module:** `LnAddressGateway` (`src/lnaddress/gateway.ts`)
 - **Role:** Pure domain logic for LNURL-pay metadata generation, callback URL construction, and description hashing. No infrastructure dependencies.
 - **Called By:** `LnAddressHandler`.
 
