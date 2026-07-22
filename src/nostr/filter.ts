@@ -58,7 +58,8 @@ export function filterMatches(filter: Filter, event: Event): boolean {
       const pk = t.pubkey();
       return pk !== null && pTags.includes(pk);
     });
-    if (!hasMatch) return false;
+    const isInfoMatch = event.kind === 13194 && pTags.includes(event.pubkey);
+    if (!hasMatch && !isInfoMatch) return false;
   }
   if (filter.eTags) {
     const eTags = filter.eTags;

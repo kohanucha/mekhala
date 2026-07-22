@@ -47,6 +47,18 @@ describe('filterMatches', () => {
     expect(filterMatches(filter, makeEvent('id1', 'author1', 1, [Tag.p('pubkey2')], 1000))).toBe(false);
   });
 
+  it('matches info event (kind 13194) by #p via event.pubkey', () => {
+    const filter: Filter = { pTags: ['walletPk'] };
+    expect(filterMatches(filter, makeEvent('id1', 'walletPk', 13194, [], 1000))).toBe(true);
+    expect(filterMatches(filter, makeEvent('id1', 'otherPk', 13194, [], 1000))).toBe(false);
+  });
+
+  it('does not match non-info event by #p via event.pubkey', () => {
+    const filter: Filter = { pTags: ['pk1'] };
+    expect(filterMatches(filter, makeEvent('id1', 'pk1', 1, [Tag.p('pk1')], 1000))).toBe(true);
+    expect(filterMatches(filter, makeEvent('id1', 'pk1', 23194, [], 1000))).toBe(false);
+  });
+
   it('matches by e-tags', () => {
     const filter: Filter = { eTags: ['event1'] };
     expect(filterMatches(filter, makeEvent('id1', 'author1', 1, [Tag.e('event1')], 1000))).toBe(true);

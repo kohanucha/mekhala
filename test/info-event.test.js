@@ -3,7 +3,7 @@ import { RELAY_URL } from "./env.js";
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools/pure";
 
 export async function testInfoEventRetrieval() {
-  console.log("\n--- Simulating Alby Go: Wallet Info Event (kind 13194) Retrieval ---");
+  console.log("\n--- Simulating Alby Go: Wallet Info Event (kind 13194) Retrieval via authors ---");
 
   const walletSk = generateSecretKey();
   const walletPk = getPublicKey(walletSk);
@@ -55,9 +55,70 @@ export async function testInfoEventRetrieval() {
     setTimeout(() => {
       ws.close();
       reject(new Error(
-        "FAIL: Info event (kind 13194) was NOT retrieved. "
+        "FAIL: Info event (kind 13194) was NOT retrieved via authors. "
         + "Publish succeeded (OK) but REQ returned no EVENT. "
         + "Check: wallet registry caching, filter matching, or subscription routing."
+      ));
+    }, 5000);
+  });
+}
+
+export async function testInfoEventRetrievalViaPTag() {
+  console.log("\n--- Simulating Alby Go: Wallet Info Event (kind 13194) Retrieval via #p ---");
+
+  const walletSk = generateSecretKey();
+  const walletPk = getPublicKey(walletSk);
+  const ws = new WebSocket(RELAY_URL);
+
+  return new Promise((resolve, reject) => {
+    let infoEventId = null;
+
+    ws.on("open", () => {
+      console.log("  Connected. Publishing info event (kind 13194)...");
+
+      const infoEvent = finalizeEvent({
+        kind: 13194,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [["encryption", "nip44_v2"]],
+        content: "pay_invoice make_invoice get_balance get_info",
+      }, walletSk);
+      infoEventId = infoEvent.id;
+      ws.send(JSON.stringify(["EVENT", infoEvent]));
+
+      ws.send(JSON.stringify(["REQ", "info-p-test", {
+        kinds: [13194],
+        "#p": [walletPk],
+      }]));
+    });
+
+    ws.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+      console.log("  Received:", msg[0], msg[1] || "");
+
+      if (msg[0] === "OK" && msg[1] === infoEventId) {
+        console.log("  ✅ Info event published (OK).");
+      }
+
+      if (msg[0] === "EVENT" && msg[1] === "info-p-test") {
+        if (msg[2].kind === 13194) {
+          console.log("✅ Alby Go simulation: info event (kind 13194) retrieved via #p successfully.");
+          ws.close();
+          resolve();
+        }
+      }
+
+      if (msg[0] === "EOSE" && msg[1] === "info-p-test") {
+        console.log("  EOSE received (subscription active).");
+      }
+    });
+
+    ws.on("error", reject);
+    setTimeout(() => {
+      ws.close();
+      reject(new Error(
+        "FAIL: Info event (kind 13194) was NOT retrieved via #p filter. "
+        + "Publish succeeded (OK) but REQ returned no EVENT. "
+        + "This is the Bug 11 regression — filterMatches does not fall back to event.pubkey for kind 13194."
       ));
     }, 5000);
   });

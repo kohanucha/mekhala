@@ -1,7 +1,7 @@
 import { isLocal } from "./env.js";
 
 import { testWebSocketMessageDelivery } from "./ws-connect.test.js";
-import { testInfoEventRetrieval, testRealisticNwcFlow, testRealisticPaymentFlow } from "./info-event.test.js";
+import { testInfoEventRetrieval, testInfoEventRetrievalViaPTag, testRealisticNwcFlow, testRealisticPaymentFlow } from "./info-event.test.js";
 import { testAuth, testAuthHeaders, testNip11, testCorsAndHeaders } from "./basic.test.js";
 import { testRelay, testNwcFlow, testStrictValidation, testMultiClientIsolation, testEdgeCases, testLastInWinsRouting, testMaxConnections } from "./nwc-flow.test.js";
 import { testNip01EdgeCases, testFilterMatching, testFilterMatchingAdvanced, testMixedValidInvalidFilters, testFilterLimit } from "./nip01-filters.test.js";
@@ -15,6 +15,7 @@ async function runAll() {
   try {
     await testWebSocketMessageDelivery();
     await testInfoEventRetrieval();
+    await testInfoEventRetrievalViaPTag();
     await testAuth();
     await testAuthHeaders();
     await testNip11();
