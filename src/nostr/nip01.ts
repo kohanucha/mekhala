@@ -16,7 +16,7 @@ export function parsePartialClientMessage(text: string): PartialClientMessage | 
     if (arr.length < 2) return null;
     if (arr[0] === 'EVENT') {
       const event = arr[1] as Record<string, unknown>;
-      if (typeof event?.id === 'string') {
+      if (typeof event.id === 'string') {
         return { type: 'EVENT', id: event.id };
       }
     }
@@ -31,7 +31,7 @@ export function parseClientMessage(text: string): ClientMessage {
   if (arr.length === 0) throw new Error('empty message');
 
   const msgType = arr[0];
-  if (typeof msgType !== 'string') throw new Error(`unknown message type: ${msgType}`);
+  if (typeof msgType !== 'string') throw new Error(`unknown message type: ${String(msgType)}`);
 
   switch (msgType) {
     case 'EVENT': {
@@ -69,7 +69,7 @@ export function parseRelayMessage(text: string): RelayMessage {
   if (arr.length === 0) throw new Error('empty message');
 
   const msgType = arr[0];
-  if (typeof msgType !== 'string') throw new Error(`unknown message type: ${msgType}`);
+  if (typeof msgType !== 'string') throw new Error(`unknown message type: ${String(msgType)}`);
 
   switch (msgType) {
     case 'OK': {
@@ -131,7 +131,7 @@ function parseEventJSON(json: Record<string, unknown>): Event {
     pubkey: json.pubkey as string,
     createdAt: json.created_at as number,
     kind: json.kind as number,
-    tags: ((json.tags as unknown[][]) ?? []).map(t => Tag.fromJSON(t as never)),
+    tags: ((json.tags ?? []) as unknown[][]).map(t => Tag.fromJSON(t as never)),
     content: json.content as string,
     sig: json.sig as string,
   };

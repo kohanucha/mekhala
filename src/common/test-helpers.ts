@@ -27,7 +27,7 @@ export class MockStorage {
   data = new Map<string, unknown>();
   failPutBatch = false;
 
-  async get(key: string): Promise<unknown | null> {
+  async get(key: string): Promise<unknown> {
     return this.data.get(key) ?? null;
   }
 

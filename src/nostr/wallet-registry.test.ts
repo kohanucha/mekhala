@@ -78,6 +78,7 @@ describe('WalletRegistry', () => {
 
       const retrieved = await registry2.getInfo('alice');
       expect(retrieved).not.toBeNull();
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       expect(retrieved!.id).toBe('info1');
 
       const event = makeEvent();
@@ -176,6 +177,7 @@ describe('WalletRegistry', () => {
 
       const stored = await registry.getInfo('alice');
       expect(stored).not.toBeNull();
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       expect(stored!.id).toBe('id1');
     });
 

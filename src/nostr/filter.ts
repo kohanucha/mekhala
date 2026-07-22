@@ -53,16 +53,18 @@ export function filterMatches(filter: Filter, event: Event): boolean {
     return false;
   }
   if (filter.pTags) {
+    const pTags = filter.pTags;
     const hasMatch = event.tags.some(t => {
       const pk = t.pubkey();
-      return pk !== null && filter.pTags!.includes(pk);
+      return pk !== null && pTags.includes(pk);
     });
     if (!hasMatch) return false;
   }
   if (filter.eTags) {
+    const eTags = filter.eTags;
     const hasMatch = event.tags.some(t => {
       const eid = t.eventId();
-      return eid !== null && filter.eTags!.includes(eid);
+      return eid !== null && eTags.includes(eid);
     });
     if (!hasMatch) return false;
   }

@@ -75,10 +75,10 @@ export class CloudflareTransport implements DurableObject {
     // Before processing, try to detect NWC responses for pending callbacks
     if (message.includes('"kind":23195') || message.includes('"kind":23196') || message.includes('"kind":23197')) {
       try {
-        const parsed = JSON.parse(message);
+        const parsed = JSON.parse(message) as unknown[];
         if (Array.isArray(parsed) && parsed[0] === 'EVENT') {
           const rawEvent = parsed[1] as { tags?: string[][]; id?: string };
-          if (rawEvent?.tags) {
+          if (rawEvent.tags) {
             // Check pending callback first (non-blocking, no storage I/O)
             for (const tag of rawEvent.tags) {
               if (tag[0] === 'e' && tag[1]) {
@@ -135,7 +135,7 @@ export class CloudflareTransport implements DurableObject {
 
     const result = this.receiveRpcResponse(id, machine);
 
-    await this.engine.onDisconnect(id);
+    this.engine.onDisconnect(id);
     this.connections.remove(id);
 
     return result;
@@ -153,7 +153,7 @@ export class CloudflareTransport implements DurableObject {
   private async receiveRpcResponse(id: number, machine: NwcRpcMachine): Promise<Event> {
     const start = Date.now();
 
-    while (true) {
+    for (;;) {
       const elapsed = Date.now() - start;
       const remaining = RPC_TIMEOUT_MS - elapsed;
       if (remaining <= 0) {
@@ -355,7 +355,7 @@ export class CloudflareTransport implements DurableObject {
         // Manually decrypt and parse the response to avoid verifyEvent issues
         const decryptedContent = await client.decrypt(parsedEvent.content);
         const responseJson = JSON.parse(decryptedContent) as { result?: Record<string, unknown> };
-        const invoice = responseJson?.result?.invoice;
+        const invoice = responseJson.result?.invoice;
         if (invoice) {
           return jsonResponse({ pr: invoice, routes: [] }, 200);
         }

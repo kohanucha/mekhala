@@ -3,7 +3,7 @@ import type { Storage } from '../nostr/wallet-registry.ts';
 export class CloudflareStorage implements Storage {
   constructor(private storage: DurableObjectStorage) {}
 
-  async get(key: string): Promise<unknown | null> {
+  async get(key: string): Promise<unknown> {
     const val = await this.storage.get(key);
     return val !== undefined ? val : null;
   }

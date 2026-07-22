@@ -48,9 +48,9 @@ export async function processMessage(
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e);
     try {
-      const partial = JSON.parse(text);
-      if (Array.isArray(partial) && partial[0] === 'EVENT' && partial[1]?.id) {
-        ws.send(JSON.stringify(['OK', partial[1].id, false, `parse failed: ${errMsg}`]));
+      const partial = JSON.parse(text) as unknown[];
+      if (Array.isArray(partial) && partial[0] === 'EVENT' && (partial[1] as Record<string, unknown> | undefined)?.id) {
+        ws.send(JSON.stringify(['OK', (partial[1] as Record<string, unknown>).id, false, `parse failed: ${errMsg}`]));
       } else {
         ws.send(JSON.stringify(['NOTICE', `parse failed: ${errMsg}`]));
       }

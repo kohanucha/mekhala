@@ -15,7 +15,7 @@ export class NwcSession {
   async makeInvoice(amountMsat: number, descriptionHash: string): Promise<string> {
     const params = { amount: amountMsat, description_hash: descriptionHash };
     const result = await this.call('make_invoice', params);
-    const invoice = result?.invoice;
+    const invoice = result.invoice;
     if (typeof invoice !== 'string') {
       throw NwcError.protocolError('Missing invoice in response');
     }

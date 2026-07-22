@@ -6,7 +6,7 @@ import { targetPubkeys } from './event.ts';
 import { RelayError } from './error.ts';
 
 export interface Storage {
-  get(key: string): Promise<unknown | null>;
+  get(key: string): Promise<unknown>;
   putBatch(entries: Record<string, unknown>): Promise<void>;
   deleteBatch(keys: string[]): Promise<void>;
 }
@@ -96,7 +96,7 @@ class WalletIndex {
             const entry = this.pkIndex.get(pk);
             if (entry) {
               entry.subs.delete(key);
-              if (entry.subs.size === 0 && entry.info === null) {
+    if (entry.subs.size === 0) {
                 this.pkIndex.delete(pk);
               }
             }
@@ -119,7 +119,7 @@ class WalletIndex {
   }
 
   getSubscriptions(connId: number): Map<string, Filter[]> {
-    return new Map(this.reverseIndex.get(connId) ?? new Map());
+    return new Map(this.reverseIndex.get(connId) ?? new Map<string, Filter[]>());
   }
 
   subCount(connId: number): number {
@@ -150,7 +150,7 @@ class WalletIndex {
     }
     entry.info = null;
 
-    if (entry.subs.size === 0 && entry.info === null) {
+    if (entry.subs.size === 0) {
       this.pkIndex.delete(pubkey);
     }
 

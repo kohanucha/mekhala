@@ -84,6 +84,7 @@ describe('NostrEngine', () => {
 
       const info = await engine.getWalletInfo('pk1');
       expect(info).not.toBeNull();
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       expect(info!.encryptionAlgorithms.length).toBeGreaterThanOrEqual(2);
     });
 
@@ -94,6 +95,7 @@ describe('NostrEngine', () => {
 
       const info = await engine.getWalletInfo('pk1');
       expect(info).not.toBeNull();
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       expect(info!.encryptionAlgorithms).toEqual(['Nip04']);
     });
   });
@@ -230,7 +232,7 @@ describe('NostrEngine', () => {
 
       let msg: ClientMessage;
       try {
-        msg = JSON.parse(JSON.stringify(JSON.parse(eventJson))) as unknown as ClientMessage;
+        msg = JSON.parse(JSON.stringify(JSON.parse(eventJson))) as ClientMessage;
         // Actually just use parseClientMessage
         const { parseClientMessage } = await import('./nip01.ts');
         msg = parseClientMessage(eventJson);
@@ -242,7 +244,9 @@ describe('NostrEngine', () => {
       const responses = await engine.handleTyped(1, msg);
       const ok = findOk(responses);
       expect(ok).not.toBeNull();
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       expect(ok!.ok).toBe(false);
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       expect(ok!.message).toContain('too far');
     });
   });

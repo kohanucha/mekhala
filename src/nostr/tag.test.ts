@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { Tag, tagsArrayFromJSON } from './tag.ts';
+import { Tag, tagsArrayFromJSON, JsonValue } from './tag.ts';
 
 describe('Tag p roundtrip', () => {
   it('serializes and deserializes basic p-tag', () => {
     const tag = Tag.p('abc123');
-    const json = JSON.parse(JSON.stringify(tag));
+    const json = JSON.parse(JSON.stringify(tag)) as JsonValue[];
     expect(json).toEqual(['p', 'abc123']);
     const deserialized = Tag.fromJSON(json);
     expect(deserialized.equals(tag)).toBe(true);
@@ -13,7 +13,7 @@ describe('Tag p roundtrip', () => {
 
   it('serializes and deserializes p-tag with extras', () => {
     const tag = Tag.p('abc123', ['wss://relay.example.com', 'petname']);
-    const json = JSON.parse(JSON.stringify(tag));
+    const json = JSON.parse(JSON.stringify(tag)) as JsonValue[];
     expect(json).toEqual(['p', 'abc123', 'wss://relay.example.com', 'petname']);
     const deserialized = Tag.fromJSON(json);
     expect(deserialized.equals(tag)).toBe(true);
@@ -23,7 +23,7 @@ describe('Tag p roundtrip', () => {
 describe('Tag e roundtrip', () => {
   it('serializes and deserializes e-tag', () => {
     const tag = Tag.e('event_id_1');
-    const json = JSON.parse(JSON.stringify(tag));
+    const json = JSON.parse(JSON.stringify(tag)) as JsonValue[];
     expect(json).toEqual(['e', 'event_id_1']);
     const deserialized = Tag.fromJSON(json);
     expect(deserialized.equals(Tag.e('event_id_1'))).toBe(true);
@@ -34,7 +34,7 @@ describe('Tag e roundtrip', () => {
 describe('Tag encryption roundtrip', () => {
   it('serializes and deserializes encryption tag', () => {
     const tag = Tag.encryption('nip44_v2 nip04');
-    const json = JSON.parse(JSON.stringify(tag));
+    const json = JSON.parse(JSON.stringify(tag)) as JsonValue[];
     expect(json).toEqual(['encryption', 'nip44_v2 nip04']);
     const deserialized = Tag.fromJSON(json);
     expect(deserialized.equals(tag)).toBe(true);
@@ -45,7 +45,7 @@ describe('Tag encryption roundtrip', () => {
 describe('Tag expiration roundtrip', () => {
   it('serializes and deserializes expiration tag from number', () => {
     const tag = Tag.expiration(1234567890);
-    const json = JSON.parse(JSON.stringify(tag));
+    const json = JSON.parse(JSON.stringify(tag)) as JsonValue[];
     expect(json).toEqual(['expiration', '1234567890']);
     const deserialized = Tag.fromJSON(json);
     expect(deserialized.equals(Tag.expiration(1234567890))).toBe(true);
@@ -55,14 +55,14 @@ describe('Tag expiration roundtrip', () => {
     const jsonIn = ['expiration', '1700000000'];
     const tag = Tag.fromJSON(jsonIn);
     expect(tag.equals(Tag.expiration('1700000000'))).toBe(true);
-    const jsonOut = JSON.parse(JSON.stringify(tag));
+    const jsonOut = JSON.parse(JSON.stringify(tag)) as JsonValue[];
     expect(jsonOut).toEqual(jsonIn);
   });
 
   it('handles numeric JSON value', () => {
     const tag = Tag.fromJSON(['expiration', 1234567890]);
     expect(tag.equals(Tag.expiration(1234567890))).toBe(true);
-    const jsonOut = JSON.parse(JSON.stringify(tag));
+    const jsonOut = JSON.parse(JSON.stringify(tag)) as JsonValue[];
     expect(jsonOut).toEqual(['expiration', '1234567890']);
   });
 });
@@ -70,7 +70,7 @@ describe('Tag expiration roundtrip', () => {
 describe('Tag other roundtrip', () => {
   it('serializes and deserializes custom tags', () => {
     const tag = Tag.other('custom', ['value1', 'value2']);
-    const json = JSON.parse(JSON.stringify(tag));
+    const json = JSON.parse(JSON.stringify(tag)) as JsonValue[];
     expect(json).toEqual(['custom', 'value1', 'value2']);
     const deserialized = Tag.fromJSON(json);
     expect(deserialized.equals(tag)).toBe(true);
@@ -137,7 +137,7 @@ describe('Tag preserves non-string values', () => {
     const json = ['p', 'abc123', 'wss://relay.example.com', 'petname'];
     const tag = Tag.fromJSON(json);
     expect(tag.pubkey()).toBe('abc123');
-    expect(JSON.parse(JSON.stringify(tag))).toEqual(json);
+    expect(JSON.parse(JSON.stringify(tag)) as JsonValue[]).toEqual(json);
   });
 });
 
