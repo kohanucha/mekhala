@@ -4,6 +4,7 @@ import type { Limits } from './limits.ts';
 import { filterMatches, filterPubkeys } from './filter.ts';
 import { targetPubkeys } from './event.ts';
 import { RelayError } from './error.ts';
+import { Tag, type JsonValue } from './tag.ts';
 
 export interface Storage {
   get(key: string): Promise<unknown>;
@@ -233,10 +234,14 @@ class WalletIndex {
       }
     }
 
+    const saveEvent = infoEvent
+      ? { ...infoEvent, tags: infoEvent.tags.map(t => t.getRaw()) }
+      : null;
+
     return {
       json: {
         subscriptions: Object.fromEntries(subscriptions),
-        info_event: infoEvent,
+        info_event: saveEvent,
       },
       pubkeys,
     };
@@ -253,7 +258,28 @@ class WalletIndex {
     }
     const infoData = data.info_event;
     if (infoData && typeof infoData === 'object') {
-      this.cacheInfo(infoData as unknown as Event);
+      const raw = infoData as Record<string, unknown>;
+      const rawTags = raw.tags;
+      let tags: Tag[];
+      if (Array.isArray(rawTags)) {
+        tags = rawTags.map((t: unknown) => {
+          if (Array.isArray(t)) return Tag.fromJSON(t);
+          if (t && typeof t === 'object' && 'raw' in t) return Tag.fromJSON((t as { raw: JsonValue[] }).raw);
+          return Tag.other('');
+        });
+      } else {
+        tags = [];
+      }
+      const event: Event = {
+        id: raw.id as string,
+        pubkey: raw.pubkey as string,
+        createdAt: (raw.createdAt ?? raw.created_at) as number,
+        kind: raw.kind as number,
+        tags,
+        content: raw.content as string,
+        sig: raw.sig as string,
+      };
+      this.cacheInfo(event);
     }
   }
 }
@@ -390,7 +416,8 @@ export class WalletRegistry<S extends Storage> {
 
   async cacheInfo(event: Event): Promise<void> {
     const key = `info:${event.pubkey}`;
-    await this.storage.putBatch({ [key]: event });
+    const clean = { ...event, tags: event.tags.map(t => t.getRaw()) };
+    await this.storage.putBatch({ [key]: clean });
     this.index.cacheInfo(event);
   }
 
@@ -401,7 +428,27 @@ export class WalletRegistry<S extends Storage> {
     const key = `info:${pubkey}`;
     const val = await this.storage.get(key);
     if (val && typeof val === 'object') {
-      const event = val as Event;
+      const raw = val as Record<string, unknown>;
+      const rawTags = raw.tags;
+      let tags: Tag[];
+      if (Array.isArray(rawTags)) {
+        tags = rawTags.map((t: unknown) => {
+          if (Array.isArray(t)) return Tag.fromJSON(t);
+          if (t && typeof t === 'object' && 'raw' in t) return Tag.fromJSON((t as { raw: JsonValue[] }).raw);
+          return Tag.other('');
+        });
+      } else {
+        tags = [];
+      }
+      const event: Event = {
+        id: raw.id as string,
+        pubkey: raw.pubkey as string,
+        createdAt: (raw.createdAt ?? raw.created_at) as number,
+        kind: raw.kind as number,
+        tags,
+        content: raw.content as string,
+        sig: raw.sig as string,
+      };
       this.index.cacheInfo(event);
       return event;
     }

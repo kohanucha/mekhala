@@ -233,7 +233,83 @@ export async function testRealisticNwcFlow() {
 
   appWs.close();
   walletWs.close();
-  console.log("✅ Realistic NWC flow completed successfully.");
+  console.log("✅ Realistic payment flow completed successfully.");
+}
+
+export async function testInfoEventTagWireFormat() {
+  console.log("\n--- Verify kind 13194 tags are plain arrays in wire JSON (not {raw} objects) ---");
+
+  const walletSk = generateSecretKey();
+  const walletPk = getPublicKey(walletSk);
+  const ws = new WebSocket(RELAY_URL);
+
+  return new Promise((resolve, reject) => {
+    let infoEventId = null;
+
+    ws.on("open", () => {
+      console.log("  Connected. Publishing info event with encryption tag...");
+
+      const infoEvent = finalizeEvent({
+        kind: 13194,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [["encryption", "nip44_v2"]],
+        content: "pay_invoice",
+      }, walletSk);
+      infoEventId = infoEvent.id;
+      ws.send(JSON.stringify(["EVENT", infoEvent]));
+
+      ws.send(JSON.stringify(["REQ", "wire-check", {
+        kinds: [13194],
+        authors: [walletPk],
+      }]));
+    });
+
+    ws.on("message", (data) => {
+      const raw = data.toString();
+      const msg = JSON.parse(raw);
+      console.log("  Received:", msg[0], msg[1] || "");
+
+      if (msg[0] === "EVENT" && msg[1] === "wire-check") {
+        const event = msg[2];
+        if (event.kind === 13194) {
+          const tags = event.tags;
+          if (!Array.isArray(tags)) {
+            ws.close();
+            return reject(new Error(`FAIL: tags is not an array (got ${typeof tags})`));
+          }
+          for (let i = 0; i < tags.length; i++) {
+            if (!Array.isArray(tags[i])) {
+              ws.close();
+              return reject(new Error(
+                `FAIL: tag[${i}] is not an array (got ${JSON.stringify(tags[i])}). `
+                + "Structured clone deserialization corrupted Tag class instances."
+              ));
+            }
+          }
+          console.log("  ✅ All tags are plain arrays in wire JSON.");
+          console.log(`  ✅ Tag wire format: ${JSON.stringify(tags)}`);
+
+          if (raw.includes('{"raw":')) {
+            ws.close();
+            return reject(new Error("FAIL: wire JSON contains {raw: ...} object — Tag serialization broken"));
+          }
+          console.log("  ✅ No {raw} objects found in wire JSON.");
+          ws.close();
+          resolve();
+        }
+      }
+
+      if (msg[0] === "OK" && msg[1] === infoEventId && msg[2] === true) {
+        console.log("  ✅ Info event published (OK).");
+      }
+    });
+
+    ws.on("error", reject);
+    setTimeout(() => {
+      ws.close();
+      reject(new Error("FAIL: Did not receive kind 13194 event within 5s"));
+    }, 5000);
+  });
 }
 
 export async function testRealisticPaymentFlow() {
