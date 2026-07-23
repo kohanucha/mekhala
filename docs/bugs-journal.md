@@ -722,18 +722,67 @@ when kinds explicitly include 13194, to avoid misrouting NWC requests.
 
 ---
 
-## Heuristics for Future Bugs
+---
 
-When debugging a new issue, check these in order:
+### Structured Clone Bug: `Tag` class loses shape through DO storage
 
-1. **Is production different from `wrangler dev`?** → Test in production.
-2. **Did DO hibernation occur?** → Check if storage has the expected keys.
-3. **Is a `RefCell` borrow held across `.await`?** → Move to `Mutex`.
-4. **Is an in-memory cache substituting for storage?** → Always write through to storage.
-5. **Is deduplication scoped correctly?** → Consider different NWC roles.
-6. **Is the OK sent before async I/O?** → NIP-47 clients expect immediate OK.
-7. **Are tags being deserialized as `String`?** → Use `Value` for fidelity.
-8. **Does `#p` filter need to check `event.pubkey`?** → Special-case kind 13194.
-9. **Is `worker-build` not found in CI?** → Explicit `$HOME/.cargo/bin` in build script.
-10. **Is DO deployment failing on Free Tier?** → Use `new_sqlite_classes` migration.
-11. **Can't reproduce a production bug locally?** → Add targeted diagnostic logs at each decision point in the suspected path.
+**PR:** `fix/tag-serialization-structured-clone`  
+**Severity:** Critical (Alby Go "no info event" timeout)
+
+#### Symptom
+- Alby Go SDK times out with "no info event (kind 13194) returned from relay"
+- Hub **does** publish kind 13194 to all configured relays (confirmed via code trace)
+- `cacheInfo()` stores the event, `getInfo()` retrieves it, but JSON wire format has `"tags":[{"raw":["encryption","nip04"]}]` instead of `"tags":[["encryption","nip04"]]`
+- SDK's `parseEventJSON` calls `Tag.fromJSON(t)` on each tag, but `t` is `{raw:[...]}` not `["encryption",...]`; `t[0]` is `undefined`, `encryptionScheme()` returns `null`, `onevent` callback never fires → 10s timeout
+
+#### Root Cause
+The `Tag` class stores its array data in a private `raw` property:
+
+```ts
+export class Tag {
+  private constructor(private raw: JsonValue[]) {}
+
+  toJSON(): JsonValue[] {
+    return this.raw;  // used by JSON.stringify, NOT by structured clone
+  }
+}
+```
+
+`DurableObjectStorage.putBatch()` uses the **structured clone** algorithm, which does **not** call `toJSON()`. Instead, it clones own properties. A `Tag` instance becomes `{raw: ["encryption","nip04"]}` in storage — a plain object, not an array.
+
+On retrieval via `storage.get()`, the cloned object retains its `{raw: [...]}` shape. When `WalletRegistry.getInfo()` returned this as `Event`, `serializeEvent()` → `JSON.stringify` produced malformed JSON. The SDK parses the event's tags expecting arrays (`Tag.fromJSON` operates on `arr[0]`), finds objects, and cannot extract the encryption scheme.
+
+#### Why existing tests passed
+`MockStorage` uses a `Map` internally, which preserves object references. The `simulateHibernation` helper copies data via `new Map()` — no structured clone occurs. The bug only manifests in the real `DurableObjectStorage` environment.
+
+#### Fix
+Convert `Tag[]` to `JsonValue[][]` (plain arrays) at every persistence boundary:
+
+1. **`WalletRegistry.cacheInfo()`** — map `t.getRaw()` before `putBatch`
+2. **`WalletRegistry.getInfo()`** — reconstruct `Tag` instances from stored data (handles both plain-array and legacy `{raw}` formats)
+3. **`WalletIndex.save()`** — convert tags before embedding in state JSON
+4. **`WalletIndex.restore()`** — reconstruct `Tag` instances from stored state
+
+Unit tests (`wallet-registry.test.ts`) simulate the `{raw}` format by directly corrupting stored tags and verify:
+- `encryptionScheme()` returns the correct value after round-trip
+- `JSON.stringify(serializeEvent(...))` produces `["encryption","nip04"]` not `{"raw":["encryption","nip04"]}`
+
+Integration tests (`info-event.test.js`) verify the full wire format: tags are plain arrays in the WebSocket JSON message.
+
+#### Lesson
+**Always convert class instances to plain JSON-compatible structures before storing in DO storage.** Structured clone does not preserve class shape, prototype, or `toJSON()` behavior. This applies to `DurableObjectStorage.putBatch()`, `ctx.storage.put()`, and any WebSocket attachment serialization.
+
+Test mocks that use in-memory maps (`Map`, `Record`) will **not** catch structured clone bugs. To validate, either:
+1. Use `JSON.parse(JSON.stringify(data))` to simulate structured clone (but only if `toJSON()` is not the fix)
+2. Or directly corrupt stored data to the expected deserialized format
+3. Or run integration tests against a real DO environment (wrangler dev)
+
+## PR Timeline Update
+
+| PR / Commit | Description | Outcome |
+|-------------|-------------|---------|
+| `fix/tag-serialization-structured-clone` | Convert `Tag[]` to plain arrays before DO storage | ✅ Tags survive structured clone round-trip |
+
+## Updated Heuristics
+
+12. **Are class instances being stored in DO storage?** → Convert to plain arrays/objects first. `toJSON()` is irrelevant — structured clone doesn't call it. Test with `JSON.parse(JSON.stringify(data))` or by corrupting mock storage data directly.

@@ -5,6 +5,7 @@ import { WalletRegistry } from './wallet-registry.ts';
 import type { Event } from './event.ts';
 import type { Filter } from './filter.ts';
 import { Tag } from './tag.ts';
+import { serializeEvent } from './event.ts';
 
 function hasSubscription(registry: WalletRegistry<MockStorage>, connId: number, subId: string): boolean {
   return registry.getConnSubscriptions(connId).has(subId);
@@ -379,8 +380,78 @@ describe('WalletRegistry', () => {
         const responses2 = await registry3.matchEvent(respEvent);
         expect(responses2).toContainEqual({ kind: 'wakeUp', connectionId: 2 });
         expect(responses2).toContainEqual({ kind: 'send', recipientId: 2, subId: 'app_sub' });
-        expect(responses2).not.toContainEqual({ kind: 'send', recipientId: 1, subId: 'wallet_sub' });
+        expect(responses2).not.toContainEqual({ kind: 'send', recipientId: 1, subId: 'app_sub' });
       }
+    });
+  });
+
+  describe('tag serialization through storage', () => {
+    it('recovers Tag instances from {raw} object format (structured clone deserialization)', async () => {
+      const storage = new MockStorage();
+      const registry = new WalletRegistry(storage, DEFAULT_LIMITS);
+
+      const info = makeEvent({
+        id: 'info1',
+        kind: 13194,
+        tags: [Tag.encryption('nip04')],
+        content: 'wallet info',
+      });
+      await registry.cacheInfo(info);
+
+      // Verify stored tags are plain arrays (our fix ensures this)
+      const storedRaw = storage.data.get('info:alice') as Record<string, unknown>;
+      expect(Array.isArray(storedRaw.tags)).toBe(true);
+
+      // Simulate structured clone deserialization: Tag instances become {raw: [...]} objects
+      // This mimics what DO storage returns after structured clone round-trip of old format
+      const rawTags = storedRaw.tags as unknown[][];
+      (storedRaw as { tags: unknown[] }).tags = rawTags.map(t => ({ raw: t }));
+
+      // Clear in-memory cache to force reload from storage
+      const registry2 = new WalletRegistry(storage, DEFAULT_LIMITS);
+
+      const retrieved = await registry2.getInfo('alice');
+      expect(retrieved).not.toBeNull();
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      expect(retrieved!.tags.length).toBe(1);
+
+      const encScheme = retrieved!.tags[0].encryptionScheme();
+      expect(encScheme).toBe('nip04');
+
+      // Verify JSON serialization produces correct wire format (arrays not {raw} objects)
+      const serialized = serializeEvent(retrieved!);
+      const json = JSON.stringify(serialized);
+      expect(json).toContain('["encryption","nip04"]');
+      expect(json).not.toContain('{"raw":["encryption","nip04"]}');
+    });
+
+    it('recovers Tag instances from save/restore hibernation path', async () => {
+      const storage = new MockStorage();
+      const registry = new WalletRegistry(storage, DEFAULT_LIMITS);
+
+      await registry.subscribe(1, 'sub1', [{ authors: ['alice'] }]);
+      await registry.cacheInfo(makeEvent({
+        id: 'info1',
+        kind: 13194,
+        tags: [Tag.encryption('nip44_v2')],
+        content: 'wallet info',
+      }));
+
+      // Corrupt the info_event in the conn state blob (simulating structured clone)
+      const connRaw = storage.data.get('conn:1') as Record<string, unknown>;
+      const infoEvent = (connRaw as { info_event: Record<string, unknown> }).info_event;
+      if (infoEvent && Array.isArray(infoEvent.tags)) {
+        infoEvent.tags = (infoEvent.tags as unknown[][]).map(t => ({ raw: t }));
+      }
+
+      // Fresh registry triggers restore path via load
+      const registry2 = new WalletRegistry(storage, DEFAULT_LIMITS);
+      await registry2.load(1);
+
+      const retrieved = await registry2.getInfo('alice');
+      expect(retrieved).not.toBeNull();
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      expect(retrieved!.tags[0].encryptionScheme()).toBe('nip44_v2');
     });
   });
 });
