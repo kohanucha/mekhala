@@ -60,6 +60,9 @@ class WalletIndex {
       }
     }
 
+    const pks = filters.flatMap(f => filterPubkeys(f));
+    console.log('[mekhala] subscribe conn=%d sub=%s pks=%j filters=%j', connId, subId, pks, filters);
+
     let conns = this.subscriptionIndex.get(key);
     if (!conns) {
       conns = [];
@@ -168,7 +171,12 @@ class WalletIndex {
 
     for (const pk of targetPks) {
       const entry = this.pkIndex.get(pk);
-      if (!entry) continue;
+      if (!entry) {
+        console.log('[mekhala] index.matchEvent pk=%s NOT_IN_INDEX', pk);
+        continue;
+      }
+
+      console.log('[mekhala] index.matchEvent pk=%s subs=%d', pk, entry.subs.size);
 
       const matching: { subId: string; connId: number }[] = [];
       for (const key of entry.subs) {
@@ -177,7 +185,9 @@ class WalletIndex {
         const filtersJson = key.substring(sepIdx + 2);
         try {
           const filters = JSON.parse(filtersJson) as Filter[];
-          if (filters.some(f => filterMatches(f, event))) {
+          const matched = filters.some(f => filterMatches(f, event));
+          console.log('[mekhala] index.matchEvent pk=%s subKey=%s matched=%s', pk, key, matched);
+          if (matched) {
             const conns = this.subscriptionIndex.get(key);
             if (conns && conns.length > 0) {
               const latestConn = conns[conns.length - 1];
@@ -185,14 +195,18 @@ class WalletIndex {
             }
           }
         } catch {
-          // skip malformed filter JSON
+          console.log('[mekhala] index.matchEvent pk=%s subKey=%s PARSE_ERROR filtersJson=%s', pk, key, filtersJson);
         }
       }
 
-      if (matching.length === 0) continue;
+      if (matching.length === 0) {
+        console.log('[mekhala] index.matchEvent pk=%s NO_MATCH', pk);
+        continue;
+      }
       const latestId = Math.max(...matching.map(m => m.connId));
       for (const m of matching) {
         if (m.connId === latestId) {
+          console.log('[mekhala] index.matchEvent pk=%s ROUTE subId=%s conn=%d', pk, m.subId, m.connId);
           subToConns.set(m.subId, [m.connId]);
         }
       }
@@ -249,13 +263,20 @@ class WalletIndex {
 
   restore(connId: number, data: Record<string, unknown>): void {
     const subsData = data.subscriptions;
+    let restoredCount = 0;
     if (subsData && typeof subsData === 'object') {
       for (const [subId, filters] of Object.entries(subsData)) {
         if (Array.isArray(filters)) {
           this.subscribe(connId, subId, filters as Filter[]);
+          restoredCount++;
+        } else {
+          console.log('[mekhala] restore conn=%d SKIP subId=%s filters not array', connId, subId);
         }
       }
+    } else {
+      console.log('[mekhala] restore conn=%d subscriptions missing or not object', connId);
     }
+    console.log('[mekhala] restore conn=%d restoredSubs=%d', connId, restoredCount);
     const infoData = data.info_event;
     if (infoData && typeof infoData === 'object') {
       const raw = infoData as Record<string, unknown>;
@@ -322,30 +343,43 @@ export class WalletRegistry<S extends Storage> {
     const responses: RegistryResponse[] = [];
     const targetPks = targetPubkeys(event);
 
+    console.log('[mekhala] WalletRegistry.matchEvent event=%s kind=%d pubkey=%s targetPks=%j', event.id, event.kind, event.pubkey, [...targetPks]);
+
     for (const pk of targetPks) {
       for (const id of await this.loadByPubkey(pk)) {
+        console.log('[mekhala] WalletRegistry.matchEvent wakeUp connectionId=%d', id);
         responses.push({ kind: 'wakeUp', connectionId: id });
       }
     }
 
-    for (const [subId, conns] of this.index.matchEvent(event)) {
+    const indexResults = this.index.matchEvent(event);
+    console.log('[mekhala] WalletRegistry.matchEvent indexResults=%j', [...indexResults.entries()]);
+
+    for (const [subId, conns] of indexResults) {
       for (const id of conns) {
         responses.push({ kind: 'send', recipientId: id, subId });
       }
     }
 
+    console.log('[mekhala] WalletRegistry.matchEvent totalResponses=%d', responses.length);
     return responses;
   }
 
   async load(connId: number): Promise<boolean> {
-    if (this.index.getSubscriptions(connId).size > 0) return true;
+    if (this.index.getSubscriptions(connId).size > 0) {
+      console.log('[mekhala] load conn=%d ALREADY_IN_MEMORY', connId);
+      return true;
+    }
 
     const key = `conn:${connId}`;
     const data = await this.storage.get(key);
     if (data && typeof data === 'object') {
+      console.log('[mekhala] load conn=%d FOUND_IN_STORAGE restoring...', connId);
       this.index.restore(connId, data as Record<string, unknown>);
+      console.log('[mekhala] load conn=%d restored subs=%d', connId, this.index.getSubscriptions(connId).size);
       return true;
     }
+    console.log('[mekhala] load conn=%d NOT_FOUND', connId);
     return false;
   }
 
@@ -356,8 +390,10 @@ export class WalletRegistry<S extends Storage> {
     let storageIds: number[];
     if (val !== null) {
       storageIds = normalizeStorageIds(val);
+      console.log('[mekhala] loadByPubkey pk=%s storage=%j', pubkey, storageIds);
     } else {
       const id = this.index.getConnectionId(pubkey);
+      console.log('[mekhala] loadByPubkey pk=%s NO_STORAGE inMemoryId=%s', pubkey, id);
       return id !== null ? [id] : [];
     }
 
@@ -371,9 +407,13 @@ export class WalletRegistry<S extends Storage> {
       }
     }
 
+    console.log('[mekhala] loadByPubkey pk=%s loaded=%j stale=%j', pubkey, loaded, stale);
+
     if (loaded.length === 0) {
+      console.log('[mekhala] loadByPubkey pk=%s DELETING_KEY (no loaded connections)', pubkey);
       await this.storage.deleteBatch([key]);
     } else if (stale.length > 0) {
+      console.log('[mekhala] loadByPubkey pk=%s UPDATING_KEY loaded=%j', pubkey, loaded);
       await this.storage.putBatch({ [key]: loaded });
     }
 
@@ -487,7 +527,9 @@ export class WalletRegistry<S extends Storage> {
         entries[key] = ids;
       }
       await this.storage.putBatch(entries);
+      console.log('[mekhala] sync conn=%d pubkeys=%j entries=%j', connId, state.pubkeys, Object.keys(entries));
     } else {
+      console.log('[mekhala] sync conn=%d DELETING (no state to save)', connId);
       await this.storage.deleteBatch([`conn:${connId}`]);
     }
   }
