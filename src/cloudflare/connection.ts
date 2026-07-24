@@ -43,7 +43,11 @@ export class ConnectionRegistry {
 
   send(id: number, message: string): boolean {
     const conn = this.connections.get(id);
-    if (!conn) return false;
+    if (!conn) {
+      console.log('[mekhala] connection.send conn=%d NOT_FOUND', id);
+      return false;
+    }
+    console.log('[mekhala] connection.send conn=%d kind=%s preview=%s', id, conn.kind, message.substring(0, 60));
 
     switch (conn.kind) {
       case 'external':
