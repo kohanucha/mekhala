@@ -65,21 +65,27 @@ export async function processMessage(
     ws.send(JSON.stringify(['NOTICE', 'connection lost: please reconnect']));
     return;
   }
+  console.log('[mekhala] ws-handler conn=%d type=%s', connectionId, parsed.type);
   await engine.load(connectionId);
   connections.addExternal(connectionId, ws);
 
   if (parsed.type === 'EVENT') {
     const event = parsed.event;
+    console.log('[mekhala] ws-handler EVENT kind=%d id=%s', event.kind, event.id);
     const result = engine.validateEvent(event);
     if (result.ok) {
+      console.log('[mekhala] ws-handler validate OK id=%s kind=%d', event.id, event.kind);
       ws.send(relayMessageToJSON({ type: 'OK', id: event.id, ok: true, message: '' }));
       const responses = await engine.routeVerifiedEvent(connectionId, event);
+      console.log('[mekhala] ws-handler routeVerifiedEvent responses=%d', responses.length);
       sendToConnection(connections, ws, responses);
     } else {
+      console.log('[mekhala] ws-handler validate FAIL id=%s kind=%d err=%s', result.id, event.kind, result.error);
       ws.send(relayMessageToJSON({ type: 'OK', id: result.id, ok: false, message: result.error }));
     }
   } else {
     const responses = await handleNonEventMessage(parsed, connectionId, engine);
+    console.log('[mekhala] ws-handler nonEvent type=%s conn=%d responses=%d', parsed.type, connectionId, responses.length);
     sendToConnection(connections, ws, responses);
   }
 }

@@ -72,6 +72,8 @@ export class CloudflareTransport implements DurableObject {
       return;
     }
 
+    console.log('[mekhala] WS_MSG len=%d preview=%s', message.length, message.substring(0, 60));
+
     // Before processing, try to detect NWC responses for pending callbacks
     if (message.includes('"kind":23195') || message.includes('"kind":23196') || message.includes('"kind":23197')) {
       try {

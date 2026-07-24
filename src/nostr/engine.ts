@@ -52,6 +52,7 @@ export class NostrEngine<S extends Storage> {
   }
 
   async routeVerifiedEvent(connectionId: number, event: Event): Promise<EngineResponse[]> {
+    console.log('[mekhala] engine.routeVerifiedEvent conn=%d id=%s kind=%d', connectionId, event.id, event.kind);
     if (event.kind === 13194) {
       await this.processInfoEvent(event);
     } else if (event.kind === 5) {
@@ -103,6 +104,7 @@ export class NostrEngine<S extends Storage> {
         { kind: 'send', recipientId: id, message: { type: 'CLOSED', subscriptionId: subId, message: 'filter too broad' } },
       ];
     }
+    console.log('[mekhala] engine.handleReq conn=%d sub=%s filters=%j', id, subId, filters);
     return this.processReq(id, subId, filters);
   }
 
@@ -174,6 +176,7 @@ export class NostrEngine<S extends Storage> {
   private async routeEvent(_connectionId: number, event: Event): Promise<EngineResponse[]> {
     const responses: EngineResponse[] = [];
 
+    console.log('[mekhala] engine.routeEvent conn=%d id=%s kind=%d', _connectionId, event.id, event.kind);
     const registryResponses = await this.registry.matchEvent(event);
     for (const resp of registryResponses) {
       switch (resp.kind) {
@@ -195,6 +198,8 @@ export class NostrEngine<S extends Storage> {
 
   private async processReq(id: number, subId: string, filters: Filter[]): Promise<EngineResponse[]> {
     const responses: EngineResponse[] = [];
+
+    console.log('[mekhala] engine.processReq conn=%d sub=%s', id, subId);
 
     try {
       await this.registry.subscribe(id, subId, filters);
