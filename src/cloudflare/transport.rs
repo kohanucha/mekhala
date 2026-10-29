@@ -65,7 +65,7 @@ pub struct CloudflareTransport {
     engine: Mutex<NostrEngine<CloudflareStorage>>,
     connections: RefCell<ConnectionRegistry>,
     id_counter: Mutex<IdCounterState>,
-    kv: CloudflareKvStore,
+    kv: Option<CloudflareKvStore>,
 }
 
 impl DurableObject for CloudflareTransport {
@@ -74,7 +74,17 @@ impl DurableObject for CloudflareTransport {
         let storage = CloudflareStorage { storage: state.storage() };
         let limits = Limits::new(config.max_content_length, config.max_subscriptions_per_connection);
         let engine = NostrEngine::new_with_storage(storage, limits, crate::util::now);
-        let kv = CloudflareKvStore::new(env.kv("MEKHALA_NWC_KV").expect("MEKHALA_NWC_KV not configured"));
+        // `DurableObject::new` cannot return a `Result`, and the release profile
+        // builds with `panic = "abort"`: unwrapping the KV binding here would
+        // kill the isolate. Degrade instead — the WebSocket relay core does not
+        // need KV; only LN address routes use it, and they return 500.
+        let kv = match env.kv("MEKHALA_NWC_KV") {
+            Ok(kv) => Some(CloudflareKvStore::new(kv)),
+            Err(e) => {
+                log_error!("MEKHALA_NWC_KV binding missing ({e}): LN address callback routes will return 500");
+                None
+            }
+        };
 
         Self {
             config,
@@ -95,7 +105,11 @@ impl DurableObject for CloudflareTransport {
             if !crate::lnaddress::is_valid_username(username) {
                 return Response::error("Not Found", 404);
             }
-            let handler = crate::cloudflare::handler::LnAddressHandler::new(&self.kv);
+            let Some(kv) = self.kv.as_ref() else {
+                log_error!("LN address callback requires the MEKHALA_NWC_KV binding");
+                return Response::error("Internal Server Error", 500);
+            };
+            let handler = crate::cloudflare::handler::LnAddressHandler::new(kv);
             return handler.handle_callback(req, username, self).await;
         }
 
