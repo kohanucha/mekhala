@@ -34,7 +34,10 @@ impl<'a, S: UserStore> LnAddressHandler<'a, S> {
         }
     }
 
-    #[allow(dead_code)]
+    /// Reads the stored NWC URI for a user straight through the store.
+    /// Test-only: the LN address production path reads the store through
+    /// `handle_callback_inner` directly.
+    #[cfg(test)]
     pub async fn lookup_user(&self, username: &str) -> Option<String> {
         self.store.get_nwc_uri(username).await
     }
