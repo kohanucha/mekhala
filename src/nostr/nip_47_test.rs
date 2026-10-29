@@ -43,7 +43,7 @@ use super::*;
         
         let wallet_sk_bytes = hex::decode(TEST_WALLET_SK).unwrap();
         let wallet_sk_arr: [u8; 32] = wallet_sk_bytes.try_into().unwrap();
-        let wallet_sk = SigningKey::from_bytes(&wallet_sk_arr).unwrap();
+        let wallet_sk = SigningKey::from_slice(&wallet_sk_arr).unwrap();
         
         let (resp_id, resp_id_bytes) = Event::compute_id(&client.wallet_pubkey, resp_event.created_at, resp_event.kind, &resp_event.tags, &resp_event.content).unwrap();
         let resp_sig = hex::encode(wallet_sk.sign_prehash(&resp_id_bytes).unwrap().to_bytes());

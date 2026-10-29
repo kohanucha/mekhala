@@ -3,3 +3,10 @@ allow = ["Apache-2.0", "MIT", "BSD-3-Clause", "Unicode-3.0"]
 
 [bans]
 multiple-versions = "deny"
+
+# syn 2 is still used by pin-project 1.1.13 and strum 0.28 (the newest
+# released versions, pulled in transitively by worker 0.8.7), while other
+# crates have already migrated to syn 3. Re-enable duplicate checking once
+# both migrate to syn 3.
+[[bans.skip]]
+name = "syn"

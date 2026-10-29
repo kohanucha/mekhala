@@ -198,7 +198,7 @@ use k256::schnorr::{signature::hazmat::PrehashSigner, SigningKey};
         let pk_hex = crate::common::test_helpers::TEST_WALLET_PK;
         let sk_bytes = hex::decode(sk_hex).unwrap();
         let sk_arr: [u8; 32] = sk_bytes.try_into().unwrap();
-        let sk = SigningKey::from_bytes(&sk_arr).unwrap();
+        let sk = SigningKey::from_slice(&sk_arr).unwrap();
 
         let (id, id_bytes) = Event::compute_id(pk_hex, 1700000000, 23194, &[], "test").unwrap();
         let sig = hex::encode(sk.sign_prehash(&id_bytes).unwrap().to_bytes());

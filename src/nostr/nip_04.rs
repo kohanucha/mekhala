@@ -2,13 +2,13 @@ use aes::Aes256;
 use base64::{engine::general_purpose, Engine as _};
 use block_padding::Pkcs7;
 use cbc::{Decryptor, Encryptor};
-use cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
-use rand::RngCore;
+use cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit};
+use rand::Rng;
 use crate::nostr::{RelayError, Result};
 
 pub fn encrypt_nip04(shared_secret: &[u8], plaintext: &str) -> Result<String> {
     let mut iv = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut iv);
+    rand::rng().fill_bytes(&mut iv);
 
     let pt_bytes = plaintext.as_bytes();
     let mut buffer = vec![0u8; pt_bytes.len() + 16];
@@ -17,7 +17,7 @@ pub fn encrypt_nip04(shared_secret: &[u8], plaintext: &str) -> Result<String> {
     let pos = pt_bytes.len();
     let ct = Encryptor::<Aes256>::new_from_slices(shared_secret, &iv)
         .map_err(|e| RelayError::CryptoError(e.to_string()))?
-        .encrypt_padded_mut::<Pkcs7>(&mut buffer, pos)
+        .encrypt_padded::<Pkcs7>(&mut buffer, pos)
         .map_err(|e| RelayError::CryptoError(e.to_string()))?;
 
     let iv_b64 = general_purpose::STANDARD.encode(iv);
@@ -41,7 +41,7 @@ pub fn decrypt_nip04(shared_secret: &[u8], encrypted_content: &str) -> Result<St
 
     let pt = Decryptor::<Aes256>::new_from_slices(shared_secret, &iv_bytes)
         .map_err(|e| RelayError::CryptoError(e.to_string()))?
-        .decrypt_padded_mut::<Pkcs7>(&mut ct_bytes)
+        .decrypt_padded::<Pkcs7>(&mut ct_bytes)
         .map_err(|e| RelayError::CryptoError(e.to_string()))?;
 
     String::from_utf8(pt.to_vec()).map_err(|e| RelayError::Utf8Error(e.to_string()))
