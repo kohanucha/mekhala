@@ -85,7 +85,7 @@ impl Event {
         let pubkey_bytes = hex::decode(&self.pubkey)?;
         let sig_bytes = hex::decode(&self.sig)?;
 
-        let verifying_key = VerifyingKey::from_bytes(&pubkey_bytes)
+        let verifying_key = VerifyingKey::from_slice(&pubkey_bytes)
             .map_err(|_| RelayError::MalformedHex("public key format".into()))?;
 
         let signature = Signature::try_from(sig_bytes.as_slice())

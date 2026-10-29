@@ -171,7 +171,7 @@ impl NwcClient {
             .try_into()
             .map_err(|_| RelayError::Generic("Invalid secret key length".into()))?;
         let signing_key =
-            SigningKey::from_bytes(&sk_bytes_arr).map_err(|e| RelayError::CryptoError(e.to_string()))?;
+            SigningKey::from_slice(&sk_bytes_arr).map_err(|e| RelayError::CryptoError(e.to_string()))?;
         let my_pubkey = hex::encode(signing_key.verifying_key().to_bytes());
 
         Ok(Self {

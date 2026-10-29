@@ -3,15 +3,15 @@ use chacha20::cipher::StreamCipher;
 use chacha20::ChaCha20;
 use chacha20::cipher::KeyIvInit as _;
 use hkdf::Hkdf;
-use hmac::{Hmac, Mac};
-use rand::RngCore;
+use hmac::{Hmac, KeyInit, Mac};
+use rand::Rng;
 use sha2::{Sha256};
 use crate::nostr::{RelayError, Result};
 
 pub fn encrypt_nip44(shared_secret: &[u8], plaintext: &str) -> Result<String> {
     let conversation_key = derive_conversation_key(shared_secret);
     let mut nonce = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut nonce);
+    rand::rng().fill_bytes(&mut nonce);
 
     let (chacha_key, chacha_nonce, hmac_key) = derive_message_keys(&conversation_key, &nonce);
 
