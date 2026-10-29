@@ -41,6 +41,10 @@ unsafe_code = "deny"
 [profile.release]
 opt-level = "s"
 lto = true
-strip = true
+# NOTE: `strip = true` must NOT be added back. wasm-bindgen >= 0.2.125
+# hard-requires the externref table in the wasm binary, and stripping
+# deletes it, which makes worker-build fail with "externref table required
+# for catch wrappers" (cloudflare/workers-rs#1014, upstream wasm-bindgen
+# fix pending). worker-build's wasm-opt pass keeps release size down.
 panic = "abort"
 codegen-units = 1
