@@ -1,6 +1,5 @@
 /target
 *.sled
-Cargo.lock
 .env
 .DS_Store
 *.pdb
