@@ -7,15 +7,29 @@ use crate::log_error;
 use crate::nostr::{Filter, Event, Limits};
 use crate::util::short;
 
+/// Persistence boundary of the registry: a key/value store backed by Durable
+/// Object storage in production (see `cloudflare`) and `MockStorage` in
+/// tests. Keys follow the `conn:<id>` / `pk:<pubkey>` / `info:<pubkey>`
+/// conventions.
 #[async_trait(?Send)]
 pub trait Storage {
+    /// Reads the JSON value stored under `key`, if any.
     async fn get(&self, key: &str) -> Option<Value>;
+    /// Writes (or overwrites) all entries in one batch; `Err` carries the
+    /// storage failure text.
     async fn put_batch(&self, entries: HashMap<String, Value>) -> Result<(), String>;
+    /// Removes the given keys; deletions are best-effort (no error path).
     async fn delete_batch(&self, keys: Vec<String>);
 }
 
+/// Snapshot of one connection's state, produced by the internal index and
+/// persisted under the `conn:<id>` key: the JSON to store (subscriptions
+/// plus the cached wallet-service info event) and the public keys referenced
+/// by that connection's filters.
 pub struct SavedState {
+    /// JSON to persist for this connection.
     pub json: Value,
+    /// Public keys referenced by the connection's filters.
     pub pubkeys: HashSet<String>,
 }
 
@@ -235,19 +249,31 @@ impl WalletIndex {
     }
 }
 
+/// Central connection registry: tracks which connection subscribes to which
+/// filters, persists per-connection state through [`Storage`] so
+/// subscriptions survive Durable Object hibernation, and caches the
+/// wallet-service info events needed to answer subscription requests.
 pub struct WalletRegistry<S: Storage> {
     storage: S,
     index: WalletIndex,
     limits: Limits,
 }
 
+/// An action the transport must take after [`WalletRegistry::match_event`].
 #[derive(Debug, PartialEq, Eq)]
 pub enum RegistryResponse {
+    /// Deliver the event on the given subscription of this live connection.
     Send { recipient_id: u32, sub_id: String },
+    /// The event matches this connection via the persisted pubkey index,
+    /// but its live subscription state is not loaded (e.g. its WebSocket is
+    /// hibernating) — the transport must hydrate the connection (reload
+    /// state) before delivery.
     WakeUp(u32),
 }
 
 impl<S: Storage> WalletRegistry<S> {
+    /// Creates a registry over the given storage with relay limits applied
+    /// (max subscriptions per connection).
     pub fn new(storage: S, limits: Limits) -> Self {
         Self { 
             storage,
@@ -256,6 +282,15 @@ impl<S: Storage> WalletRegistry<S> {
         }
     }
 
+    /// Registers a subscription for the connection and persists it to
+    /// storage (the hibernation contract: without persistence the
+    /// subscription is lost when the DO sleeps).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RelayError::Generic`](crate::nostr::RelayError::Generic)
+    /// when the connection exceeds `limits.max_subscriptions_per_connection`
+    /// or persistence fails.
     pub async fn subscribe(&mut self, conn_id: u32, sub_id: String, filters: Vec<Filter>) -> crate::nostr::Result<()> {
         let count = self.index.sub_count(conn_id);
         if count >= self.limits.max_subscriptions_per_connection {
@@ -269,6 +304,8 @@ impl<S: Storage> WalletRegistry<S> {
         Ok(())
     }
 
+    /// Removes a subscription from the index and re-persists the connection
+    /// state; never fails (persistence problems are logged).
     pub async fn unsubscribe(&mut self, conn_id: u32, sub_id: String) -> crate::nostr::Result<()> {
         self.index.unsubscribe(conn_id, sub_id.clone());
         if let Err(e) = self.sync(conn_id).await {
@@ -277,6 +314,10 @@ impl<S: Storage> WalletRegistry<S> {
         Ok(())
     }
 
+    /// Matches an event against every live subscription plus the persisted
+    /// pubkey index, returning the delivery actions for the transport (see
+    /// [`RegistryResponse`]). Loading connections from storage may also
+    /// prune stale index entries.
     pub async fn match_event(&mut self, event: &Event) -> Vec<RegistryResponse> {
         let mut responses = Vec::new();
         let target_pks = event.target_pubkeys();
@@ -295,6 +336,9 @@ impl<S: Storage> WalletRegistry<S> {
         responses
     }
 
+    /// Restores the connection's subscriptions from storage into the live
+    /// index; returns whether it has subscriptions afterwards (storage hits
+    /// also re-cache the stored info event).
     pub async fn load(&mut self, conn_id: u32) -> bool {
         if !self.index.get_subscriptions(conn_id).is_empty() {
             return true;
@@ -310,6 +354,10 @@ impl<S: Storage> WalletRegistry<S> {
         false
     }
 
+    /// Connection IDs to notify about events addressed to `pubkey`: reads
+    /// the persisted `pk:<pubkey>` index and loads each connection, pruning
+    /// stale IDs from storage. When nothing is persisted, falls back to the
+    /// single live connection mapped in memory.
     pub async fn load_by_pubkey(&mut self, pubkey: &str) -> Vec<u32> {
         let key = format!("pk:{}", pubkey);
         let storage_ids: Vec<u32> = if let Some(val) = self.storage.get(&key).await {
@@ -344,10 +392,16 @@ impl<S: Storage> WalletRegistry<S> {
         loaded
     }
 
+    /// Drops the connection's in-memory index entries only; persisted state
+    /// survives so the connection can still be woken by later matching
+    /// events (used for internal RPC session cleanup).
     pub async fn on_disconnect(&mut self, id: u32) {
         self.index.disconnect(id);
     }
 
+    /// Final teardown when a WebSocket closes: drops the index entries and
+    /// deletes the persisted state (`conn:<id>` plus the connection's
+    /// membership in every `pk:` index it referenced).
     pub async fn on_terminate(&mut self, id: u32) {
         let subs = self.index.get_subscriptions(id);
         let mut pubkeys: HashSet<String> = HashSet::new();
@@ -384,6 +438,8 @@ impl<S: Storage> WalletRegistry<S> {
         self.storage.delete_batch(vec![format!("conn:{}", id)]).await;
     }
 
+    /// Caches a wallet-service info event both in memory and in storage
+    /// (`info:<pubkey>`) so subscriptions can be answered after hibernation.
     pub async fn cache_info(&mut self, event: Event) {
         log_debug!("persist info: pk={}", short(&event.pubkey, 8));
         let key = format!("info:{}", event.pubkey);
@@ -396,6 +452,8 @@ impl<S: Storage> WalletRegistry<S> {
         self.index.cache_info(event);
     }
 
+    /// Latest wallet-service info event for `pubkey`, from the in-memory
+    /// index or storage (re-cached on a storage hit).
     pub async fn get_info(&mut self, pubkey: &str) -> Option<Event> {
         if let Some(event) = self.index.get_info(pubkey) {
             return Some(event);
@@ -412,6 +470,7 @@ impl<S: Storage> WalletRegistry<S> {
         None
     }
 
+    /// Removes the cached info event for `pubkey` from memory and storage.
     pub async fn delete_info(&mut self, pubkey: &str) {
         let removed = self.index.delete_info(pubkey);
         if removed.is_some() {
@@ -421,6 +480,7 @@ impl<S: Storage> WalletRegistry<S> {
         }
     }
 
+    /// Maps an info event's ID back to the wallet service's public key.
     pub fn find_info_pubkey_by_id(&self, event_id: &str) -> Option<String> {
         self.index.find_info_pubkey_by_id(event_id)
     }

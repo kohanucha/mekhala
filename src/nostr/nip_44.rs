@@ -8,6 +8,8 @@ use rand::Rng;
 use sha2::{Sha256};
 use crate::nostr::{RelayError, Result};
 
+/// Encrypts plaintext as a NIP-44 v2 payload: padded, ChaCha20-encrypted,
+/// HMAC-SHA256 authenticated, version byte `0x02`, base64.
 pub fn encrypt_nip44(shared_secret: &[u8], plaintext: &str) -> Result<String> {
     let conversation_key = derive_conversation_key(shared_secret);
     let mut nonce = [0u8; 32];
@@ -36,6 +38,8 @@ pub fn encrypt_nip44(shared_secret: &[u8], plaintext: &str) -> Result<String> {
     Ok(general_purpose::STANDARD.encode(payload))
 }
 
+/// Decrypts and verifies a NIP-44 v2 payload, enforcing the protocol size
+/// ceilings (base64 length and decoded length).
 pub fn decrypt_nip44(shared_secret: &[u8], encrypted_content: &str) -> Result<String> {
     if encrypted_content.len() > 87472 {
         return Err(RelayError::Generic("NIP-44 payload too large".into()));
@@ -104,6 +108,9 @@ fn derive_message_keys(conversation_key: &[u8; 32], nonce: &[u8]) -> ([u8; 32], 
     (chacha_key, chacha_nonce, hmac_key)
 }
 
+/// Applies NIP-44 padding: a two-byte big-endian length prefix followed by
+/// the plaintext and zero bytes up to the next bucket boundary (32-byte
+/// buckets for short payloads, larger power-of-two-derived chunks beyond).
 pub fn pad(plaintext: &str) -> Vec<u8> {
     let bytes = plaintext.as_bytes();
     let unpadded_len = bytes.len();
@@ -127,6 +134,15 @@ pub fn pad(plaintext: &str) -> Vec<u8> {
     padded
 }
 
+/// Reverses [`pad`]: validates the length prefix and decodes that many bytes
+/// as UTF-8.
+///
+/// # Errors
+///
+/// Returns [`RelayError::Generic`](crate::nostr::RelayError::Generic) for a
+/// truncated/invalid prefix and
+/// [`RelayError::Utf8Error`](crate::nostr::RelayError::Utf8Error) when the
+/// payload is not valid UTF-8.
 pub fn unpad(padded: &[u8]) -> Result<String> {
     if padded.len() < 2 {
         return Err(RelayError::Generic("Invalid padding".into()));

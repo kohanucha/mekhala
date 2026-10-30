@@ -6,6 +6,9 @@ use sha2::{Digest, Sha256};
 use crate::nostr::{RelayError, Limits, Tag};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+/// A NIP-01 Nostr event: the domain type the relay validates, stores and
+/// routes. `id` and `sig` are hex strings; see [`Event::verify`] for the
+/// full validation contract.
 pub struct Event {
     pub id: String,
     pub pubkey: String,
@@ -17,6 +20,15 @@ pub struct Event {
 }
 
 impl Event {
+    /// Computes the NIP-01 event ID for the given fields: the SHA-256 hash
+    /// of the JSON array `[0, pubkey, created_at, kind, tags, content]`.
+    /// Returns both the hex ID and the digest bytes (needed to verify the
+    /// Schnorr signature).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RelayError::SerializationError`] if the canonical array
+    /// cannot be serialized.
     pub fn compute_id(pubkey: &str, created_at: u64, kind: u64, tags: &[Tag], content: &str) -> Result<(String, Vec<u8>), RelayError> {
         let serialized = serde_json::to_string(&(
             0,
@@ -32,6 +44,8 @@ impl Event {
         Ok((hex::encode(id_bytes), id_bytes.to_vec()))
     }
 
+    /// Public keys this event is addressed to: the author's own pubkey plus
+    /// every `p` tag target (used to route NWC request/response events).
     pub fn target_pubkeys(&self) -> HashSet<String> {
         let mut keys = HashSet::new();
         keys.insert(self.pubkey.clone());
@@ -43,6 +57,16 @@ impl Event {
         keys
     }
 
+    /// Full relay-side validation: allowed kinds, required `p`/`e` tags for
+    /// NWC kinds, content length against `limits`, timestamp window
+    /// (±900 s / not older than one year), recomputed event ID, and Schnorr
+    /// signature verification.
+    ///
+    /// # Errors
+    ///
+    /// Returns the matching [`RelayError`] variant for the first failed
+    /// check (`InvalidKind`, `MissingTag`, `LimitExceeded`,
+    /// `TimestampTooFar`, `InvalidId`, `MalformedHex`, `InvalidSignature`).
     pub fn verify(&self, current_time: u64, limits: &Limits) -> Result<(), RelayError> {
         
         // Enforce allowed kinds

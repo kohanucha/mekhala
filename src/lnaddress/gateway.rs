@@ -5,6 +5,10 @@ use crate::common::NwcTransport;
 use crate::common::NwcError;
 use crate::lnaddress::wallet_connector::NwcSession;
 
+/// Builds the LNURL-pay `payRequest` document served for a Lightning
+/// Address username: `callback` (points back at this relay's `/callback`
+/// route), sendable range, and the `text/plain` metadata used to derive the
+/// invoice description hash.
 pub fn pay_request_info(username: &str, request_url: &Url) -> Value {
     let callback_url = build_callback_url(username, request_url);
 
@@ -17,6 +21,14 @@ pub fn pay_request_info(username: &str, request_url: &Url) -> Value {
     })
 }
 
+/// Mints an invoice for `username` through the wallet behind `nwc_uri`.
+/// The description hash is SHA-256 of the same metadata served by
+/// [`pay_request_info`], so the wallet can bind the invoice to this service.
+///
+/// # Errors
+///
+/// Returns [`NwcError`] when the URI/session is invalid, the wallet is
+/// offline, or the RPC fails (see [`NwcSession::make_invoice`]).
 pub async fn create_invoice(
     transport: &impl NwcTransport,
     nwc_uri: &str,
