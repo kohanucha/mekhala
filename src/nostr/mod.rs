@@ -28,5 +28,5 @@ pub use event::Event;
 pub use filter::Filter;
 pub use nip_47::WalletInfo;
 pub use tag::Tag;
-pub use error::{RelayError, Result};
+pub use error::{RelayError, Result, StorageError};
 pub use limits::Limits;
