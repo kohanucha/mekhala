@@ -1,4 +1,4 @@
-//! Shared types: NwcError, NwcTransport trait, UserStore trait.
+//! Shared types: `NwcError`, `NwcTransport` trait, `UserStore` trait.
 
 use crate::nostr::Event;
 use crate::nostr::nip_47::NwcUriError;

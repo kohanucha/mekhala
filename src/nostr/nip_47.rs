@@ -67,7 +67,7 @@ pub struct NwcError {
 pub enum EncryptionMethod {
     /// AES-256-CBC per NIP-04 (legacy).
     Nip04,
-    /// ChaCha20 + HMAC per NIP-44 v2 (preferred).
+    /// `ChaCha20` + HMAC per NIP-44 v2 (preferred).
     Nip44,
 }
 

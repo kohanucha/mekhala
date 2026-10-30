@@ -175,7 +175,7 @@ impl NwcTransport for MockTransport {
         let encrypted = wallet_client.encrypt(&resp_payload).unwrap();
         let mut tags = vec![
             Tag::p(&wallet_client.my_pubkey),
-            Tag::E(request.id.clone(), vec![]),
+            Tag::E(request.id, vec![]),
         ];
         if is_nip44 {
             tags.push(Tag::encryption("nip44_v2"));
