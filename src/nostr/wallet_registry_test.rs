@@ -535,7 +535,6 @@ fn test_two_connections_same_pubkey_different_filters() {
             ..Default::default()
         }]).await.unwrap();
 
-        #[allow(clippy::await_holding_lock)]
         let snapshot: HashMap<String, Value> = {
             let data = registry.storage.data.lock().unwrap();
             let pk_val = data.get(&format!("pk:{}", shared_pk)).expect("pk: entry should exist");
