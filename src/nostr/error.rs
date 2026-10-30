@@ -1,21 +1,40 @@
 use std::fmt;
 
+/// Error type for the entire relay domain: event validation, NIP protocol
+/// handling, crypto failures, and limit enforcement.
+///
+/// String payloads carry human-readable detail (e.g. offending values or
+/// upstream error text) that is forwarded as Nostr `OK`/`NOTICE` messages,
+/// so they are deliberately not machine-readable tags.
 #[derive(Debug, PartialEq, Clone)]
 pub enum RelayError {
+    /// Event kind is not on the relay's allow list.
     InvalidKind,
+    /// Event timestamp lies outside the relay's accepted window.
     TimestampTooFar(String),
+    /// A required Nostr tag (`e`/`p`) is missing for an NWC request.
     MissingTag(String),
+    /// Recomputed event ID does not match the `id` in the event.
     InvalidId,
+    /// Schnorr signature verification failed.
     InvalidSignature,
+    /// Hex decoding failed for the given field.
     MalformedHex(String),
+    /// JSON serialization or deserialization failed.
     SerializationError(String),
+    /// The request exceeds a configured relay limit.
     LimitExceeded(String),
+    /// A cryptographic operation (key, ECDH, signature) failed.
     CryptoError(String),
+    /// Base64 decoding failed.
     Base64Error(String),
+    /// UTF-8 decoding failed.
     Utf8Error(String),
+    /// Anything not covered by the specific variants.
     Generic(String),
 }
 
+/// Result alias used across the relay domain.
 pub type Result<T> = std::result::Result<T, RelayError>;
 
 impl fmt::Display for RelayError {

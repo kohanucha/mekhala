@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 use crate::nostr::Event;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, Hash)]
+/// A NIP-01 subscription filter. `None` fields are unconstrained; every
+/// set field narrows the match (AND across fields, OR within a field's
+/// values). `p_tags`/`e_tags` serialize as `#p`/`#e`.
 pub struct Filter {
     pub ids: Option<Vec<String>>,
     pub authors: Option<Vec<String>>,
@@ -16,6 +19,7 @@ pub struct Filter {
 }
 
 impl Filter {
+    /// Whether `event` satisfies every set constraint of this filter.
     pub fn matches(&self, event: &Event) -> bool {
         if let Some(ids) = &self.ids {
             if !ids.contains(&event.id) {
@@ -61,6 +65,9 @@ impl Filter {
         true
     }
 
+    /// Guard for incoming `REQ`s: rejects filters that would scan the whole
+    /// event space. Filters with `#p`, `#e`, or `ids` only need allowed
+    /// kinds; otherwise the filter must carry allowed kinds *and* `authors`.
     pub fn is_valid(&self) -> bool {
         let has_specific_narrowing = self.p_tags.is_some() || self.e_tags.is_some() || self.ids.is_some();
 
@@ -88,6 +95,8 @@ impl Filter {
         true
     }
 
+    /// Public keys this filter is scoped to: the `authors` plus `#p`
+    /// targets (used for info-event lookup and the persisted pk index).
     pub fn pubkeys(&self) -> Vec<String> {
         let mut keys = Vec::new();
         if let Some(authors) = &self.authors {

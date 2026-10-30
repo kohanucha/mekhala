@@ -1,5 +1,10 @@
 //! Utility functions: timestamp, string truncation, logging macros.
+//!
+//! All functions are safe for wasm ("workers-js") and native test builds;
+//! log macros compile to `console_*` calls only on wasm and are no-ops
+//! natively.
 
+/// Current time as seconds since the Unix epoch.
 pub fn now() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
@@ -14,6 +19,16 @@ pub fn now() -> u64 {
     }
 }
 
+/// Truncates `s` to at most `len` bytes for log display.
+///
+/// Intended for hex identifiers and other ASCII strings; callers measure
+/// with `s.len()`, so the argument is a byte budget, not a character count.
+///
+/// # Panics
+///
+/// Panics when `len` falls inside a multi-byte UTF-8 character and `s`
+/// contains non-ASCII text. Callers today pass hex/ASCII identifiers only;
+/// do not use on arbitrary user text without a char-boundary check.
 pub fn short(s: &str, len: usize) -> &str {
     if s.len() <= len { s } else { &s[..len] }
 }

@@ -4,22 +4,31 @@ use super::wallet_registry::{WalletRegistry, Storage, RegistryResponse};
 use crate::util::short;
 use crate::{log_info, log_debug, log_warn};
 
+/// An action the transport must perform after the engine handles a message.
 #[derive(Debug, PartialEq, Eq)]
 pub enum EngineResponse {
+    /// Send a serialized relay message to the given connection.
     Send { recipient_id: u32, message: RelayMessage },
+    /// Hydrate a hibernating connection so its live state is loaded.
     WakeUp { connection_id: u32 },
 }
 
 impl EngineResponse {
+    /// Convenience constructor for a delivery action.
     pub fn send(recipient_id: u32, message: RelayMessage) -> Self {
         EngineResponse::Send { recipient_id, message }
     }
 
+    /// Convenience constructor for a wake-up action.
     pub fn wake_up(connection_id: u32) -> Self {
         EngineResponse::WakeUp { connection_id }
     }
 }
 
+/// Relay state machine: validates decoded NIP-01 messages, routes events to
+/// matching subscriptions through the [`WalletRegistry`], and maintains the
+/// wallet-service info cache. Transport-agnostic — the Durable Object
+/// transport decodes WebSocket frames and feeds them in.
 pub struct NostrEngine<S: Storage> {
     registry: WalletRegistry<S>,
     limits: Limits,
@@ -27,6 +36,8 @@ pub struct NostrEngine<S: Storage> {
 }
 
 impl<S: Storage> NostrEngine<S> {
+    /// Builds an engine over the given storage; `clock` supplies the current
+    /// Unix time (injectable so tests can pin it).
     pub fn new_with_storage(storage: S, limits: Limits, clock: fn() -> u64) -> Self {
         Self {
             registry: WalletRegistry::new(storage, limits),
@@ -35,6 +46,8 @@ impl<S: Storage> NostrEngine<S> {
         }
     }
 
+    /// Dispatches a decoded NIP-01 client message (`EVENT`/`REQ`/`CLOSE`)
+    /// and returns the responses the transport must emit.
     pub async fn handle_typed(&mut self, connection_id: u32, message: ClientMessage) -> Vec<EngineResponse> {
         match message {
             ClientMessage::Event(event) => self.handle_event(connection_id, event).await,
@@ -104,6 +117,9 @@ impl<S: Storage> NostrEngine<S> {
         }
     }
 
+    /// Handles a `REQ`: rejects overly broad filters with `CLOSED`, then
+    /// subscribes and replays matching cached wallet info events followed by
+    /// `EOSE`.
     pub async fn handle_req(&mut self, id: u32, sub_id: String, filters: Vec<Filter>) -> Vec<EngineResponse> {
         if filters.iter().any(|f| !f.is_valid()) {
             let message = RelayMessage::Closed(sub_id.clone(), "filter too broad".to_string());
@@ -113,10 +129,15 @@ impl<S: Storage> NostrEngine<S> {
         self.process_req(id, sub_id, filters).await
     }
 
+    /// Same as [`Self::handle_req`] but skips the broad-filter guard, for
+    /// subscriptions the relay constructs itself.
     pub async fn handle_req_internal(&mut self, id: u32, sub_id: String, filters: Vec<Filter>) -> Vec<EngineResponse> {
         self.process_req(id, sub_id, filters).await
     }
 
+    /// Registers a freshly accepted connection and returns any responses to
+    /// emit; currently registration only, so the vector is empty (the relay
+    /// sends nothing until the client issues `REQ`).
     pub async fn on_connect(&mut self, id: u32) -> Vec<EngineResponse> {
         log_debug!("connect conn={}", id);
         self.add_connection(id, HashMap::new()).await;
@@ -229,37 +250,50 @@ impl<S: Storage> NostrEngine<S> {
         responses
     }
 
+    /// Ends a subscription and persists the change; returns no responses.
     pub async fn process_close(&mut self, id: u32, sub_id: String) -> Vec<EngineResponse> {
         log_debug!("close conn={} sub={}", id, sub_id);
         let _ = self.registry.unsubscribe(id, sub_id).await;
         Vec::new()
     }
 
+    /// Drops the connection's live index entries while keeping persisted
+    /// state (internal RPC session cleanup); returns no responses.
     pub async fn on_disconnect(&mut self, id: u32) -> Vec<EngineResponse> {
         self.registry.on_disconnect(id).await;
         Vec::new()
     }
 
+    /// Final teardown when a WebSocket closes: removes the connection's
+    /// persisted state; returns no responses.
     pub async fn on_terminate(&mut self, id: u32) -> Vec<EngineResponse> {
         log_debug!("terminate conn={}", id);
         self.registry.on_terminate(id).await;
         Vec::new()
     }
 
+    /// Parses the cached wallet info event (`kind` 13194) for `pubkey` into
+    /// the wallet's advertised capabilities; `None` when nothing is cached.
     pub async fn get_wallet_info(&mut self, pubkey: &str) -> Option<super::WalletInfo> {
         self.registry.get_info(pubkey).await.map(|event| super::nip_47::parse_wallet_info(&event))
     }
 
+    /// Registers the given subscriptions for a connection, ignoring
+    /// individual failures (best-effort restore path).
     pub async fn add_connection(&mut self, id: u32, subscriptions: HashMap<String, Vec<Filter>>) {
         for (sub_id, filters) in subscriptions {
             let _ = self.registry.subscribe(id, sub_id, filters).await;
         }
     }
 
+    /// Restores the connection's subscriptions from storage into the live
+    /// index; returns whether it has subscriptions afterwards.
     pub async fn load(&mut self, conn_id: u32) -> bool {
         self.registry.load(conn_id).await
     }
 
+    /// Connection IDs whose subscriptions cover events addressed to
+    /// `pubkey`, loading them from storage as needed.
     pub async fn load_by_pubkey(&mut self, pubkey: &str) -> Vec<u32> {
         self.registry.load_by_pubkey(pubkey).await
     }

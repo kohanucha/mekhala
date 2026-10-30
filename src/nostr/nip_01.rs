@@ -2,10 +2,14 @@ use crate::nostr::{Event, Filter};
 use serde_json::value::RawValue;
 use serde::Deserialize;
 
+/// A fully validated NIP-01 client message after [`ClientMessage::from_json`].
 #[derive(Debug, Clone)]
 pub enum ClientMessage {
+    /// `["EVENT", event]` — publish an event.
     Event(Event),
+    /// `["REQ", sub_id, filter, ...]` — subscribe with one or more filters.
     Req(String, Vec<Filter>),
+    /// `["CLOSE", sub_id]` — end a subscription.
     Close(String),
 }
 
@@ -14,11 +18,16 @@ struct PartialEvent {
     id: String,
 }
 
+/// Cheap pre-parse of an incoming message used to reject oversized or
+/// malformed payloads before paying for full validation. Currently only
+/// recognizes `EVENT` messages, exposing the event's `id`.
 pub enum PartialClientMessage {
     Event(String), // Returns the ID if it looks like an event
 }
 
 impl PartialClientMessage {
+    /// Best-effort parse; `None` when the text is not a recognizable
+    /// NIP-01 `EVENT` array.
     pub fn from_json(text: &str) -> Option<Self> {
         let arr: Vec<&RawValue> = serde_json::from_str(text).ok()?;
         if arr.len() < 2 { return None; }
@@ -33,6 +42,12 @@ impl PartialClientMessage {
 }
 
 impl ClientMessage {
+    /// Parses a NIP-01 client message array (full validation included).
+    ///
+    /// # Errors
+    ///
+    /// Returns a descriptive message string when the text is not valid
+    /// JSON, not an array, or fails NIP-01 framing rules.
     pub fn from_json(text: &str) -> Result<Self, String> {
         let arr: Vec<&RawValue> = serde_json::from_str(text).map_err(|e| e.to_string())?;
 
@@ -66,15 +81,29 @@ impl ClientMessage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// A relay-to-client NIP-01 message; serialized to the WebSocket with
+/// [`RelayMessage::to_json`].
 pub enum RelayMessage {
+    /// `OK` — acknowledgment of an accepted/rejected event.
     Ok(String, bool, String),
+    /// `EVENT` — an event delivered for a subscription.
     Event(String, crate::nostr::Event),
+    /// `EOSE` — end of stored events for a subscription.
     Eose(String),
+    /// `NOTICE` — human-readable relay notice.
     Notice(String),
+    /// `CLOSED` — relay ended a subscription (e.g. connection lost).
     Closed(String, String),
 }
 
 impl RelayMessage {
+    /// Parses a relay message from JSON (used when relaying the wallet
+    /// service's serialized replies through the DO, see
+    /// `cloudflare::transport`).
+    ///
+    /// # Errors
+    ///
+    /// Returns the parse failure message for invalid or unknown payloads.
     pub fn from_json(text: &str) -> Result<Self, String> {
         let arr: Vec<&RawValue> = serde_json::from_str(text).map_err(|e| e.to_string())?;
 
@@ -113,6 +142,7 @@ impl RelayMessage {
         }
     }
 
+    /// Serializes this message to its NIP-01 JSON wire form.
     pub fn to_json(&self) -> String {
         match self {
             Self::Ok(id, ok, msg) => serde_json::json!(["OK", id, ok, msg]).to_string(),

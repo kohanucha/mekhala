@@ -7,6 +7,7 @@ use serde_json::Value;
 use url::Url;
 use crate::nostr::{RelayError, Result, Limits};
 
+/// The only Nostr event kind this relay treats as an NWC request.
 pub const KIND_NWC_REQUEST: u64 = 23194;
 
 fn get_shared_secret(secret_key_hex: &str, public_key_hex: &str) -> Result<Vec<u8>> {
@@ -26,37 +27,52 @@ fn get_shared_secret(secret_key_hex: &str, public_key_hex: &str) -> Result<Vec<u
     Ok(shared.raw_secret_bytes().to_vec())
 }
 
+/// NIP-47 request methods a client may invoke on the wallet service.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NwcMethod {
+    /// Create an invoice (`make_invoice`).
     MakeInvoice
 }
 
+/// Encrypted JSON payload of an NIP-47 request event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NwcRequest {
+    /// Requested wallet-service method.
     pub method: NwcMethod,
+    /// Method parameters as raw JSON (per NIP-47 schema).
     pub params: Value,
 }
 
+/// Encrypted JSON payload of an NIP-47 response event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NwcResponse {
+    /// Result value on success.
     pub result: Option<Value>,
+    /// Structured error on failure.
     pub error: Option<NwcError>,
 }
 
+/// NIP-47 structured error carried inside a [`NwcResponse::error`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NwcError {
+    /// Machine-readable NIP-47 error code.
     pub code: String,
+    /// Human-readable message.
     pub message: String,
 }
 
+/// Encryption scheme used for NIP-47 event content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EncryptionMethod {
+    /// AES-256-CBC per NIP-04 (legacy).
     Nip04,
+    /// ChaCha20 + HMAC per NIP-44 v2 (preferred).
     Nip44,
 }
 
 impl EncryptionMethod {
+    /// NIP-47 protocol string used in the `encryption` tag.
     pub fn to_protocol_string(self) -> String {
         match self {
             EncryptionMethod::Nip04 => "nip04".to_string(),
@@ -64,6 +80,7 @@ impl EncryptionMethod {
         }
     }
 
+    /// Parses a NIP-47 protocol string from the `encryption` tag.
     pub fn from_protocol_str(s: &str) -> Option<EncryptionMethod> {
         match s {
             "nip04" => Some(EncryptionMethod::Nip04),
@@ -73,11 +90,16 @@ impl EncryptionMethod {
     }
 }
 
+/// Encryption algorithms a wallet service advertised in its info document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WalletInfo {
+    /// Ordered advertised schemes, deduplicated.
     pub encryption_algorithms: Vec<EncryptionMethod>,
 }
 
+/// Extracts the advertised encryption algorithms from a wallet's info
+/// document event, falling back to [`EncryptionMethod::Nip04`] when no
+/// `encryption` tag is present (older wallets).
 pub fn parse_wallet_info(event: &crate::nostr::Event) -> WalletInfo {
     let mut encryption = Vec::new();
     let mut has_encryption_tag = false;
@@ -102,11 +124,16 @@ pub fn parse_wallet_info(event: &crate::nostr::Event) -> WalletInfo {
     WalletInfo { encryption_algorithms: encryption }
 }
 
+/// Errors produced while parsing a `nostr+walletconnect://` URI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NwcUriError {
+    /// The URI is not a parseable URL; carries the parse failure text.
     InvalidUrl(String),
+    /// URI scheme is not `nostr+walletconnect`.
     InvalidScheme,
+    /// No wallet public key in the host position.
     MissingPubkey,
+    /// No `secret` query parameter.
     MissingSecret,
 }
 
@@ -121,13 +148,27 @@ impl std::fmt::Display for NwcUriError {
     }
 }
 
+/// Parsed contents of a NIP-47 connection URI: the wallet's public key and
+/// the shared secret entered by the user.
 #[derive(Debug, Clone)]
 pub struct NwcUri {
+    /// Wallet service public key (hex, host part of the URI).
     pub wallet_pubkey: String,
+    /// Pairing secret from the `secret` query parameter (hex).
     pub secret: String,
 }
 
 impl NwcUri {
+    /// Parses a `nostr+walletconnect://<pubkey>?secret=<secret>[&relay=...]`
+    /// connection URI, ignoring any other query parameters (e.g. `relay`,
+    /// `lud16`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NwcUriError::InvalidUrl`] if the string is not a URL,
+    /// [`NwcUriError::InvalidScheme`] on a non-NWC scheme,
+    /// [`NwcUriError::MissingPubkey`] when the host is absent, and
+    /// [`NwcUriError::MissingSecret`] without a `secret` parameter.
     pub fn from_uri(uri: &str) -> std::result::Result<Self, NwcUriError> {
         let url = Url::parse(uri).map_err(|e| NwcUriError::InvalidUrl(e.to_string()))?;
         if url.scheme() != "nostr+walletconnect" {
@@ -152,17 +193,35 @@ impl NwcUri {
     }
 }
 
+/// Client side of an NIP-47 NWC session: encrypts requests to and verifies
+/// responses from the wallet service using the shared secret (NIP-04 or
+/// NIP-44), plus its own signing key derived from the URI secret.
+///
+/// Created from [`NwcUri::from_uri`]; the negotiated [`EncryptionMethod`]
+/// defaults to NIP-04 and can be set from the wallet's advertised schemes
+/// (see [`parse_wallet_info`]).
 #[derive(Clone)]
 pub struct NwcClient {
+    /// Wallet service public key (hex), used as the `p` tag target.
     pub wallet_pubkey: String,
     shared_secret: Vec<u8>,
     signing_key: SigningKey,
+    /// Public key of this session's ephemeral identity (hex).
     pub my_pubkey: String,
+    /// Content encryption scheme in use.
     pub encryption_method: EncryptionMethod,
     clock: fn() -> u64,
 }
 
 impl NwcClient {
+    /// Builds a client from a parsed URI, computing the ECDH shared secret
+    /// against the wallet key and binding the signing key to the secret.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RelayError::MalformedHex`] for non-hex inputs,
+    /// [`RelayError::Generic`] when the secret is not 32 bytes, and
+    /// [`RelayError::CryptoError`] for key agreement failures.
     pub fn new(uri: NwcUri) -> Result<Self> {
         let shared_secret = get_shared_secret(&uri.secret, &uri.wallet_pubkey)?;
 
@@ -184,6 +243,8 @@ impl NwcClient {
         })
     }
 
+    /// Encrypts the request payload with the negotiated scheme
+    /// (see [`EncryptionMethod`]).
     pub fn encrypt(&self, payload: &Value) -> Result<String> {
         match self.encryption_method {
             EncryptionMethod::Nip04 => crate::nostr::nip_04::encrypt_nip04(&self.shared_secret, &payload.to_string()),
@@ -191,6 +252,8 @@ impl NwcClient {
         }
     }
 
+    /// Decrypts event content with the negotiated scheme
+    /// (see [`EncryptionMethod`]).
     pub fn decrypt(&self, encrypted: &str) -> Result<String> {
         match self.encryption_method {
             EncryptionMethod::Nip04 => crate::nostr::nip_04::decrypt_nip04(&self.shared_secret, encrypted),
@@ -198,6 +261,18 @@ impl NwcClient {
         }
     }
 
+    /// Builds a signed NIP-47 request event for the given method and
+    /// parameters, appending the required `p`, `expiration` and `encryption`
+    /// tags plus any `extra_tags` supplied by the caller.
+    ///
+    /// Returns the event and its ID (the ID a matching response must carry
+    /// in its `e` tag).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RelayError::SerializationError`] if the payload cannot be
+    /// serialized, and propagates [`Self::encrypt`] / [`Self::create_event`]
+    /// errors.
     pub fn create_request_event(
         &self,
         method: NwcMethod,
@@ -221,6 +296,16 @@ impl NwcClient {
         Ok((event, event_id))
     }
 
+    /// Verifies and decrypts a wallet's response event for `request_id`:
+    /// checks the signature/hash, that the event came from the wallet key,
+    /// that an `e` tag references the request, and returns the decrypted
+    /// JSON payload body.
+    ///
+    /// # Errors
+    ///
+    /// Returns verification errors ([`RelayError::InvalidSignature`],
+    /// [`RelayError::TimestampTooFar`], ...), [`RelayError::Generic`] on a
+    /// pubkey or `e` tag mismatch, and decryption/serialization errors.
     pub fn parse_response_event(&self, event: &Event, request_id: &str) -> Result<Value> {
         event.verify((self.clock)(), &Limits::default())?;
 
@@ -242,6 +327,12 @@ impl NwcClient {
         Ok(resp_json)
     }
 
+    /// Signs and assembles a Nostr event with this client's identity and
+    /// the current clock; the content/tags/ kind are supplied by the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RelayError::CryptoError`] if prehash signing fails.
     pub fn create_event(&self, kind: u64, content: String, tags: Vec<Tag>) -> Result<Event> {
         let created_at = (self.clock)();
 

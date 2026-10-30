@@ -1,6 +1,9 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
+/// A NIP-01 event tag, decoded from its wire form into typed variants used
+/// by relay validation and NIP-47 routing (`p`, `e`, `encryption`,
+/// `expiration`, and everything else).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tag {
     P(String, Vec<Value>),
@@ -11,26 +14,32 @@ pub enum Tag {
 }
 
 impl Tag {
+    /// Builds a `p` tag for the given recipient public key.
     pub fn p(pubkey: impl Into<String>) -> Self {
         Tag::P(pubkey.into(), vec![])
     }
 
+    /// Builds an `encryption` tag carrying NIP-47 protocol strings.
     pub fn encryption(scheme: impl Into<String>) -> Self {
         Tag::Encryption(scheme.into())
     }
 
+    /// Builds an `expiration` tag for the given Unix timestamp.
     pub fn expiration(ts: u64) -> Self {
         Tag::Expiration(ts.to_string())
     }
 
+    /// Whether this is a `p` (recipient public key) tag.
     pub fn is_p(&self) -> bool {
         matches!(self, Tag::P(_, _))
     }
 
+    /// Whether this is an `e` (referenced event ID) tag.
     pub fn is_e(&self) -> bool {
         matches!(self, Tag::E(_, _))
     }
 
+    /// The public key if this is a `p` tag.
     pub fn pubkey(&self) -> Option<&str> {
         match self {
             Tag::P(pk, _) => Some(pk),
@@ -38,6 +47,7 @@ impl Tag {
         }
     }
 
+    /// The referenced event ID if this is an `e` tag.
     pub fn event_id(&self) -> Option<&str> {
         match self {
             Tag::E(id, _) => Some(id),
@@ -45,6 +55,7 @@ impl Tag {
         }
     }
 
+    /// The encryption scheme string if this is an `encryption` tag.
     pub fn encryption_scheme(&self) -> Option<&str> {
         match self {
             Tag::Encryption(scheme) => Some(scheme),
@@ -52,6 +63,8 @@ impl Tag {
         }
     }
 
+    /// The kind number if this is a `k` tag (accepts numeric or string
+    /// forms).
     pub fn kind_value(&self) -> Option<u64> {
         match self {
             Tag::Other(name, values) if name == "k" => {

@@ -59,6 +59,13 @@ struct IdCounterState {
 }
 
 #[durable_object]
+/// Durable Object that carries the relay: every WebSocket connection is
+/// upgraded to this object, which routes client requests to the wallet
+/// and replies back. One object instance per region, named `"GLOBAL"`.
+///
+/// Holds the `NostrEngine` (relay logic, subscription registry, and
+/// state persistence), the live `ConnectionRegistry`, the request ID
+/// counter, and the optional KV store used by LN address routes.
 pub struct CloudflareTransport {
     config: CloudflareConfig,
     state: State,

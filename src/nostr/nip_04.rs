@@ -6,6 +6,8 @@ use cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit};
 use rand::Rng;
 use crate::nostr::{RelayError, Result};
 
+/// Encrypts UTF-8 plaintext with AES-256-CBC (NIP-04); returns
+/// `<base64(ciphertext)>?iv=<base64(iv)>` with a fresh random IV.
 pub fn encrypt_nip04(shared_secret: &[u8], plaintext: &str) -> Result<String> {
     let mut iv = [0u8; 16];
     rand::rng().fill_bytes(&mut iv);
@@ -26,6 +28,8 @@ pub fn encrypt_nip04(shared_secret: &[u8], plaintext: &str) -> Result<String> {
     Ok(format!("{}?iv={}", ct_b64, iv_b64))
 }
 
+/// Decrypts the NIP-04 `content` format (ciphertext and IV, both base64,
+/// separated by `?iv=`).
 pub fn decrypt_nip04(shared_secret: &[u8], encrypted_content: &str) -> Result<String> {
     let parts: Vec<&str> = encrypted_content.split("?iv=").collect();
     if parts.len() != 2 {
