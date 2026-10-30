@@ -34,6 +34,7 @@ hkdf = "0.13"
 chacha20 = "0.10"
 hmac = "0.13"
 futures = { version = "0.3.32", features = ["thread-pool"] }
+thiserror = "2"
 
 [lints.rust]
 unsafe_code = "deny"

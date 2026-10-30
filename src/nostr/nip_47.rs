@@ -125,27 +125,20 @@ pub fn parse_wallet_info(event: &crate::nostr::Event) -> WalletInfo {
 }
 
 /// Errors produced while parsing a `nostr+walletconnect://` URI.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NwcUriError {
     /// The URI is not a parseable URL; carries the parse failure text.
+    #[error("error: url failure: {0}")]
     InvalidUrl(String),
     /// URI scheme is not `nostr+walletconnect`.
+    #[error("error: Invalid scheme")]
     InvalidScheme,
     /// No wallet public key in the host position.
+    #[error("error: Missing wallet pubkey")]
     MissingPubkey,
     /// No `secret` query parameter.
+    #[error("error: Missing secret")]
     MissingSecret,
-}
-
-impl std::fmt::Display for NwcUriError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::InvalidUrl(msg) => write!(f, "error: url failure: {}", msg),
-            Self::InvalidScheme => write!(f, "error: Invalid scheme"),
-            Self::MissingPubkey => write!(f, "error: Missing wallet pubkey"),
-            Self::MissingSecret => write!(f, "error: Missing secret"),
-        }
-    }
 }
 
 /// Parsed contents of a NIP-47 connection URI: the wallet's public key and
