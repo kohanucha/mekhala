@@ -32,7 +32,7 @@ impl Storage for CloudflareStorage {
     async fn get(&self, key: &str) -> Option<serde_json::Value> {
         self.storage.get(key).await.ok().flatten()
     }
-    async fn put_batch(&self, entries: std::collections::HashMap<String, serde_json::Value>) -> Result<(), String> {
+    async fn put_batch(&self, entries: std::collections::HashMap<String, serde_json::Value>) -> Result<(), crate::nostr::StorageError> {
         // See docs/put_multiple_raw.md for why we use put_multiple_raw + Object.
         let obj = Object::new();
         for (k, v) in &entries {
@@ -41,7 +41,7 @@ impl Storage for CloudflareStorage {
                 let _ = Reflect::set(&obj, &key, &val);
             }
         }
-        self.storage.put_multiple_raw(obj).await.map_err(|e| e.to_string())?;
+        self.storage.put_multiple_raw(obj).await.map_err(|e| crate::nostr::StorageError::from(e.to_string()))?;
         Ok(())
     }
     async fn delete_batch(&self, keys: Vec<String>) {

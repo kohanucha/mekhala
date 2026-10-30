@@ -4,7 +4,7 @@ use serde_json::Value;
 use crate::log_debug;
 use crate::log_info;
 use crate::log_error;
-use crate::nostr::{Filter, Event, Limits};
+use crate::nostr::{Filter, Event, Limits, StorageError};
 use crate::util::short;
 
 /// Persistence boundary of the registry: a key/value store backed by Durable
@@ -16,8 +16,8 @@ pub trait Storage {
     /// Reads the JSON value stored under `key`, if any.
     async fn get(&self, key: &str) -> Option<Value>;
     /// Writes (or overwrites) all entries in one batch; `Err` carries the
-    /// storage failure text.
-    async fn put_batch(&self, entries: HashMap<String, Value>) -> Result<(), String>;
+    /// backend failure as a [`StorageError`].
+    async fn put_batch(&self, entries: HashMap<String, Value>) -> Result<(), StorageError>;
     /// Removes the given keys; deletions are best-effort (no error path).
     async fn delete_batch(&self, keys: Vec<String>);
 }
@@ -485,7 +485,7 @@ impl<S: Storage> WalletRegistry<S> {
         self.index.find_info_pubkey_by_id(event_id)
     }
 
-    async fn sync(&self, conn_id: u32) -> Result<(), String> {
+    async fn sync(&self, conn_id: u32) -> Result<(), StorageError> {
         if let Some(state) = self.index.save(conn_id) {
             let mut entries = HashMap::new();
             entries.insert(format!("conn:{}", conn_id), state.json);

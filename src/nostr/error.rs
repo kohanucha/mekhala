@@ -47,6 +47,25 @@ pub enum RelayError {
 /// Result alias used across the relay domain.
 pub type Result<T> = std::result::Result<T, RelayError>;
 
+/// Failure reported by a [`Storage`](crate::nostr::wallet_registry::Storage)
+/// implementation. The payload is the backend's own message — there is no
+/// portable error taxonomy across Durable Object storage and test mocks.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct StorageError(pub String);
+
+impl From<String> for StorageError {
+    fn from(message: String) -> Self {
+        Self(message)
+    }
+}
+
+impl From<&str> for StorageError {
+    fn from(message: &str) -> Self {
+        Self(message.to_string())
+    }
+}
+
 impl From<serde_json::Error> for RelayError {
     fn from(e: serde_json::Error) -> Self {
         Self::SerializationError(e.to_string())
