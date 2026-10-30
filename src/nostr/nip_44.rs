@@ -18,7 +18,7 @@ pub fn encrypt_nip44(shared_secret: &[u8], plaintext: &str) -> Result<String> {
     let (chacha_key, chacha_nonce, hmac_key) = derive_message_keys(&conversation_key, &nonce);
 
     let padded = pad(plaintext);
-    let mut ciphertext = padded.clone();
+    let mut ciphertext = padded;
     let mut cipher = ChaCha20::new_from_slices(&chacha_key, &chacha_nonce)
         .map_err(|e| RelayError::CryptoError(e.to_string()))?;
     cipher.apply_keystream(&mut ciphertext);

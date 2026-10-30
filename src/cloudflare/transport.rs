@@ -137,13 +137,10 @@ impl DurableObject for CloudflareTransport {
             match &parsed {
                 Ok(crate::nostr::ClientMessage::Event(event)) => {
                     let mut engine = self.engine.lock().await;
-                    let connection_id = match self.wake_up_with_handler(&websocket, &mut engine).await {
-                        Some(id) => id,
-                        None => {
-                            log_error!("connection not found for incoming EVENT, sending reconnect notice");
-                            let _ = websocket.send_with_str(crate::nostr::RelayMessage::Notice("connection lost: please reconnect".into()).to_json());
-                            return Ok(());
-                        }
+                    let Some(connection_id) = self.wake_up_with_handler(&websocket, &mut engine).await else {
+                        log_error!("connection not found for incoming EVENT, sending reconnect notice");
+                        let _ = websocket.send_with_str(crate::nostr::RelayMessage::Notice("connection lost: please reconnect".into()).to_json());
+                        return Ok(());
                     };
 
                     log_info!("← conn={} RECV EVENT kind={} pk={} id={}", connection_id, event.kind, short(&event.pubkey, 8), short(&event.id, 8));
@@ -167,22 +164,19 @@ impl DurableObject for CloudflareTransport {
                 }
                 _ => {
                     let mut engine = self.engine.lock().await;
-                    let connection_id = match self.wake_up_with_handler(&websocket, &mut engine).await {
-                        Some(id) => id,
-                        None => {
-                            log_error!("connection not found for incoming message, sending reconnect notice");
-                            let _ = websocket.send_with_str(crate::nostr::RelayMessage::Notice("connection lost: please reconnect".into()).to_json());
-                            return Ok(());
-                        }
+                    let Some(connection_id) = self.wake_up_with_handler(&websocket, &mut engine).await else {
+                        log_error!("connection not found for incoming message, sending reconnect notice");
+                        let _ = websocket.send_with_str(crate::nostr::RelayMessage::Notice("connection lost: please reconnect".into()).to_json());
+                        return Ok(());
                     };
 
                     let responses = match parsed {
                         Ok(crate::nostr::ClientMessage::Req(sub_id, filters)) => {
                             log_info!("← conn={} RECV REQ sub={}", connection_id, sub_id);
                             for (i, f) in filters.iter().enumerate() {
-                                let kinds = f.kinds.as_ref().map(|k| format!("{:?}", k)).unwrap_or_else(|| "any".into());
-                                let auths = f.authors.as_ref().map(|a| a.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(",")).unwrap_or_else(|| "".into());
-                                let pts = f.p_tags.as_ref().map(|p| p.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(",")).unwrap_or_else(|| "".into());
+                                let kinds = f.kinds.as_ref().map_or_else(|| "any".into(), |k| format!("{:?}", k));
+                                let auths = f.authors.as_ref().map_or_else(String::new, |a| a.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(","));
+                                let pts = f.p_tags.as_ref().map_or_else(String::new, |p| p.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(","));
                                 log_info!("  filter[{}]: kinds={} authors={} #p={}", i, kinds, auths, pts);
                             }
                             engine.handle_req(connection_id, sub_id, filters).await
@@ -377,12 +371,9 @@ impl CloudflareTransport {
     }
 
     async fn wake_up_with_handler(&self, ws: &WebSocket, engine: &mut NostrEngine<CloudflareStorage>) -> Option<u32> {
-        let id = match self.connections.borrow().identify(ws) {
-            Some(id) => id,
-            None => {
-                log_warn!("wake_up: identify failed for ws");
-                return None;
-            }
+        let Some(id) = self.connections.borrow().identify(ws) else {
+            log_warn!("wake_up: identify failed for ws");
+            return None;
         };
 
         let _ = engine.load(id).await;
@@ -455,8 +446,8 @@ pub async fn connect(req: Request, env: &Env) -> Result<Response> {
     crate::cloudflare::get_durable_stub(env, config.wallet_region.as_deref())?.fetch_with_request(req).await
 }
 
-pub fn create_response(info: serde_json::Value, content_type: &str) -> Result<Response> {
-    let mut response = create_cors_response(Response::from_json(&info)?)?;
+pub fn create_response(info: &serde_json::Value, content_type: &str) -> Result<Response> {
+    let mut response = create_cors_response(Response::from_json(info)?)?;
     response.headers_mut().set("Content-Type", content_type)?;
     Ok(response)
 }

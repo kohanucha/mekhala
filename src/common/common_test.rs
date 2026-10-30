@@ -58,4 +58,6 @@ use super::*;
         let err = NwcError::WalletNotFound;
         let cloned = err.clone();
         assert!(matches!(cloned, NwcError::WalletNotFound));
+        // `err` stays usable after the clone (the point of the test).
+        assert!(matches!(err, NwcError::WalletNotFound));
     }

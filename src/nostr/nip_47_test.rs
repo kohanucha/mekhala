@@ -20,7 +20,7 @@ use super::*;
         assert_eq!(payload, decrypted_json);
 
         let (event, request_id) = client
-            .create_request_event(NwcMethod::MakeInvoice, payload.clone(), vec![])
+            .create_request_event(NwcMethod::MakeInvoice, payload, vec![])
             .unwrap();
         assert_eq!(event.pubkey, client.my_pubkey);
         assert_eq!(event.kind, KIND_NWC_REQUEST);

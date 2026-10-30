@@ -233,7 +233,7 @@ impl WalletIndex {
         })
     }
 
-    fn restore(&mut self, conn_id: u32, data: Value) {
+    fn restore(&mut self, conn_id: u32, data: &Value) {
         if let Some(subs_val) = data.get("subscriptions") {
             if let Ok(subs) = serde_json::from_value::<HashMap<String, Vec<Filter>>>(subs_val.clone()) {
                 for (sub_id, filters) in subs {
@@ -345,7 +345,7 @@ impl<S: Storage> WalletRegistry<S> {
         }
         let key = format!("conn:{}", conn_id);
         if let Some(data) = self.storage.get(&key).await {
-            self.index.restore(conn_id, data);
+            self.index.restore(conn_id, &data);
             let count = self.index.get_subscriptions(conn_id).len();
             log_info!("restored conn={} with {} subscriptions", conn_id, count);
             return true;

@@ -1,4 +1,4 @@
-//! Shared types: NwcError, NwcTransport trait, UserStore trait.
+//! Shared types: `NwcError`, `NwcTransport` trait, `UserStore` trait.
 
 use std::fmt;
 use crate::nostr::Event;
