@@ -34,9 +34,21 @@ hkdf = "0.13"
 chacha20 = "0.10"
 hmac = "0.13"
 futures = { version = "0.3.32", features = ["thread-pool"] }
+thiserror = "2"
 
 [lints.rust]
 unsafe_code = "deny"
+
+[lints.clippy]
+# Curated lints promoted to errors by CI's `-D warnings`. Declared here so
+# they apply to every target (lib, tests) locally and in CI instead of
+# living only in the workflow command.
+redundant_clone = "warn"
+manual_let_else = "warn"
+map_unwrap_or = "warn"
+missing_errors_doc = "warn"
+doc_markdown = "warn"
+needless_pass_by_value = "warn"
 
 [profile.release]
 opt-level = "s"

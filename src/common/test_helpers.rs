@@ -67,9 +67,9 @@ impl Storage for MockStorage {
     async fn get(&self, key: &str) -> Option<Value> {
         self.data.lock().unwrap().get(key).cloned()
     }
-    async fn put_batch(&self, entries: HashMap<String, Value>) -> Result<(), String> {
+    async fn put_batch(&self, entries: HashMap<String, Value>) -> Result<(), crate::nostr::StorageError> {
         if self.fail_put_batch {
-            return Err("mock storage unavailable".into());
+            return Err(crate::nostr::StorageError::from("mock storage unavailable"));
         }
         let mut data = self.data.lock().unwrap();
         for (k, v) in entries {
@@ -175,7 +175,7 @@ impl NwcTransport for MockTransport {
         let encrypted = wallet_client.encrypt(&resp_payload).unwrap();
         let mut tags = vec![
             Tag::p(&wallet_client.my_pubkey),
-            Tag::E(request.id.clone(), vec![]),
+            Tag::E(request.id, vec![]),
         ];
         if is_nip44 {
             tags.push(Tag::encryption("nip44_v2"));
