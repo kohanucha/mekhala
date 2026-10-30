@@ -155,7 +155,7 @@ impl WalletIndex {
         self.info_id_index.get(event_id).cloned()
     }
 
-    fn match_event<'a>(&'a self, event: &'a Event) -> Box<dyn Iterator<Item = (String, Vec<u32>)> + 'a> {
+    fn match_event(&self, event: &Event) -> impl Iterator<Item = (String, Vec<u32>)> {
         let target_pks = event.target_pubkeys();
 
         let mut sub_to_conns = HashMap::new();
