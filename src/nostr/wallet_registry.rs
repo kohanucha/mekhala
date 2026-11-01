@@ -4,7 +4,7 @@ use serde_json::Value;
 use crate::log_debug;
 use crate::log_info;
 use crate::log_error;
-use crate::nostr::{Filter, Event, Limits};
+use crate::nostr::{Filter, Event, Limits, StorageError};
 use crate::util::short;
 
 /// Persistence boundary of the registry: a key/value store backed by Durable
@@ -16,8 +16,8 @@ pub trait Storage {
     /// Reads the JSON value stored under `key`, if any.
     async fn get(&self, key: &str) -> Option<Value>;
     /// Writes (or overwrites) all entries in one batch; `Err` carries the
-    /// storage failure text.
-    async fn put_batch(&self, entries: HashMap<String, Value>) -> Result<(), String>;
+    /// backend failure as a [`StorageError`].
+    async fn put_batch(&self, entries: HashMap<String, Value>) -> Result<(), StorageError>;
     /// Removes the given keys; deletions are best-effort (no error path).
     async fn delete_batch(&self, keys: Vec<String>);
 }
@@ -155,7 +155,7 @@ impl WalletIndex {
         self.info_id_index.get(event_id).cloned()
     }
 
-    fn match_event<'a>(&'a self, event: &'a Event) -> Box<dyn Iterator<Item = (String, Vec<u32>)> + 'a> {
+    fn match_event(&self, event: &Event) -> impl Iterator<Item = (String, Vec<u32>)> {
         let target_pks = event.target_pubkeys();
 
         let mut sub_to_conns = HashMap::new();
@@ -233,7 +233,7 @@ impl WalletIndex {
         })
     }
 
-    fn restore(&mut self, conn_id: u32, data: Value) {
+    fn restore(&mut self, conn_id: u32, data: &Value) {
         if let Some(subs_val) = data.get("subscriptions") {
             if let Ok(subs) = serde_json::from_value::<HashMap<String, Vec<Filter>>>(subs_val.clone()) {
                 for (sub_id, filters) in subs {
@@ -345,7 +345,7 @@ impl<S: Storage> WalletRegistry<S> {
         }
         let key = format!("conn:{}", conn_id);
         if let Some(data) = self.storage.get(&key).await {
-            self.index.restore(conn_id, data);
+            self.index.restore(conn_id, &data);
             let count = self.index.get_subscriptions(conn_id).len();
             log_info!("restored conn={} with {} subscriptions", conn_id, count);
             return true;
@@ -485,7 +485,7 @@ impl<S: Storage> WalletRegistry<S> {
         self.index.find_info_pubkey_by_id(event_id)
     }
 
-    async fn sync(&self, conn_id: u32) -> Result<(), String> {
+    async fn sync(&self, conn_id: u32) -> Result<(), StorageError> {
         if let Some(state) = self.index.save(conn_id) {
             let mut entries = HashMap::new();
             entries.insert(format!("conn:{}", conn_id), state.json);

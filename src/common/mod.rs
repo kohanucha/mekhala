@@ -1,36 +1,28 @@
-//! Shared types: NwcError, NwcTransport trait, UserStore trait.
+//! Shared types: `NwcError`, `NwcTransport` trait, `UserStore` trait.
 
-use std::fmt;
 use crate::nostr::Event;
 use crate::nostr::nip_47::NwcUriError;
 
-#[derive(Debug, Clone)]
 /// Error type for the wallet-service side of NWC interactions.
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum NwcError {
     /// No wallet session is connected for the requested user.
+    #[error("Wallet not connected")]
     WalletNotFound,
     /// The wallet did not answer in time.
+    #[error("NWC RPC timeout")]
     Timeout,
     /// NWC-level failure; carries the upstream message.
+    #[error("{0}")]
     ProtocolError(String),
     /// The wallet returned a structured NIP-47 error.
+    #[error("NWC Error ({code}): {message}")]
     RpcError {
         /// NIP-47 machine-readable code.
         code: String,
         /// Human-readable message from the wallet.
         message: String,
     },
-}
-
-impl fmt::Display for NwcError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            NwcError::WalletNotFound => write!(f, "Wallet not connected"),
-            NwcError::Timeout => write!(f, "NWC RPC timeout"),
-            NwcError::ProtocolError(msg) => write!(f, "{}", msg),
-            NwcError::RpcError { code, message } => write!(f, "NWC Error ({}): {}", code, message),
-        }
-    }
 }
 
 impl From<crate::nostr::RelayError> for NwcError {

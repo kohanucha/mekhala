@@ -2,10 +2,11 @@
 
 use sha2::{Sha256, Digest};
 
-#[derive(Debug, PartialEq)]
 /// Auth failure returned by [`AccessPolicy::check_access`].
+#[derive(Debug, PartialEq, thiserror::Error)]
 pub enum AuthError {
     /// Secret missing or wrong (private mode).
+    #[error("forbidden: missing or invalid relay secret")]
     Forbidden,
 }
 

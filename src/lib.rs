@@ -36,6 +36,11 @@ pub fn set_panic_hook() {
 
 /// Worker fetch handler: installs the panic hook, then delegates every
 /// request to the router (LNURL HTTP routes and WebSocket upgrade).
+///
+/// # Errors
+///
+/// Propagates router failures (unroutable requests, failed WebSocket
+/// upgrades, or errors building a response).
 #[event(fetch)]
 pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     set_panic_hook();

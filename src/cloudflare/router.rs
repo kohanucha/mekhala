@@ -72,8 +72,7 @@ fn is_websocket_upgrade(req: &Request) -> bool {
         .get("Upgrade")
         .ok()
         .flatten()
-        .map(|u| u.to_lowercase() == "websocket")
-        .unwrap_or(false)
+        .is_some_and(|u| u.to_lowercase() == "websocket")
 }
 
 async fn handle_upgrade(req: Request, ctx: &RouteContext<()>) -> Result<Response> {
@@ -82,5 +81,5 @@ async fn handle_upgrade(req: Request, ctx: &RouteContext<()>) -> Result<Response
 
 fn handle_nip11() -> Result<Response> {
     let info = serde_json::json!({"supported_nips": [1, 9, 11, 47]});
-    crate::cloudflare::transport::create_response(info, "application/nostr+json")
+    crate::cloudflare::transport::create_response(&info, "application/nostr+json")
 }

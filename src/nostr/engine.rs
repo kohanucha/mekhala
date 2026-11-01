@@ -56,8 +56,8 @@ impl<S: Storage> NostrEngine<S> {
         }
     }
 
-    /// Validate an event without routing it. Returns Ok(event_id) if accepted,
-    /// or Err((event_id, error_message)) if rejected.
+    /// Validate an event without routing it. Returns `Ok(event_id)` if
+    /// accepted, or `Err((event_id, error_message))` if rejected.
     pub fn validate_event(&self, event: &Event) -> Result<(), (String, String)> {
         let ts = (self.clock)();
         match event.kind {
@@ -122,7 +122,7 @@ impl<S: Storage> NostrEngine<S> {
     /// `EOSE`.
     pub async fn handle_req(&mut self, id: u32, sub_id: String, filters: Vec<Filter>) -> Vec<EngineResponse> {
         if filters.iter().any(|f| !f.is_valid()) {
-            let message = RelayMessage::Closed(sub_id.clone(), "filter too broad".to_string());
+            let message = RelayMessage::Closed(sub_id, "filter too broad".to_string());
             return vec![EngineResponse::send(id, message)];
         }
 

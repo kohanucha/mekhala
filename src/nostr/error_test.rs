@@ -50,3 +50,15 @@ use super::*;
             _ => panic!("Expected Base64Error"),
         }
     }
+
+    #[test]
+    fn test_storage_error_display_and_from() {
+        let from_str: StorageError = "mock storage unavailable".into();
+        let from_string: StorageError = String::from("mock storage unavailable").into();
+        assert_eq!(from_str, from_string);
+        assert_eq!(from_str.to_string(), "mock storage unavailable");
+
+        // Implements std::error::Error so it can be boxed / chained.
+        let as_std: &dyn std::error::Error = &from_str;
+        assert_eq!(as_std.to_string(), "mock storage unavailable");
+    }
