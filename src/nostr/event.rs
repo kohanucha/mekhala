@@ -1,9 +1,9 @@
-use std::collections::HashSet;
+use crate::nostr::{Limits, RelayError, Tag};
 use k256::schnorr::signature::hazmat::PrehashVerifier;
 use k256::schnorr::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use crate::nostr::{RelayError, Limits, Tag};
+use std::collections::HashSet;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 /// A NIP-01 Nostr event: the domain type the relay validates, stores and
@@ -29,16 +29,15 @@ impl Event {
     ///
     /// Returns [`RelayError::SerializationError`] if the canonical array
     /// cannot be serialized.
-    pub fn compute_id(pubkey: &str, created_at: u64, kind: u64, tags: &[Tag], content: &str) -> Result<(String, Vec<u8>), RelayError> {
-        let serialized = serde_json::to_string(&(
-            0,
-            pubkey,
-            created_at,
-            kind,
-            tags,
-            content,
-        ))
-        .map_err(|e| RelayError::SerializationError(e.to_string()))?;
+    pub fn compute_id(
+        pubkey: &str,
+        created_at: u64,
+        kind: u64,
+        tags: &[Tag],
+        content: &str,
+    ) -> Result<(String, Vec<u8>), RelayError> {
+        let serialized = serde_json::to_string(&(0, pubkey, created_at, kind, tags, content))
+            .map_err(|e| RelayError::SerializationError(e.to_string()))?;
 
         let id_bytes = Sha256::digest(serialized.as_bytes());
         Ok((hex::encode(id_bytes), id_bytes.to_vec()))
@@ -68,7 +67,6 @@ impl Event {
     /// check (`InvalidKind`, `MissingTag`, `LimitExceeded`,
     /// `TimestampTooFar`, `InvalidId`, `MalformedHex`, `InvalidSignature`).
     pub fn verify(&self, current_time: u64, limits: &Limits) -> Result<(), RelayError> {
-        
         // Enforce allowed kinds
         match self.kind {
             5 | 13194 | 23194 | 23195 | 23196 | 23197 => {}
@@ -80,28 +78,47 @@ impl Event {
             23195 => {
                 let has_p = self.tags.iter().any(|t| t.is_p());
                 let has_e = self.tags.iter().any(|t| t.is_e());
-                if !has_p { return Err(RelayError::MissingTag("p".into())); }
-                if !has_e { return Err(RelayError::MissingTag("e".into())); }
+                if !has_p {
+                    return Err(RelayError::MissingTag("p".into()));
+                }
+                if !has_e {
+                    return Err(RelayError::MissingTag("e".into()));
+                }
             }
             23196 | 23197 => {
                 let has_p = self.tags.iter().any(|t| t.is_p());
-                if !has_p { return Err(RelayError::MissingTag("p".into())); }
+                if !has_p {
+                    return Err(RelayError::MissingTag("p".into()));
+                }
             }
             _ => {}
         }
 
         if self.content.len() > limits.max_content_length {
-            return Err(RelayError::LimitExceeded(format!("content too large (max {} bytes)", limits.max_content_length)));
+            return Err(RelayError::LimitExceeded(format!(
+                "content too large (max {} bytes)",
+                limits.max_content_length
+            )));
         }
 
         if self.created_at > current_time + 900 {
-            return Err(RelayError::TimestampTooFar("event creation date is too far off from the current time".into()));
+            return Err(RelayError::TimestampTooFar(
+                "event creation date is too far off from the current time".into(),
+            ));
         }
         if self.created_at < current_time - 31_536_000 {
-            return Err(RelayError::TimestampTooFar("event creation date is too old".into()));
+            return Err(RelayError::TimestampTooFar(
+                "event creation date is too old".into(),
+            ));
         }
 
-        let (computed_id, id_bytes) = Event::compute_id(&self.pubkey, self.created_at, self.kind, &self.tags, &self.content)?;
+        let (computed_id, id_bytes) = Event::compute_id(
+            &self.pubkey,
+            self.created_at,
+            self.kind,
+            &self.tags,
+            &self.content,
+        )?;
         if self.id != computed_id {
             return Err(RelayError::InvalidId);
         }

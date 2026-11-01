@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::nostr::Event;
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, Hash)]
 /// A NIP-01 subscription filter. `None` fields are unconstrained; every
@@ -37,16 +37,18 @@ impl Filter {
             }
         }
         if let Some(p_tags) = &self.p_tags {
-            let has_match = event.tags.iter().any(|t| {
-                t.pubkey().is_some_and(|pk| p_tags.iter().any(|s| s == pk))
-            });
+            let has_match = event
+                .tags
+                .iter()
+                .any(|t| t.pubkey().is_some_and(|pk| p_tags.iter().any(|s| s == pk)));
             if !has_match {
                 return false;
             }
         }
         if let Some(e_tags) = &self.e_tags {
             let has_match = event.tags.iter().any(|t| {
-                t.event_id().is_some_and(|eid| e_tags.iter().any(|s| s == eid))
+                t.event_id()
+                    .is_some_and(|eid| e_tags.iter().any(|s| s == eid))
             });
             if !has_match {
                 return false;
@@ -69,11 +71,15 @@ impl Filter {
     /// event space. Filters with `#p`, `#e`, or `ids` only need allowed
     /// kinds; otherwise the filter must carry allowed kinds *and* `authors`.
     pub fn is_valid(&self) -> bool {
-        let has_specific_narrowing = self.p_tags.is_some() || self.e_tags.is_some() || self.ids.is_some();
+        let has_specific_narrowing =
+            self.p_tags.is_some() || self.e_tags.is_some() || self.ids.is_some();
 
         if has_specific_narrowing {
             if let Some(kinds) = &self.kinds {
-                if kinds.iter().any(|k| !matches!(k, 5 | 13194 | 23194..=23197)) {
+                if kinds
+                    .iter()
+                    .any(|k| !matches!(k, 5 | 13194 | 23194..=23197))
+                {
                     return false;
                 }
             }
@@ -83,11 +89,18 @@ impl Filter {
                 _ => return false,
             };
 
-            if kinds.iter().any(|k| !matches!(k, 5 | 13194 | 23194..=23197)) {
+            if kinds
+                .iter()
+                .any(|k| !matches!(k, 5 | 13194 | 23194..=23197))
+            {
                 return false;
             }
 
-            if self.ids.is_none() && self.authors.is_none() && self.p_tags.is_none() && self.e_tags.is_none() {
+            if self.ids.is_none()
+                && self.authors.is_none()
+                && self.p_tags.is_none()
+                && self.e_tags.is_none()
+            {
                 return false;
             }
         }

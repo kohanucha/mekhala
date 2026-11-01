@@ -1,7 +1,5 @@
 use crate::common::{NwcError, NwcTransport};
-use crate::nostr::nip_47::{
-    EncryptionMethod, NwcClient, NwcMethod, NwcResponse, NwcUri,
-};
+use crate::nostr::nip_47::{EncryptionMethod, NwcClient, NwcMethod, NwcResponse, NwcUri};
 use serde_json::Value;
 
 /// A per-request NWC client session: binds a transport to one user's wallet
@@ -34,7 +32,11 @@ impl<'a, T: NwcTransport> NwcSession<'a, T> {
     ///
     /// Returns [`NwcError`] when the wallet is offline, the RPC fails or
     /// times out, or the response carries no `invoice` field.
-    pub async fn make_invoice(&self, amount_msat: u64, description_hash: String) -> Result<String, NwcError> {
+    pub async fn make_invoice(
+        &self,
+        amount_msat: u64,
+        description_hash: String,
+    ) -> Result<String, NwcError> {
         let params = serde_json::json!({
             "amount": amount_msat,
             "description_hash": description_hash,
@@ -66,11 +68,9 @@ impl<'a, T: NwcTransport> NwcSession<'a, T> {
 
         let resp_event = self.transport.execute_nwc_rpc(event).await?;
 
-        let resp_json = client
-            .parse_response_event(&resp_event, &request_id)?;
+        let resp_json = client.parse_response_event(&resp_event, &request_id)?;
 
-        let response: NwcResponse =
-            serde_json::from_value(resp_json)?;
+        let response: NwcResponse = serde_json::from_value(resp_json)?;
 
         if let Some(error) = response.error {
             return Err(NwcError::RpcError {
@@ -87,12 +87,16 @@ impl<'a, T: NwcTransport> NwcSession<'a, T> {
     async fn negotiate_encryption(&self) -> Result<NwcClient, NwcError> {
         let mut client = self.client.clone();
 
-        let info = self.transport
+        let info = self
+            .transport
             .get_wallet_info(&client.wallet_pubkey)
             .await
             .ok_or(NwcError::WalletNotFound)?;
 
-        if info.encryption_algorithms.contains(&EncryptionMethod::Nip44) {
+        if info
+            .encryption_algorithms
+            .contains(&EncryptionMethod::Nip44)
+        {
             client.encryption_method = EncryptionMethod::Nip44;
         } else {
             client.encryption_method = EncryptionMethod::Nip04;

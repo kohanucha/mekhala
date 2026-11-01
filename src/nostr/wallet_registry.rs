@@ -1,11 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use crate::log_debug;
+use crate::log_error;
+use crate::log_info;
+use crate::nostr::{Event, Filter, Limits, StorageError};
+use crate::util::short;
 use async_trait::async_trait;
 use serde_json::Value;
-use crate::log_debug;
-use crate::log_info;
-use crate::log_error;
-use crate::nostr::{Filter, Event, Limits, StorageError};
-use crate::util::short;
+use std::collections::{HashMap, HashSet};
 
 /// Persistence boundary of the registry: a key/value store backed by Durable
 /// Object storage in production (see `cloudflare`) and `MockStorage` in
@@ -60,7 +60,10 @@ impl WalletIndex {
 
         for filter in &filters {
             for pk in filter.pubkeys() {
-                let entry = self.pk_index.entry(pk).or_insert_with(|| (HashSet::new(), None));
+                let entry = self
+                    .pk_index
+                    .entry(pk)
+                    .or_insert_with(|| (HashSet::new(), None));
                 entry.0.insert(sub_key.clone());
             }
         }
@@ -70,7 +73,8 @@ impl WalletIndex {
             conns.push(conn_id);
         }
 
-        self.reverse_index.entry(conn_id)
+        self.reverse_index
+            .entry(conn_id)
             .or_default()
             .insert(sub_id, filters);
     }
@@ -105,7 +109,9 @@ impl WalletIndex {
     }
 
     fn disconnect(&mut self, conn_id: u32) {
-        let sub_ids: Vec<String> = self.reverse_index.get(&conn_id)
+        let sub_ids: Vec<String> = self
+            .reverse_index
+            .get(&conn_id)
             .map(|m| m.keys().cloned().collect())
             .unwrap_or_default();
 
@@ -115,7 +121,10 @@ impl WalletIndex {
     }
 
     fn get_subscriptions(&self, conn_id: u32) -> HashMap<String, Vec<Filter>> {
-        self.reverse_index.get(&conn_id).cloned().unwrap_or_default()
+        self.reverse_index
+            .get(&conn_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn sub_count(&self, conn_id: u32) -> usize {
@@ -123,8 +132,12 @@ impl WalletIndex {
     }
 
     fn cache_info(&mut self, event: Event) {
-        let entry = self.pk_index.entry(event.pubkey.clone()).or_insert_with(|| (HashSet::new(), None));
-        self.info_id_index.insert(event.id.clone(), event.pubkey.clone());
+        let entry = self
+            .pk_index
+            .entry(event.pubkey.clone())
+            .or_insert_with(|| (HashSet::new(), None));
+        self.info_id_index
+            .insert(event.id.clone(), event.pubkey.clone());
         entry.1 = Some(event);
     }
 
@@ -235,7 +248,9 @@ impl WalletIndex {
 
     fn restore(&mut self, conn_id: u32, data: &Value) {
         if let Some(subs_val) = data.get("subscriptions") {
-            if let Ok(subs) = serde_json::from_value::<HashMap<String, Vec<Filter>>>(subs_val.clone()) {
+            if let Ok(subs) =
+                serde_json::from_value::<HashMap<String, Vec<Filter>>>(subs_val.clone())
+            {
                 for (sub_id, filters) in subs {
                     self.subscribe(conn_id, sub_id, filters);
                 }
@@ -275,7 +290,7 @@ impl<S: Storage> WalletRegistry<S> {
     /// Creates a registry over the given storage with relay limits applied
     /// (max subscriptions per connection).
     pub fn new(storage: S, limits: Limits) -> Self {
-        Self { 
+        Self {
             storage,
             index: WalletIndex::new(),
             limits,
@@ -291,7 +306,12 @@ impl<S: Storage> WalletRegistry<S> {
     /// Returns [`RelayError::Generic`](crate::nostr::RelayError::Generic)
     /// when the connection exceeds `limits.max_subscriptions_per_connection`
     /// or persistence fails.
-    pub async fn subscribe(&mut self, conn_id: u32, sub_id: String, filters: Vec<Filter>) -> crate::nostr::Result<()> {
+    pub async fn subscribe(
+        &mut self,
+        conn_id: u32,
+        sub_id: String,
+        filters: Vec<Filter>,
+    ) -> crate::nostr::Result<()> {
         let count = self.index.sub_count(conn_id);
         if count >= self.limits.max_subscriptions_per_connection {
             return Err(crate::nostr::RelayError::Generic(format!(
@@ -300,7 +320,9 @@ impl<S: Storage> WalletRegistry<S> {
             )));
         }
         self.index.subscribe(conn_id, sub_id, filters);
-        self.sync(conn_id).await.map_err(|e| crate::nostr::RelayError::Generic(format!("persist failed: {}", e)))?;
+        self.sync(conn_id)
+            .await
+            .map_err(|e| crate::nostr::RelayError::Generic(format!("persist failed: {}", e)))?;
         Ok(())
     }
 
@@ -309,7 +331,12 @@ impl<S: Storage> WalletRegistry<S> {
     pub async fn unsubscribe(&mut self, conn_id: u32, sub_id: String) -> crate::nostr::Result<()> {
         self.index.unsubscribe(conn_id, sub_id.clone());
         if let Err(e) = self.sync(conn_id).await {
-            log_error!("unsubscribe sync failed: conn={} sub={} err={}", conn_id, sub_id, e);
+            log_error!(
+                "unsubscribe sync failed: conn={} sub={} err={}",
+                conn_id,
+                sub_id,
+                e
+            );
         }
         Ok(())
     }
@@ -330,7 +357,10 @@ impl<S: Storage> WalletRegistry<S> {
 
         for (sub_id, conns) in self.index.match_event(event) {
             for id in conns {
-                responses.push(RegistryResponse::Send { recipient_id: id, sub_id: sub_id.clone() });
+                responses.push(RegistryResponse::Send {
+                    recipient_id: id,
+                    sub_id: sub_id.clone(),
+                });
             }
         }
         responses
@@ -362,7 +392,10 @@ impl<S: Storage> WalletRegistry<S> {
         let key = format!("pk:{}", pubkey);
         let storage_ids: Vec<u32> = if let Some(val) = self.storage.get(&key).await {
             match &val {
-                Value::Array(arr) => arr.iter().filter_map(|v| v.as_u64().map(|x| x as u32)).collect(),
+                Value::Array(arr) => arr
+                    .iter()
+                    .filter_map(|v| v.as_u64().map(|x| x as u32))
+                    .collect(),
                 Value::Number(n) => n.as_u64().map(|x| vec![x as u32]).unwrap_or_default(),
                 _ => Vec::new(),
             }
@@ -419,7 +452,10 @@ impl<S: Storage> WalletRegistry<S> {
             let key = format!("pk:{}", pk);
             if let Some(val) = self.storage.get(&key).await {
                 let ids: Vec<u32> = match &val {
-                    Value::Array(arr) => arr.iter().filter_map(|v| v.as_u64().map(|x| x as u32)).collect(),
+                    Value::Array(arr) => arr
+                        .iter()
+                        .filter_map(|v| v.as_u64().map(|x| x as u32))
+                        .collect(),
                     Value::Number(n) => n.as_u64().map(|x| vec![x as u32]).unwrap_or_default(),
                     _ => Vec::new(),
                 };
@@ -435,7 +471,9 @@ impl<S: Storage> WalletRegistry<S> {
         }
 
         log_debug!("deleted conn state: conn={}", id);
-        self.storage.delete_batch(vec![format!("conn:{}", id)]).await;
+        self.storage
+            .delete_batch(vec![format!("conn:{}", id)])
+            .await;
     }
 
     /// Caches a wallet-service info event both in memory and in storage
@@ -499,7 +537,9 @@ impl<S: Storage> WalletRegistry<S> {
             }
             self.storage.put_batch(entries).await?;
         } else {
-            self.storage.delete_batch(vec![format!("conn:{}", conn_id)]).await;
+            self.storage
+                .delete_batch(vec![format!("conn:{}", conn_id)])
+                .await;
         }
         Ok(())
     }
@@ -507,7 +547,10 @@ impl<S: Storage> WalletRegistry<S> {
     async fn read_pk_list(&self, key: &str) -> Vec<u32> {
         if let Some(val) = self.storage.get(key).await {
             match &val {
-                Value::Array(arr) => arr.iter().filter_map(|v| v.as_u64().map(|x| x as u32)).collect(),
+                Value::Array(arr) => arr
+                    .iter()
+                    .filter_map(|v| v.as_u64().map(|x| x as u32))
+                    .collect(),
                 Value::Number(n) => n.as_u64().map(|x| vec![x as u32]).unwrap_or_default(),
                 _ => Vec::new(),
             }

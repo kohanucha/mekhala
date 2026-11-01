@@ -67,13 +67,10 @@ impl Tag {
     /// forms).
     pub fn kind_value(&self) -> Option<u64> {
         match self {
-            Tag::Other(name, values) if name == "k" => {
-                values.first().and_then(|v| {
-                    v.as_u64().or_else(|| {
-                        v.as_str().and_then(|s| s.parse::<u64>().ok())
-                    })
-                })
-            }
+            Tag::Other(name, values) if name == "k" => values.first().and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+            }),
             _ => None,
         }
     }
@@ -93,10 +90,16 @@ impl Serialize for Tag {
                 v
             }
             Tag::Encryption(scheme) => {
-                vec![Value::String("encryption".into()), Value::String(scheme.clone())]
+                vec![
+                    Value::String("encryption".into()),
+                    Value::String(scheme.clone()),
+                ]
             }
             Tag::Expiration(ts) => {
-                vec![Value::String("expiration".into()), Value::String(ts.clone())]
+                vec![
+                    Value::String("expiration".into()),
+                    Value::String(ts.clone()),
+                ]
             }
             Tag::Other(name, values) => {
                 let mut v = vec![Value::String(name.clone())];
@@ -116,11 +119,14 @@ impl<'de> Deserialize<'de> for Tag {
             return Err(serde::de::Error::custom("empty tag array"));
         }
 
-        let name = arr[0].as_str().ok_or_else(|| serde::de::Error::custom("tag name must be a string"))?;
+        let name = arr[0]
+            .as_str()
+            .ok_or_else(|| serde::de::Error::custom("tag name must be a string"))?;
 
         match name {
             "p" => {
-                let pk = arr.get(1)
+                let pk = arr
+                    .get(1)
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| serde::de::Error::custom("p-tag requires a pubkey value"))?
                     .to_string();
@@ -128,7 +134,8 @@ impl<'de> Deserialize<'de> for Tag {
                 Ok(Tag::P(pk, extras))
             }
             "e" => {
-                let id = arr.get(1)
+                let id = arr
+                    .get(1)
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| serde::de::Error::custom("e-tag requires an event id value"))?
                     .to_string();
@@ -136,23 +143,33 @@ impl<'de> Deserialize<'de> for Tag {
                 Ok(Tag::E(id, extras))
             }
             "encryption" => {
-                let scheme = arr.get(1)
+                let scheme = arr
+                    .get(1)
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| serde::de::Error::custom("encryption-tag requires a scheme value"))?
+                    .ok_or_else(|| {
+                        serde::de::Error::custom("encryption-tag requires a scheme value")
+                    })?
                     .to_string();
                 Ok(Tag::Encryption(scheme))
             }
             "expiration" => {
-                let ts = arr.get(1)
-                    .ok_or_else(|| serde::de::Error::custom("expiration-tag requires a timestamp value"))?;
+                let ts = arr.get(1).ok_or_else(|| {
+                    serde::de::Error::custom("expiration-tag requires a timestamp value")
+                })?;
                 let ts_str = match ts.as_str() {
                     Some(s) => s.to_string(),
-                    None => ts.as_u64()
-                        .ok_or_else(|| serde::de::Error::custom("expiration-tag timestamp must be a number or numeric string"))?
+                    None => ts
+                        .as_u64()
+                        .ok_or_else(|| {
+                            serde::de::Error::custom(
+                                "expiration-tag timestamp must be a number or numeric string",
+                            )
+                        })?
                         .to_string(),
                 };
-                let _: u64 = ts_str.parse()
-                    .map_err(|_| serde::de::Error::custom("expiration-tag timestamp must be a number"))?;
+                let _: u64 = ts_str.parse().map_err(|_| {
+                    serde::de::Error::custom("expiration-tag timestamp must be a number")
+                })?;
                 Ok(Tag::Expiration(ts_str))
             }
             _ => {

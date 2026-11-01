@@ -1,13 +1,13 @@
-use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
-use std::cell::Cell;
+use crate::common::{NwcError, NwcTransport};
+use crate::nostr::nip_47::{EncryptionMethod, NwcClient, NwcUri};
+use crate::nostr::wallet_registry::{Storage, WalletRegistry};
+use crate::nostr::WalletInfo;
+use crate::nostr::{Event, Filter, Limits, Tag};
 use async_trait::async_trait;
 use serde_json::Value;
-use crate::nostr::{Event, Filter, Limits, Tag};
-use crate::nostr::wallet_registry::{WalletRegistry, Storage};
-use crate::nostr::nip_47::{EncryptionMethod, NwcClient, NwcUri};
-use crate::nostr::WalletInfo;
-use crate::common::{NwcError, NwcTransport};
+use std::cell::Cell;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 // ── Constants ──
 
@@ -67,7 +67,10 @@ impl Storage for MockStorage {
     async fn get(&self, key: &str) -> Option<Value> {
         self.data.lock().unwrap().get(key).cloned()
     }
-    async fn put_batch(&self, entries: HashMap<String, Value>) -> Result<(), crate::nostr::StorageError> {
+    async fn put_batch(
+        &self,
+        entries: HashMap<String, Value>,
+    ) -> Result<(), crate::nostr::StorageError> {
         if self.fail_put_batch {
             return Err(crate::nostr::StorageError::from("mock storage unavailable"));
         }
@@ -110,15 +113,24 @@ pub async fn simulate_hibernation(original: &MockStorage) -> WalletRegistry<Mock
 
 // ── Storage seed helpers ──
 
-pub async fn seed_subscription(storage: &MockStorage, conn_id: u32, sub_id: &str, pk: &str, filters: Vec<Filter>) {
+pub async fn seed_subscription(
+    storage: &MockStorage,
+    conn_id: u32,
+    sub_id: &str,
+    pk: &str,
+    filters: Vec<Filter>,
+) {
     let mut entries = HashMap::new();
     entries.insert(format!("pk:{}", pk), serde_json::json!(vec![conn_id]));
     let mut subs = std::collections::HashMap::new();
     subs.insert(sub_id.to_string(), serde_json::to_value(filters).unwrap());
-    entries.insert(format!("conn:{}", conn_id), serde_json::json!({
-        "subscriptions": subs,
-        "info_event": null
-    }));
+    entries.insert(
+        format!("conn:{}", conn_id),
+        serde_json::json!({
+            "subscriptions": subs,
+            "info_event": null
+        }),
+    );
     storage.put_batch(entries).await.unwrap();
 }
 
@@ -132,7 +144,11 @@ pub struct MockTransport {
 
 impl MockTransport {
     pub fn wallet_not_found() -> Self {
-        Self { wallet_info: None, wallet_uri: None, error_code: None }
+        Self {
+            wallet_info: None,
+            wallet_uri: None,
+            error_code: None,
+        }
     }
 }
 
@@ -150,12 +166,17 @@ impl NwcTransport for MockTransport {
 
         let mut wallet_client = NwcClient::new(uri).unwrap();
 
-        let is_nip44 = request.tags.iter().any(|t| t.encryption_scheme() == Some("nip44_v2"));
+        let is_nip44 = request
+            .tags
+            .iter()
+            .any(|t| t.encryption_scheme() == Some("nip44_v2"));
         if is_nip44 {
             wallet_client.encryption_method = EncryptionMethod::Nip44;
         }
 
-        let _ = wallet_client.decrypt(&request.content).map_err(NwcError::from)?;
+        let _ = wallet_client
+            .decrypt(&request.content)
+            .map_err(NwcError::from)?;
 
         let resp_payload = if let Some(ref code) = self.error_code {
             serde_json::json!({
@@ -173,10 +194,7 @@ impl NwcTransport for MockTransport {
         };
 
         let encrypted = wallet_client.encrypt(&resp_payload).unwrap();
-        let mut tags = vec![
-            Tag::p(&wallet_client.my_pubkey),
-            Tag::E(request.id, vec![]),
-        ];
+        let mut tags = vec![Tag::p(&wallet_client.my_pubkey), Tag::E(request.id, vec![])];
         if is_nip44 {
             tags.push(Tag::encryption("nip44_v2"));
         }

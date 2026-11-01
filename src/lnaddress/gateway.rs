@@ -1,9 +1,9 @@
-use serde_json::Value;
-use sha2::{Sha256, Digest};
-use url::Url;
-use crate::common::NwcTransport;
 use crate::common::NwcError;
+use crate::common::NwcTransport;
 use crate::lnaddress::wallet_connector::NwcSession;
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use url::Url;
 
 /// Builds the LNURL-pay `payRequest` document served for a Lightning
 /// Address username: `callback` (points back at this relay's `/callback`
@@ -53,8 +53,8 @@ fn get_description_hash(username: &str) -> String {
 }
 
 fn build_callback_url(username: &str, request_url: &Url) -> String {
-    let is_local = request_url.host_str() == Some("localhost")
-        || request_url.host_str() == Some("127.0.0.1");
+    let is_local =
+        request_url.host_str() == Some("localhost") || request_url.host_str() == Some("127.0.0.1");
     let host = request_url.host_str().unwrap_or_default();
     let port = request_url
         .port()

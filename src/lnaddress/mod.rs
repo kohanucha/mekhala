@@ -3,7 +3,7 @@
 //! NIP-47 session with the user's connected wallet.
 
 pub(crate) mod gateway;
-mod wallet_connector;
 mod validation;
+mod wallet_connector;
 
 pub(crate) use validation::is_valid_username;

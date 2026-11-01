@@ -1,12 +1,12 @@
+use crate::nostr::{RelayError, Result};
 use base64::{engine::general_purpose, Engine as _};
+use chacha20::cipher::KeyIvInit as _;
 use chacha20::cipher::StreamCipher;
 use chacha20::ChaCha20;
-use chacha20::cipher::KeyIvInit as _;
 use hkdf::Hkdf;
 use hmac::{Hmac, KeyInit, Mac};
 use rand::Rng;
-use sha2::{Sha256};
-use crate::nostr::{RelayError, Result};
+use sha2::Sha256;
 
 /// Encrypts plaintext as a NIP-44 v2 payload: padded, ChaCha20-encrypted,
 /// HMAC-SHA256 authenticated, version byte `0x02`, base64.
@@ -50,7 +50,9 @@ pub fn decrypt_nip44(shared_secret: &[u8], encrypted_content: &str) -> Result<St
         .map_err(|e| RelayError::Base64Error(e.to_string()))?;
 
     if payload.len() > 65603 {
-        return Err(RelayError::Generic("NIP-44 decoded payload too large".into()));
+        return Err(RelayError::Generic(
+            "NIP-44 decoded payload too large".into(),
+        ));
     }
 
     if payload.is_empty() || payload[0] != 0x02 {
@@ -119,7 +121,7 @@ fn derive_message_keys(
 pub fn pad(plaintext: &str) -> Vec<u8> {
     let bytes = plaintext.as_bytes();
     let unpadded_len = bytes.len();
-    
+
     let padded_len = if unpadded_len <= 32 {
         32
     } else {
