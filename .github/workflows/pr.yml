@@ -7,6 +7,24 @@ on:
   workflow_dispatch:
 
 jobs:
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust (MSRV)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          # Keep in sync with `rust-version` in Cargo.toml.
+          toolchain: '1.91.0'
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check against MSRV
+        run: cargo check --all-targets --locked
+
   test:
     name: Tests
     runs-on: ubuntu-latest
@@ -44,11 +62,11 @@ jobs:
         with:
           node-version: '24'
           cache: 'npm'
-          cache-dependency-path: 'test/package.json'
+          cache-dependency-path: 'test/package-lock.json'
 
       - name: Install Integration Test Dependencies
         working-directory: test
-        run: npm install
+        run: npm ci
 
       - name: Cache worker-build
         id: cache-worker-build
