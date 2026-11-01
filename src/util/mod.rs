@@ -19,18 +19,20 @@ pub fn now() -> u64 {
     }
 }
 
-/// Truncates `s` to at most `len` bytes for log display.
+/// Truncates `s` to at most `len` bytes for log display, snapping down to
+/// the nearest UTF-8 character boundary.
 ///
-/// Intended for hex identifiers and other ASCII strings; callers measure
-/// with `s.len()`, so the argument is a byte budget, not a character count.
-///
-/// # Panics
-///
-/// Panics when `len` falls inside a multi-byte UTF-8 character and `s`
-/// contains non-ASCII text. Callers today pass hex/ASCII identifiers only;
-/// do not use on arbitrary user text without a char-boundary check.
+/// Callers use it for hex identifiers and other ASCII strings, where the
+/// argument is a byte budget exactly as measured by `s.len()`.
 pub fn short(s: &str, len: usize) -> &str {
-    if s.len() <= len { s } else { &s[..len] }
+    if s.len() <= len {
+        return s;
+    }
+    let mut end = len;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 #[macro_export]

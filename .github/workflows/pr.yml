@@ -24,11 +24,14 @@ jobs:
       - name: Clippy check
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
+      - name: Rustdoc check
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
+
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Coverage gate
-        run: cargo llvm-cov --ignore-filename-regex 'cloudflare/' --fail-under-lines 90
+        run: cargo llvm-cov --locked --ignore-filename-regex 'cloudflare/' --fail-under-lines 90
 
       - name: Install cargo-deny
         uses: taiki-e/install-action@cargo-deny

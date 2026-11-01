@@ -26,6 +26,15 @@ fn test_short_zero_len() {
 }
 
 #[test]
+fn test_short_multibyte_boundary() {
+    // Cutting inside a multi-byte char must snap down, never panic.
+    assert_eq!(short("éclair", 1), "");
+    assert_eq!(short("éclair", 3), "éc");
+    assert_eq!(short("日本語", 4), "日");
+    assert_eq!(short("日本語", 8), "日本");
+}
+
+#[test]
 fn test_now_returns_nonzero() {
     let t = now();
     assert!(t > 1700000000, "now() should return recent unix timestamp");
