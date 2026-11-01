@@ -9,6 +9,7 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 | Build WASM | `./scripts/build.sh` | Requires Rust + wasm32 target + worker-build |
 | Dev server | `npx wrangler dev` | Local on port 8787 |
 | Unit tests | `cargo test` | Rust-only tests |
+| Format | `cargo fmt --all -- --check` | rustfmt defaults, no `rustfmt.toml`; CI fails on drift |
 | Integration tests | `./scripts/test.sh` | Full pipeline: test → build → wrangler → node |
 
 ## Build Requirements
