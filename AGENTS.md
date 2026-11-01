@@ -17,8 +17,8 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 - Node.js + npm
 
 ## Architecture
-- **Durable Object**: `NwcRelay` (lib.rs:75)
-- **Modules**: auth.rs, lib.rs, server.rs, cloudflare/, lnaddress/, model/, nostr/, util/
+- **Durable Object**: `CloudflareTransport` (`src/cloudflare/transport.rs`; wrangler `class_name = "CloudflareTransport"`)
+- **Modules**: auth.rs, lib.rs, cloudflare/, lnaddress/, nostr/, util/
 
 ## Critical Dependencies
 - `worker` 0.8.x runtime
@@ -35,8 +35,8 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 
 ## Wrangler Config
 - Output: `build/worker/shim.mjs`
-- Durable Object: `NwcRelay`
-- Compatibility date: 2026-04-25
+- Durable Object binding: `MEKHALA_NWC_DO` → class `CloudflareTransport`
+- Compatibility date: 2026-04-30
 
 ## Common Gotchas
 1. **DO state**: Use `self.state.storage()`

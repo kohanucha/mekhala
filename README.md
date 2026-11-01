@@ -12,11 +12,11 @@
 
 ## 📖 Overview
 
-Mekhala is a specialized, ephemeral Nostr relay built in Rust and compiled to WebAssembly. It acts as a private, zero-persistence communication bridge between Lightning wallet applications (e.g. Alby, Amethyst) and your wallet node:
+Mekhala is a specialized, ephemeral Nostr relay built in Rust and compiled to WebAssembly. It acts as a private communication bridge between Lightning wallet applications (e.g. Alby, Amethyst) and your wallet node:
 
-- **100% Stateless:** No event history or database storage. All events are routed instantly in-memory.
+- **No event history:** Events are validated, routed, and dropped. The only persisted state is subscription metadata plus cached wallet-service info events, kept so hibernated connections can resume.
 - **WebSocket Hibernation:** Uses Cloudflare Durable Objects to hibernate idle connections, waking up seamlessly when new events arrive to save resources.
-- **Strictly Specialized:** Only routes NWC-related event kinds (`13194`, `23194-23197`). Social and generic Nostr events are rejected.
+- **Strictly Specialized:** Only handles NWC-related event kinds (`5` for deleting cached wallet info, `13194`, `23194-23197`). Social and generic Nostr events are rejected.
 
 ---
 

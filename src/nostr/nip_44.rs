@@ -15,7 +15,7 @@ pub fn encrypt_nip44(shared_secret: &[u8], plaintext: &str) -> Result<String> {
     let mut nonce = [0u8; 32];
     rand::rng().fill_bytes(&mut nonce);
 
-    let (chacha_key, chacha_nonce, hmac_key) = derive_message_keys(&conversation_key, &nonce);
+    let (chacha_key, chacha_nonce, hmac_key) = derive_message_keys(&conversation_key, &nonce)?;
 
     let padded = pad(plaintext);
     let mut ciphertext = padded;
@@ -67,7 +67,7 @@ pub fn decrypt_nip44(shared_secret: &[u8], encrypted_content: &str) -> Result<St
     let mac = &payload[mac_start..];
 
     let conversation_key = derive_conversation_key(shared_secret);
-    let (chacha_key, chacha_nonce, hmac_key) = derive_message_keys(&conversation_key, nonce);
+    let (chacha_key, chacha_nonce, hmac_key) = derive_message_keys(&conversation_key, nonce)?;
 
     let mut hmac = Hmac::<Sha256>::new_from_slice(&hmac_key)
         .map_err(|e| RelayError::CryptoError(e.to_string()))?;
@@ -92,10 +92,15 @@ fn derive_conversation_key(shared_secret: &[u8]) -> [u8; 32] {
     key
 }
 
-fn derive_message_keys(conversation_key: &[u8; 32], nonce: &[u8]) -> ([u8; 32], [u8; 12], [u8; 32]) {
-    let hkdf = Hkdf::<Sha256>::from_prk(conversation_key).expect("HKDF from_prk failed");
+fn derive_message_keys(
+    conversation_key: &[u8; 32],
+    nonce: &[u8],
+) -> Result<([u8; 32], [u8; 12], [u8; 32])> {
+    let hkdf = Hkdf::<Sha256>::from_prk(conversation_key)
+        .map_err(|e| RelayError::CryptoError(format!("HKDF from_prk failed: {e}")))?;
     let mut okm = [0u8; 76]; // 32 + 12 + 32
-    hkdf.expand(nonce, &mut okm).expect("HKDF expand failed");
+    hkdf.expand(nonce, &mut okm)
+        .map_err(|e| RelayError::CryptoError(format!("HKDF expand failed: {e}")))?;
 
     let mut chacha_key = [0u8; 32];
     let mut chacha_nonce = [0u8; 12];
@@ -105,7 +110,7 @@ fn derive_message_keys(conversation_key: &[u8; 32], nonce: &[u8]) -> ([u8; 32], 
     chacha_nonce.copy_from_slice(&okm[32..44]);
     hmac_key.copy_from_slice(&okm[44..76]);
 
-    (chacha_key, chacha_nonce, hmac_key)
+    Ok((chacha_key, chacha_nonce, hmac_key))
 }
 
 /// Applies NIP-44 padding: a two-byte big-endian length prefix followed by
