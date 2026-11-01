@@ -53,7 +53,7 @@ fn test_from_serde_error() {
 #[test]
 fn test_nwc_error_debug() {
     let err = NwcError::Timeout;
-    assert!(format!("{:?}", err).contains("Timeout"));
+    assert!(format!("{err:?}").contains("Timeout"));
 }
 
 #[test]

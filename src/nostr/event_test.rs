@@ -76,7 +76,7 @@ fn test_kind_5_passes_kind_check() {
     match result {
         Err(RelayError::InvalidId) | Err(RelayError::InvalidSignature) => {}
         Err(RelayError::InvalidKind) => panic!("kind 5 should not be rejected as InvalidKind"),
-        other => panic!("expected id/sig error, got {:?}", other),
+        other => panic!("expected id/sig error, got {other:?}"),
     }
 }
 
@@ -109,7 +109,7 @@ fn test_verify_content_too_large() {
     let result = event.verify(1700000000, &Limits::default());
     match result {
         Err(RelayError::LimitExceeded(msg)) => assert!(msg.contains("content too large")),
-        _ => panic!("expected LimitExceeded, got {:?}", result),
+        _ => panic!("expected LimitExceeded, got {result:?}"),
     }
 }
 
@@ -187,10 +187,7 @@ fn test_verify_kind_23196_with_p_tag_passes_kind_check() {
     let result = event.verify(1700000000, &Limits::default());
     match result {
         Err(RelayError::InvalidId) | Err(RelayError::InvalidSignature) => {}
-        Err(e) => panic!(
-            "expected id/sig error for kind 23196 with p tag, got {:?}",
-            e
-        ),
+        Err(e) => panic!("expected id/sig error for kind 23196 with p tag, got {e:?}"),
         Ok(_) => panic!("expected error for kind 23196 with bad sig"),
     }
 }

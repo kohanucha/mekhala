@@ -121,11 +121,11 @@ pub async fn seed_subscription(
     filters: Vec<Filter>,
 ) {
     let mut entries = HashMap::new();
-    entries.insert(format!("pk:{}", pk), serde_json::json!(vec![conn_id]));
+    entries.insert(format!("pk:{pk}"), serde_json::json!(vec![conn_id]));
     let mut subs = std::collections::HashMap::new();
     subs.insert(sub_id.to_string(), serde_json::to_value(filters).unwrap());
     entries.insert(
-        format!("conn:{}", conn_id),
+        format!("conn:{conn_id}"),
         serde_json::json!({
             "subscriptions": subs,
             "info_event": null

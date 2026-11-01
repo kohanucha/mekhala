@@ -80,7 +80,7 @@ impl ClientMessage {
                     serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
                 Ok(Self::Close(sub_id))
             }
-            v => Err(format!("unknown message type: {}", v)),
+            v => Err(format!("unknown message type: {v}")),
         }
     }
 }
@@ -147,7 +147,7 @@ impl RelayMessage {
                 let msg: String = serde_json::from_str(arr[2].get()).map_err(|e| e.to_string())?;
                 Ok(Self::Closed(sub_id, msg))
             }
-            v => Err(format!("unknown message type: {}", v)),
+            v => Err(format!("unknown message type: {v}")),
         }
     }
 

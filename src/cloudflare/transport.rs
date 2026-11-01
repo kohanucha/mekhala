@@ -241,7 +241,7 @@ impl DurableObject for CloudflareTransport {
                                 let kinds = f
                                     .kinds
                                     .as_ref()
-                                    .map_or_else(|| "any".into(), |k| format!("{:?}", k));
+                                    .map_or_else(|| "any".into(), |k| format!("{k:?}"));
                                 let auths = f.authors.as_ref().map_or_else(String::new, |a| {
                                     a.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(",")
                                 });
@@ -273,15 +273,14 @@ impl DurableObject for CloudflareTransport {
                                     crate::nostr::RelayMessage::Ok(
                                         id,
                                         false,
-                                        format!("parse failed: {}", e),
+                                        format!("parse failed: {e}"),
                                     ),
                                 )]
                             } else {
                                 vec![crate::nostr::engine::EngineResponse::send(
                                     connection_id,
                                     crate::nostr::RelayMessage::Notice(format!(
-                                        "parse failed: {}",
-                                        e
+                                        "parse failed: {e}"
                                     )),
                                 )]
                             }

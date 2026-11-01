@@ -372,8 +372,7 @@ fn test_engine_uses_clock_for_event_verification() {
         assert!(!success, "event too far in future should be rejected");
         assert!(
             msg.contains("too far"),
-            "expected timestamp rejection, got: {}",
-            msg
+            "expected timestamp rejection, got: {msg}"
         );
 
         set_test_time(now + 901);
@@ -407,8 +406,7 @@ fn test_engine_uses_clock_for_event_verification() {
         let (success, msg) = ok_response.unwrap();
         assert!(
             msg.contains("invalid"),
-            "event within tolerance should fail for id/sig, not timestamp, got: {}",
-            msg
+            "event within tolerance should fail for id/sig, not timestamp, got: {msg}"
         );
         assert!(!success);
     });
@@ -686,14 +684,13 @@ fn test_handle_req_returns_closed_on_storage_failure() {
                         assert_eq!(sub_id, "sub1");
                         assert!(
                             reason.contains("persist failed"),
-                            "reason should mention persist failure, got: {}",
-                            reason
+                            "reason should mention persist failure, got: {reason}"
                         );
                     }
-                    other => panic!("expected CLOSED, got: {:?}", other),
+                    other => panic!("expected CLOSED, got: {other:?}"),
                 }
             }
-            other => panic!("expected EngineResponse::Send, got: {:?}", other),
+            other => panic!("expected EngineResponse::Send, got: {other:?}"),
         }
     });
 }
@@ -734,14 +731,13 @@ fn test_handle_req_internal_returns_closed_on_storage_failure() {
                         assert_eq!(sub_id, "sub1");
                         assert!(
                             reason.contains("persist failed"),
-                            "reason should mention persist failure, got: {}",
-                            reason
+                            "reason should mention persist failure, got: {reason}"
                         );
                     }
-                    other => panic!("expected CLOSED, got: {:?}", other),
+                    other => panic!("expected CLOSED, got: {other:?}"),
                 }
             }
-            other => panic!("expected EngineResponse::Send, got: {:?}", other),
+            other => panic!("expected EngineResponse::Send, got: {other:?}"),
         }
     });
 }

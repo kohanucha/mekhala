@@ -41,7 +41,7 @@ pub async fn create_invoice(
 }
 
 fn generate_metadata(username: &str) -> String {
-    format!("[[\"text/plain\",\"Payment to {}\"]]", username)
+    format!("[[\"text/plain\",\"Payment to {username}\"]]")
 }
 
 fn get_description_hash(username: &str) -> String {
@@ -58,14 +58,11 @@ fn build_callback_url(username: &str, request_url: &Url) -> String {
     let host = request_url.host_str().unwrap_or_default();
     let port = request_url
         .port()
-        .map(|p| format!(":{}", p))
+        .map(|p| format!(":{p}"))
         .unwrap_or_default();
     let protocol = if is_local { "http" } else { "https" };
 
-    format!(
-        "{}://{}{}/lnaddress/{}/callback",
-        protocol, host, port, username
-    )
+    format!("{protocol}://{host}{port}/lnaddress/{username}/callback")
 }
 
 #[cfg(test)]

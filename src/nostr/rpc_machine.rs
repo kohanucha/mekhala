@@ -90,7 +90,7 @@ impl NwcRpcMachine {
                 None
             }
             (RpcState::AwaitingResponse, RelayMessage::Notice(msg)) => {
-                self.state = RpcState::Failed(format!("Relay notice: {}", msg));
+                self.state = RpcState::Failed(format!("Relay notice: {msg}"));
                 Some(RpcAction::Unsubscribe(self.sub_id.clone()))
             }
             _ => None,

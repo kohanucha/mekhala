@@ -322,7 +322,7 @@ impl<S: Storage> WalletRegistry<S> {
         self.index.subscribe(conn_id, sub_id, filters);
         self.sync(conn_id)
             .await
-            .map_err(|e| crate::nostr::RelayError::Generic(format!("persist failed: {}", e)))?;
+            .map_err(|e| crate::nostr::RelayError::Generic(format!("persist failed: {e}")))?;
         Ok(())
     }
 
@@ -373,7 +373,7 @@ impl<S: Storage> WalletRegistry<S> {
         if !self.index.get_subscriptions(conn_id).is_empty() {
             return true;
         }
-        let key = format!("conn:{}", conn_id);
+        let key = format!("conn:{conn_id}");
         if let Some(data) = self.storage.get(&key).await {
             self.index.restore(conn_id, &data);
             let count = self.index.get_subscriptions(conn_id).len();
@@ -389,7 +389,7 @@ impl<S: Storage> WalletRegistry<S> {
     /// stale IDs from storage. When nothing is persisted, falls back to the
     /// single live connection mapped in memory.
     pub async fn load_by_pubkey(&mut self, pubkey: &str) -> Vec<u32> {
-        let key = format!("pk:{}", pubkey);
+        let key = format!("pk:{pubkey}");
         let storage_ids: Vec<u32> = if let Some(val) = self.storage.get(&key).await {
             match &val {
                 Value::Array(arr) => arr
@@ -449,7 +449,7 @@ impl<S: Storage> WalletRegistry<S> {
         self.index.disconnect(id);
 
         for pk in &pubkeys {
-            let key = format!("pk:{}", pk);
+            let key = format!("pk:{pk}");
             if let Some(val) = self.storage.get(&key).await {
                 let ids: Vec<u32> = match &val {
                     Value::Array(arr) => arr
@@ -497,7 +497,7 @@ impl<S: Storage> WalletRegistry<S> {
             return Some(event);
         }
 
-        let key = format!("info:{}", pubkey);
+        let key = format!("info:{pubkey}");
         if let Some(val) = self.storage.get(&key).await {
             if let Ok(event) = serde_json::from_value::<Event>(val) {
                 log_debug!("info restored from storage: pk={}", short(pubkey, 8));
@@ -513,7 +513,7 @@ impl<S: Storage> WalletRegistry<S> {
         let removed = self.index.delete_info(pubkey);
         if removed.is_some() {
             log_debug!("info deleted: pk={}", short(pubkey, 8));
-            let key = format!("info:{}", pubkey);
+            let key = format!("info:{pubkey}");
             self.storage.delete_batch(vec![key]).await;
         }
     }
@@ -526,9 +526,9 @@ impl<S: Storage> WalletRegistry<S> {
     async fn sync(&self, conn_id: u32) -> Result<(), StorageError> {
         if let Some(state) = self.index.save(conn_id) {
             let mut entries = HashMap::new();
-            entries.insert(format!("conn:{}", conn_id), state.json);
+            entries.insert(format!("conn:{conn_id}"), state.json);
             for pk in state.pubkeys {
-                let key = format!("pk:{}", pk);
+                let key = format!("pk:{pk}");
                 let mut ids = self.read_pk_list(&key).await;
                 if !ids.contains(&conn_id) {
                     ids.push(conn_id);
