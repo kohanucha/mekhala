@@ -1,6 +1,6 @@
 use futures::channel::oneshot;
 use std::collections::HashMap;
-use worker::*;
+use worker::{State, WebSocket};
 
 pub enum ConnectionKind {
     External(WebSocket),

@@ -13,7 +13,7 @@
 //! - `lnaddress`: Lightning Address resolution and wallet sessions
 //! - `auth`, `common`, `util`: shared helpers
 
-use worker::*;
+use worker::{event, Context, Env, Request, Response, Result};
 
 mod auth;
 mod cloudflare;

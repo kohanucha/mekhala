@@ -21,7 +21,10 @@ use serde_wasm_bindgen::Serializer;
 use std::cell::RefCell;
 use std::time::Duration;
 use wasm_bindgen::JsValue;
-use worker::*;
+use worker::{
+    durable_object, Delay, DurableObject, Env, Error, Request, Response, Result, State, WebSocket,
+    WebSocketIncomingMessage, WebSocketPair,
+};
 
 pub struct CloudflareStorage {
     storage: worker::Storage,

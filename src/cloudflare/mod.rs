@@ -13,7 +13,7 @@ pub use durable_object::get_durable_stub;
 pub use kv::CloudflareKvStore;
 pub use transport::CloudflareTransport;
 
-use worker::*;
+use worker::{Error, Response, Result};
 
 impl From<crate::common::NwcError> for Error {
     fn from(e: crate::common::NwcError) -> Self {

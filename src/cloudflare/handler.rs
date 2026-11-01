@@ -1,7 +1,7 @@
 use crate::cloudflare::create_cors_response;
 use crate::common::{NwcTransport, UserStore};
 use crate::lnaddress::gateway as lnurl;
-use worker::*;
+use worker::{Error, Request, Response, Result};
 
 pub struct LnAddressHandler<'a, S: UserStore> {
     store: &'a S,
