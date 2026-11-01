@@ -49,6 +49,10 @@ map_unwrap_or = "warn"
 missing_errors_doc = "warn"
 doc_markdown = "warn"
 needless_pass_by_value = "warn"
+wildcard_imports = "warn"
+uninlined_format_args = "warn"
+use_self = "warn"
+manual_string_new = "warn"
 
 [profile.release]
 opt-level = "s"

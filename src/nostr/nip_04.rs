@@ -25,7 +25,7 @@ pub fn encrypt_nip04(shared_secret: &[u8], plaintext: &str) -> Result<String> {
     let iv_b64 = general_purpose::STANDARD.encode(iv);
     let ct_b64 = general_purpose::STANDARD.encode(ct);
 
-    Ok(format!("{}?iv={}", ct_b64, iv_b64))
+    Ok(format!("{ct_b64}?iv={iv_b64}"))
 }
 
 /// Decrypts the NIP-04 `content` format (ciphertext and IV, both base64,

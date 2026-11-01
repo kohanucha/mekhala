@@ -21,7 +21,10 @@ use serde_wasm_bindgen::Serializer;
 use std::cell::RefCell;
 use std::time::Duration;
 use wasm_bindgen::JsValue;
-use worker::*;
+use worker::{
+    durable_object, Delay, DurableObject, Env, Error, Request, Response, Result, State, WebSocket,
+    WebSocketIncomingMessage, WebSocketPair,
+};
 
 pub struct CloudflareStorage {
     storage: worker::Storage,
@@ -194,7 +197,7 @@ impl DurableObject for CloudflareTransport {
                             let ok_msg = crate::nostr::RelayMessage::Ok(
                                 event.id.clone(),
                                 true,
-                                "".to_string(),
+                                String::new(),
                             )
                             .to_json();
                             log_info!("→ conn={} SEND {}", connection_id, ok_msg);
@@ -238,7 +241,7 @@ impl DurableObject for CloudflareTransport {
                                 let kinds = f
                                     .kinds
                                     .as_ref()
-                                    .map_or_else(|| "any".into(), |k| format!("{:?}", k));
+                                    .map_or_else(|| "any".into(), |k| format!("{k:?}"));
                                 let auths = f.authors.as_ref().map_or_else(String::new, |a| {
                                     a.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(",")
                                 });
@@ -270,15 +273,14 @@ impl DurableObject for CloudflareTransport {
                                     crate::nostr::RelayMessage::Ok(
                                         id,
                                         false,
-                                        format!("parse failed: {}", e),
+                                        format!("parse failed: {e}"),
                                     ),
                                 )]
                             } else {
                                 vec![crate::nostr::engine::EngineResponse::send(
                                     connection_id,
                                     crate::nostr::RelayMessage::Notice(format!(
-                                        "parse failed: {}",
-                                        e
+                                        "parse failed: {e}"
                                     )),
                                 )]
                             }

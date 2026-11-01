@@ -112,7 +112,7 @@ impl Event {
             ));
         }
 
-        let (computed_id, id_bytes) = Event::compute_id(
+        let (computed_id, id_bytes) = Self::compute_id(
             &self.pubkey,
             self.created_at,
             self.kind,

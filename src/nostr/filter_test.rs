@@ -176,7 +176,7 @@ fn test_filter_is_valid_accepts_nwc_kinds() {
             authors: Some(vec!["author1".into()]),
             ..Default::default()
         };
-        assert!(filter.is_valid(), "kind {} should be valid", kind);
+        assert!(filter.is_valid(), "kind {kind} should be valid");
     }
 }
 

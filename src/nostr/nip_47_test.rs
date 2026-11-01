@@ -169,7 +169,7 @@ fn test_parse_wallet_info_no_encryption_tag_defaults_nip04() {
         created_at: 1000,
         kind: 13194,
         tags: vec![],
-        content: "".into(),
+        content: String::new(),
         sig: "sig".into(),
     };
     let info = parse_wallet_info(&event);

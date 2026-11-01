@@ -47,7 +47,7 @@ fn test_constant_time_eq_all_same_bytes() {
 #[test]
 fn test_access_policy_from_env_treated_as_none() {
     let policy = AccessPolicy {
-        expected_secret: Some("".into()),
+        expected_secret: Some(String::new()),
     };
     assert_eq!(policy.check_access(""), Ok(()));
     assert_eq!(policy.check_access("any"), Err(AuthError::Forbidden));
@@ -124,6 +124,6 @@ fn test_access_policy_new_none() {
 
 #[test]
 fn test_access_policy_new_empty_string() {
-    let policy = AccessPolicy::new(Some("".into()));
+    let policy = AccessPolicy::new(Some(String::new()));
     assert_eq!(policy.check_access("anything"), Ok(()));
 }

@@ -27,19 +27,19 @@ pub enum NwcError {
 
 impl From<crate::nostr::RelayError> for NwcError {
     fn from(e: crate::nostr::RelayError) -> Self {
-        NwcError::ProtocolError(e.to_string())
+        Self::ProtocolError(e.to_string())
     }
 }
 
 impl From<NwcUriError> for NwcError {
     fn from(e: NwcUriError) -> Self {
-        NwcError::ProtocolError(e.to_string())
+        Self::ProtocolError(e.to_string())
     }
 }
 
 impl From<serde_json::Error> for NwcError {
     fn from(e: serde_json::Error) -> Self {
-        NwcError::ProtocolError(e.to_string())
+        Self::ProtocolError(e.to_string())
     }
 }
 

@@ -19,7 +19,7 @@ pub enum EngineResponse {
 impl EngineResponse {
     /// Convenience constructor for a delivery action.
     pub fn send(recipient_id: u32, message: RelayMessage) -> Self {
-        EngineResponse::Send {
+        Self::Send {
             recipient_id,
             message,
         }
@@ -27,7 +27,7 @@ impl EngineResponse {
 
     /// Convenience constructor for a wake-up action.
     pub fn wake_up(connection_id: u32) -> Self {
-        EngineResponse::WakeUp { connection_id }
+        Self::WakeUp { connection_id }
     }
 }
 
@@ -216,7 +216,7 @@ impl<S: Storage> NostrEngine<S> {
 
         responses.push(EngineResponse::send(
             connection_id,
-            RelayMessage::Ok(event.id.clone(), true, "".into()),
+            RelayMessage::Ok(event.id.clone(), true, String::new()),
         ));
 
         let registry_responses = self.registry.match_event(&event).await;

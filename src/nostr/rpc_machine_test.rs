@@ -7,8 +7,8 @@ fn mock_event(id: &str, pubkey: &str) -> Event {
         created_at: 0,
         kind: 23194,
         tags: vec![],
-        content: "".to_string(),
-        sig: "".to_string(),
+        content: String::new(),
+        sig: String::new(),
     }
 }
 

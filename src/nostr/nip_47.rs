@@ -77,16 +77,16 @@ impl EncryptionMethod {
     /// NIP-47 protocol string used in the `encryption` tag.
     pub fn to_protocol_string(self) -> String {
         match self {
-            EncryptionMethod::Nip04 => "nip04".to_string(),
-            EncryptionMethod::Nip44 => "nip44_v2".to_string(),
+            Self::Nip04 => "nip04".to_string(),
+            Self::Nip44 => "nip44_v2".to_string(),
         }
     }
 
     /// Parses a NIP-47 protocol string from the `encryption` tag.
-    pub fn from_protocol_str(s: &str) -> Option<EncryptionMethod> {
+    pub fn from_protocol_str(s: &str) -> Option<Self> {
         match s {
-            "nip04" => Some(EncryptionMethod::Nip04),
-            "nip44_v2" => Some(EncryptionMethod::Nip44),
+            "nip04" => Some(Self::Nip04),
+            "nip44_v2" => Some(Self::Nip44),
             _ => None,
         }
     }

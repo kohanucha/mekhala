@@ -88,7 +88,7 @@ fn test_session_wallet_error() {
                 assert_eq!(code, "INSUFFICIENT_BALANCE");
                 assert_eq!(message, "insufficient balance");
             }
-            other => panic!("Expected RpcError, got {:?}", other),
+            other => panic!("Expected RpcError, got {other:?}"),
         }
     });
 }

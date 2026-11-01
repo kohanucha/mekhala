@@ -44,7 +44,7 @@ fn test_nip44_extensive_padding() {
         let plaintext = "a".repeat(len);
         let encrypted = encrypt_nip44(&shared_secret, &plaintext).unwrap();
         let decrypted = decrypt_nip44(&shared_secret, &encrypted).unwrap();
-        assert_eq!(plaintext, decrypted, "Failed at length {}", len);
+        assert_eq!(plaintext, decrypted, "Failed at length {len}");
     }
 }
 

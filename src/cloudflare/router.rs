@@ -3,7 +3,7 @@ use crate::cloudflare::auth;
 use crate::cloudflare::config::CloudflareConfig;
 use crate::cloudflare::handler::LnAddressHandler;
 use crate::cloudflare::{apply_security_headers, create_cors_response, CloudflareKvStore};
-use worker::*;
+use worker::{Env, Error, Method, Request, Response, Result, RouteContext, Router};
 
 pub async fn run(req: Request, env: Env) -> Result<Response> {
     let router = Router::new();

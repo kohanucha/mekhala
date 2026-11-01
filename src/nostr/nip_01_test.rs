@@ -38,7 +38,7 @@ fn test_relay_message_serialization() {
         r#"["EOSE","sub1"]"#
     );
     assert_eq!(
-        RelayMessage::Ok("id1".into(), true, "".into()).to_json(),
+        RelayMessage::Ok("id1".into(), true, String::new()).to_json(),
         r#"["OK","id1",true,""]"#
     );
 }
@@ -136,7 +136,7 @@ fn test_relay_message_empty() {
 #[test]
 fn test_relay_message_ok_parsing() {
     let msg = RelayMessage::from_json(r#"["OK","id1",true,""]"#).unwrap();
-    assert_eq!(msg, RelayMessage::Ok("id1".into(), true, "".into()));
+    assert_eq!(msg, RelayMessage::Ok("id1".into(), true, String::new()));
 }
 
 #[test]

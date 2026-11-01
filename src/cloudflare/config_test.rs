@@ -25,7 +25,7 @@ fn test_parse_opt_zero() {
 
 #[test]
 fn test_parse_opt_empty_uses_default() {
-    assert_eq!(CloudflareConfig::parse_opt(Some("".into()), 42), 42);
+    assert_eq!(CloudflareConfig::parse_opt(Some(String::new()), 42), 42);
 }
 
 #[test]

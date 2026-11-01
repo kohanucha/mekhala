@@ -1,4 +1,4 @@
-use worker::*;
+use worker::{Env, Result, Stub};
 
 /// Returns a stub to the relay's Durable Object, optionally hinting the
 /// Cloudflare region to place it in (`REGION` values such as `apac`,

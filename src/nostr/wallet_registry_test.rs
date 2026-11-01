@@ -60,7 +60,7 @@ fn test_hibernation_contract() {
             created_at: 1000,
             kind: 23194,
             tags: vec![],
-            content: "".into(),
+            content: String::new(),
             sig: "sig".into(),
         };
         let responses = registry2.match_event(&event).await;
@@ -119,7 +119,7 @@ fn test_hibernation_info_survival() {
             created_at: 1000,
             kind: 23194,
             tags: vec![],
-            content: "".into(),
+            content: String::new(),
             sig: "sig".into(),
         };
         let responses = registry2.match_event(&event).await;
@@ -177,7 +177,7 @@ fn test_hibernation_subscribe_cycles() {
             created_at: 1000,
             kind: 23194,
             tags: vec![],
-            content: "".into(),
+            content: String::new(),
             sig: "sig".into(),
         };
         let responses = registry2.match_event(&alice_event).await;
@@ -195,7 +195,7 @@ fn test_hibernation_subscribe_cycles() {
             created_at: 1000,
             kind: 23194,
             tags: vec![],
-            content: "".into(),
+            content: String::new(),
             sig: "sig".into(),
         };
         let responses2 = registry2.match_event(&bob_event).await;
@@ -326,8 +326,8 @@ fn test_index_matching_grouped() {
             pubkey: "alice".into(),
             kind: 1,
             tags: vec![],
-            content: "".into(),
-            sig: "".into(),
+            content: String::new(),
+            sig: String::new(),
             created_at: 1000,
         };
         let responses = registry.match_event(&event_alice).await;
@@ -359,7 +359,7 @@ fn test_info_event_caching() {
             pubkey: "alice".into(),
             kind: 13194,
             tags: vec![],
-            content: "".into(),
+            content: String::new(),
             sig: "sig1".into(),
             created_at: 1000,
         };
@@ -382,7 +382,7 @@ fn test_info_id_index() {
             pubkey: "alice".into(),
             kind: 13194,
             tags: vec![],
-            content: "".into(),
+            content: String::new(),
             sig: "sig1".into(),
             created_at: 1000,
         };
@@ -407,7 +407,7 @@ fn test_delete_info() {
             pubkey: "alice".into(),
             kind: 13194,
             tags: vec![],
-            content: "".into(),
+            content: String::new(),
             sig: "sig1".into(),
             created_at: 1000,
         };
@@ -449,7 +449,7 @@ fn test_delete_info_preserves_subscriptions() {
             pubkey: "alice".into(),
             kind: 13194,
             tags: vec![],
-            content: "".into(),
+            content: String::new(),
             sig: "sig1".into(),
             created_at: 1000,
         };
@@ -577,13 +577,11 @@ fn test_subscribe_rejected_on_storage_failure() {
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("persist failed"),
-            "expected persist failure, got: {}",
-            err
+            "expected persist failure, got: {err}"
         );
         assert!(
             err.contains("mock storage unavailable"),
-            "expected mock error message, got: {}",
-            err
+            "expected mock error message, got: {err}"
         );
     });
 }
@@ -720,7 +718,7 @@ fn test_two_connections_same_pubkey_different_filters() {
         let snapshot: HashMap<String, Value> = {
             let data = registry.storage.data.lock().unwrap();
             let pk_val = data
-                .get(&format!("pk:{}", shared_pk))
+                .get(&format!("pk:{shared_pk}"))
                 .expect("pk: entry should exist");
             let ids: Vec<u32> = serde_json::from_value(pk_val.clone()).unwrap();
             assert!(ids.contains(&1), "pk: entry should contain conn 1");

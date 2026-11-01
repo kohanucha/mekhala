@@ -1,4 +1,4 @@
-use worker::*;
+use worker::Env;
 
 pub struct CloudflareConfig {
     pub max_content_length: usize,
