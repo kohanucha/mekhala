@@ -16,33 +16,33 @@ pub enum Tag {
 impl Tag {
     /// Builds a `p` tag for the given recipient public key.
     pub fn p(pubkey: impl Into<String>) -> Self {
-        Tag::P(pubkey.into(), vec![])
+        Self::P(pubkey.into(), vec![])
     }
 
     /// Builds an `encryption` tag carrying NIP-47 protocol strings.
     pub fn encryption(scheme: impl Into<String>) -> Self {
-        Tag::Encryption(scheme.into())
+        Self::Encryption(scheme.into())
     }
 
     /// Builds an `expiration` tag for the given Unix timestamp.
     pub fn expiration(ts: u64) -> Self {
-        Tag::Expiration(ts.to_string())
+        Self::Expiration(ts.to_string())
     }
 
     /// Whether this is a `p` (recipient public key) tag.
     pub fn is_p(&self) -> bool {
-        matches!(self, Tag::P(_, _))
+        matches!(self, Self::P(_, _))
     }
 
     /// Whether this is an `e` (referenced event ID) tag.
     pub fn is_e(&self) -> bool {
-        matches!(self, Tag::E(_, _))
+        matches!(self, Self::E(_, _))
     }
 
     /// The public key if this is a `p` tag.
     pub fn pubkey(&self) -> Option<&str> {
         match self {
-            Tag::P(pk, _) => Some(pk),
+            Self::P(pk, _) => Some(pk),
             _ => None,
         }
     }
@@ -50,7 +50,7 @@ impl Tag {
     /// The referenced event ID if this is an `e` tag.
     pub fn event_id(&self) -> Option<&str> {
         match self {
-            Tag::E(id, _) => Some(id),
+            Self::E(id, _) => Some(id),
             _ => None,
         }
     }
@@ -58,7 +58,7 @@ impl Tag {
     /// The encryption scheme string if this is an `encryption` tag.
     pub fn encryption_scheme(&self) -> Option<&str> {
         match self {
-            Tag::Encryption(scheme) => Some(scheme),
+            Self::Encryption(scheme) => Some(scheme),
             _ => None,
         }
     }
@@ -67,7 +67,7 @@ impl Tag {
     /// forms).
     pub fn kind_value(&self) -> Option<u64> {
         match self {
-            Tag::Other(name, values) if name == "k" => values.first().and_then(|v| {
+            Self::Other(name, values) if name == "k" => values.first().and_then(|v| {
                 v.as_u64()
                     .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
             }),
@@ -79,29 +79,29 @@ impl Tag {
 impl Serialize for Tag {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let arr: Vec<Value> = match self {
-            Tag::P(pk, extras) => {
+            Self::P(pk, extras) => {
                 let mut v = vec![Value::String("p".into()), Value::String(pk.clone())];
                 v.extend(extras.iter().cloned());
                 v
             }
-            Tag::E(id, extras) => {
+            Self::E(id, extras) => {
                 let mut v = vec![Value::String("e".into()), Value::String(id.clone())];
                 v.extend(extras.iter().cloned());
                 v
             }
-            Tag::Encryption(scheme) => {
+            Self::Encryption(scheme) => {
                 vec![
                     Value::String("encryption".into()),
                     Value::String(scheme.clone()),
                 ]
             }
-            Tag::Expiration(ts) => {
+            Self::Expiration(ts) => {
                 vec![
                     Value::String("expiration".into()),
                     Value::String(ts.clone()),
                 ]
             }
-            Tag::Other(name, values) => {
+            Self::Other(name, values) => {
                 let mut v = vec![Value::String(name.clone())];
                 v.extend(values.iter().cloned());
                 v
@@ -131,7 +131,7 @@ impl<'de> Deserialize<'de> for Tag {
                     .ok_or_else(|| serde::de::Error::custom("p-tag requires a pubkey value"))?
                     .to_string();
                 let extras = arr.get(2..).unwrap_or(&[]).to_vec();
-                Ok(Tag::P(pk, extras))
+                Ok(Self::P(pk, extras))
             }
             "e" => {
                 let id = arr
@@ -140,7 +140,7 @@ impl<'de> Deserialize<'de> for Tag {
                     .ok_or_else(|| serde::de::Error::custom("e-tag requires an event id value"))?
                     .to_string();
                 let extras = arr.get(2..).unwrap_or(&[]).to_vec();
-                Ok(Tag::E(id, extras))
+                Ok(Self::E(id, extras))
             }
             "encryption" => {
                 let scheme = arr
@@ -150,7 +150,7 @@ impl<'de> Deserialize<'de> for Tag {
                         serde::de::Error::custom("encryption-tag requires a scheme value")
                     })?
                     .to_string();
-                Ok(Tag::Encryption(scheme))
+                Ok(Self::Encryption(scheme))
             }
             "expiration" => {
                 let ts = arr.get(1).ok_or_else(|| {
@@ -170,11 +170,11 @@ impl<'de> Deserialize<'de> for Tag {
                 let _: u64 = ts_str.parse().map_err(|_| {
                     serde::de::Error::custom("expiration-tag timestamp must be a number")
                 })?;
-                Ok(Tag::Expiration(ts_str))
+                Ok(Self::Expiration(ts_str))
             }
             _ => {
                 let values = arr.get(1..).unwrap_or(&[]).to_vec();
-                Ok(Tag::Other(name.to_string(), values))
+                Ok(Self::Other(name.to_string(), values))
             }
         }
     }

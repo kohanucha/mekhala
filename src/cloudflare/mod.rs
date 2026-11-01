@@ -17,7 +17,7 @@ use worker::{Error, Response, Result};
 
 impl From<crate::common::NwcError> for Error {
     fn from(e: crate::common::NwcError) -> Self {
-        Error::from(e.to_string())
+        Self::from(e.to_string())
     }
 }
 
