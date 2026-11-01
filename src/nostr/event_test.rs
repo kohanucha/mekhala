@@ -9,8 +9,8 @@ fn test_target_pubkeys_author_only() {
         created_at: 0,
         kind: 1,
         tags: vec![],
-        content: "".into(),
-        sig: "".into(),
+        content: String::new(),
+        sig: String::new(),
     };
     let keys = event.target_pubkeys();
     assert_eq!(keys.len(), 1);
@@ -29,8 +29,8 @@ fn test_target_pubkeys_with_p_tags() {
             Tag::p("recipient2"),
             Tag::E("event_id".into(), vec![]),
         ],
-        content: "".into(),
-        sig: "".into(),
+        content: String::new(),
+        sig: String::new(),
     };
     let keys = event.target_pubkeys();
     assert_eq!(keys.len(), 3);
@@ -51,8 +51,8 @@ fn test_target_pubkeys_deduplication() {
             Tag::p("pk2"),
             Tag::P("pk2".into(), vec![]),
         ],
-        content: "".into(),
-        sig: "".into(),
+        content: String::new(),
+        sig: String::new(),
     };
     let keys = event.target_pubkeys();
     assert_eq!(keys.len(), 2);
@@ -88,7 +88,7 @@ fn test_verify_invalid_kind() {
         created_at: 1700000000,
         kind: 1,
         tags: vec![],
-        content: "".into(),
+        content: String::new(),
         sig: "sig".into(),
     };
     let result = event.verify(1700000000, &Limits::default());
@@ -121,7 +121,7 @@ fn test_verify_kind_23196_missing_p_tag() {
         created_at: 1700000000,
         kind: 23196,
         tags: vec![],
-        content: "".into(),
+        content: String::new(),
         sig: "sig".into(),
     };
     let result = event.verify(1700000000, &Limits::default());
@@ -136,7 +136,7 @@ fn test_verify_kind_23197_missing_p_tag() {
         created_at: 1700000000,
         kind: 23197,
         tags: vec![Tag::E("eid1".into(), vec![])],
-        content: "".into(),
+        content: String::new(),
         sig: "sig".into(),
     };
     let result = event.verify(1700000000, &Limits::default());
@@ -151,7 +151,7 @@ fn test_verify_kind_23195_missing_p_tag() {
         created_at: 1700000000,
         kind: 23195,
         tags: vec![Tag::E("eid1".into(), vec![])],
-        content: "".into(),
+        content: String::new(),
         sig: "sig".into(),
     };
     let result = event.verify(1700000000, &Limits::default());
@@ -166,7 +166,7 @@ fn test_verify_kind_23195_missing_e_tag() {
         created_at: 1700000000,
         kind: 23195,
         tags: vec![Tag::p("pk2")],
-        content: "".into(),
+        content: String::new(),
         sig: "sig".into(),
     };
     let result = event.verify(1700000000, &Limits::default());
@@ -181,7 +181,7 @@ fn test_verify_kind_23196_with_p_tag_passes_kind_check() {
         created_at: 1700000000,
         kind: 23196,
         tags: vec![Tag::p("pk2")],
-        content: "".into(),
+        content: String::new(),
         sig: "badsig".into(),
     };
     let result = event.verify(1700000000, &Limits::default());

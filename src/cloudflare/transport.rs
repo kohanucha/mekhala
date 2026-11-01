@@ -197,7 +197,7 @@ impl DurableObject for CloudflareTransport {
                             let ok_msg = crate::nostr::RelayMessage::Ok(
                                 event.id.clone(),
                                 true,
-                                "".to_string(),
+                                String::new(),
                             )
                             .to_json();
                             log_info!("→ conn={} SEND {}", connection_id, ok_msg);

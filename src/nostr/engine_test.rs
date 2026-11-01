@@ -34,7 +34,7 @@ fn test_engine_info_event_routing() {
             created_at: 1000,
             kind: 13194,
             tags: vec![],
-            content: "".into(),
+            content: String::new(),
             sig: "sig1".into(),
         };
 
@@ -62,7 +62,7 @@ fn test_engine_get_wallet_info_with_encryption_tag() {
             created_at: 1000,
             kind: 13194,
             tags: vec![super::super::Tag::encryption("nip44_v2 nip04")],
-            content: "".into(),
+            content: String::new(),
             sig: "sig1".into(),
         };
         engine.process_info_event(event).await;
@@ -87,7 +87,7 @@ fn test_engine_get_wallet_info_default_nip04() {
             created_at: 1000,
             kind: 13194,
             tags: vec![],
-            content: "".into(),
+            content: String::new(),
             sig: "sig1".into(),
         };
         engine.process_info_event(event).await;
@@ -425,7 +425,7 @@ fn test_kind_5_deletion_with_e_tag() {
             created_at: test_now(),
             kind: 13194,
             tags: vec![],
-            content: "".into(),
+            content: String::new(),
             sig: "sig1".into(),
         };
         engine.process_info_event(info_event.clone()).await;
@@ -461,7 +461,7 @@ fn test_kind_5_deletion_unauthorized() {
             created_at: test_now(),
             kind: 13194,
             tags: vec![],
-            content: "".into(),
+            content: String::new(),
             sig: "sig1".into(),
         };
         engine.process_info_event(info_event.clone()).await;
@@ -496,7 +496,7 @@ fn test_kind_5_deletion_with_k_tag() {
             created_at: test_now(),
             kind: 13194,
             tags: vec![],
-            content: "".into(),
+            content: String::new(),
             sig: "sig1".into(),
         };
         engine.process_info_event(info_event.clone()).await;
@@ -527,7 +527,7 @@ fn test_validate_event_rejects_invalid_kind() {
         created_at: test_now(),
         kind: 1,
         tags: vec![],
-        content: "".into(),
+        content: String::new(),
         sig: "sig".into(),
     };
     let result = engine.validate_event(&event);
@@ -544,7 +544,7 @@ fn test_validate_event_accepts_valid_kind() {
         created_at: test_now(),
         kind: 13194,
         tags: vec![],
-        content: "".into(),
+        content: String::new(),
         sig: "badsig".into(),
     };
     let result = engine.validate_event(&event);
@@ -754,7 +754,7 @@ fn test_kind_5_deletion_no_tags() {
             created_at: test_now(),
             kind: 13194,
             tags: vec![],
-            content: "".into(),
+            content: String::new(),
             sig: "sig1".into(),
         };
         engine.process_info_event(info_event.clone()).await;

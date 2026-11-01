@@ -216,7 +216,7 @@ impl<S: Storage> NostrEngine<S> {
 
         responses.push(EngineResponse::send(
             connection_id,
-            RelayMessage::Ok(event.id.clone(), true, "".into()),
+            RelayMessage::Ok(event.id.clone(), true, String::new()),
         ));
 
         let registry_responses = self.registry.match_event(&event).await;
