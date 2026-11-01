@@ -73,9 +73,10 @@ impl NwcRpcMachine {
             (RpcState::AwaitingResponse, RelayMessage::Event(_, event)) => {
                 // Correlation check: ensure this event references our request
                 // In NWC, response should have an 'e' tag pointing to request ID
-                let references_request = event.tags.iter().any(|t| {
-                    matches!(t, crate::nostr::Tag::E(eid, _) if eid == &self.request.id)
-                });
+                let references_request = event
+                    .tags
+                    .iter()
+                    .any(|t| matches!(t, crate::nostr::Tag::E(eid, _) if eid == &self.request.id));
 
                 if references_request {
                     self.state = RpcState::Success(event);

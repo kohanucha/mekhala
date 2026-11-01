@@ -1,0 +1,10 @@
+# Commits that only reformat code, so `git blame` skips them and shows the
+# commit that actually changed the logic.
+#
+# Enable locally (once per clone):
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# GitHub skips these revisions automatically.
+
+# style: apply rustfmt to the whole tree
+8d59911c3f1eb76ba4bd56ddadc660fe750fae1f

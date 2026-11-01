@@ -16,10 +16,10 @@
 use worker::*;
 
 mod auth;
-mod common;
 mod cloudflare;
-mod nostr;
+mod common;
 mod lnaddress;
+mod nostr;
 mod util;
 
 pub use cloudflare::CloudflareTransport;

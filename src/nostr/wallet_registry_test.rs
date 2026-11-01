@@ -1,9 +1,12 @@
 use super::*;
-use crate::common::test_helpers::{MockStorage, simulate_hibernation, seed_subscription};
+use crate::common::test_helpers::{seed_subscription, simulate_hibernation, MockStorage};
 use crate::nostr::Tag;
 
 fn has_subscription(registry: &WalletRegistry<MockStorage>, conn_id: u32, sub_id: &str) -> bool {
-    registry.index.get_subscriptions(conn_id).contains_key(sub_id)
+    registry
+        .index
+        .get_subscriptions(conn_id)
+        .contains_key(sub_id)
 }
 
 #[test]
@@ -11,17 +14,23 @@ fn test_registry_sub_persistence() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
         let mut registry = WalletRegistry::new(storage, Limits::default());
-        
+
         let filters = vec![Filter {
             authors: Some(vec!["alice".into()]),
             ..Default::default()
         }];
-        
+
         registry.subscribe(1, "sub1".into(), filters).await.unwrap();
-        
+
         let data = registry.storage.data.lock().unwrap();
-        assert!(data.contains_key("conn:1"), "Storage should contain connection state");
-        assert!(data.contains_key("pk:alice"), "Storage should contain pubkey index");
+        assert!(
+            data.contains_key("conn:1"),
+            "Storage should contain connection state"
+        );
+        assert!(
+            data.contains_key("pk:alice"),
+            "Storage should contain pubkey index"
+        );
     });
 }
 
@@ -31,10 +40,17 @@ fn test_hibernation_contract() {
         let storage = MockStorage::new();
         let mut registry = WalletRegistry::new(storage, Limits::default());
 
-        registry.subscribe(1, "sub1".into(), vec![Filter {
-            authors: Some(vec!["alice".into()]),
-            ..Default::default()
-        }]).await.unwrap();
+        registry
+            .subscribe(
+                1,
+                "sub1".into(),
+                vec![Filter {
+                    authors: Some(vec!["alice".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await
+            .unwrap();
 
         let mut registry2 = simulate_hibernation(&registry.storage).await;
 
@@ -48,11 +64,17 @@ fn test_hibernation_contract() {
             sig: "sig".into(),
         };
         let responses = registry2.match_event(&event).await;
-        assert!(responses.contains(&RegistryResponse::WakeUp(1)),
-            "hibernated connection must produce WakeUp");
-        assert!(responses.contains(&RegistryResponse::Send {
-            recipient_id: 1, sub_id: "sub1".into()
-        }), "hibernated connection must produce Send");
+        assert!(
+            responses.contains(&RegistryResponse::WakeUp(1)),
+            "hibernated connection must produce WakeUp"
+        );
+        assert!(
+            responses.contains(&RegistryResponse::Send {
+                recipient_id: 1,
+                sub_id: "sub1".into()
+            }),
+            "hibernated connection must produce Send"
+        );
     });
 }
 
@@ -62,10 +84,17 @@ fn test_hibernation_info_survival() {
         let storage = MockStorage::new();
         let mut registry = WalletRegistry::new(storage, Limits::default());
 
-        registry.subscribe(1, "sub1".into(), vec![Filter {
-            authors: Some(vec!["alice".into()]),
-            ..Default::default()
-        }]).await.unwrap();
+        registry
+            .subscribe(
+                1,
+                "sub1".into(),
+                vec![Filter {
+                    authors: Some(vec!["alice".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await
+            .unwrap();
 
         let info = Event {
             id: "info1".into(),
@@ -94,11 +123,17 @@ fn test_hibernation_info_survival() {
             sig: "sig".into(),
         };
         let responses = registry2.match_event(&event).await;
-        assert!(responses.contains(&RegistryResponse::WakeUp(1)),
-            "hibernated connection must still produce WakeUp with info");
-        assert!(responses.contains(&RegistryResponse::Send {
-            recipient_id: 1, sub_id: "sub1".into()
-        }), "hibernated connection must still produce Send with info");
+        assert!(
+            responses.contains(&RegistryResponse::WakeUp(1)),
+            "hibernated connection must still produce WakeUp with info"
+        );
+        assert!(
+            responses.contains(&RegistryResponse::Send {
+                recipient_id: 1,
+                sub_id: "sub1".into()
+            }),
+            "hibernated connection must still produce Send with info"
+        );
     });
 }
 
@@ -108,17 +143,31 @@ fn test_hibernation_subscribe_cycles() {
         let storage = MockStorage::new();
         let mut registry = WalletRegistry::new(storage, Limits::default());
 
-        registry.subscribe(1, "sub1".into(), vec![Filter {
-            authors: Some(vec!["alice".into()]),
-            ..Default::default()
-        }]).await.unwrap();
+        registry
+            .subscribe(
+                1,
+                "sub1".into(),
+                vec![Filter {
+                    authors: Some(vec!["alice".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await
+            .unwrap();
 
         registry.unsubscribe(1, "sub1".into()).await.unwrap();
 
-        registry.subscribe(1, "sub1".into(), vec![Filter {
-            authors: Some(vec!["bob".into()]),
-            ..Default::default()
-        }]).await.unwrap();
+        registry
+            .subscribe(
+                1,
+                "sub1".into(),
+                vec![Filter {
+                    authors: Some(vec!["bob".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await
+            .unwrap();
 
         let mut registry2 = simulate_hibernation(&registry.storage).await;
 
@@ -132,8 +181,13 @@ fn test_hibernation_subscribe_cycles() {
             sig: "sig".into(),
         };
         let responses = registry2.match_event(&alice_event).await;
-        assert!(!responses.contains(&RegistryResponse::Send { recipient_id: 1, sub_id: "sub1".into() }),
-            "alice event should NOT match after re-subscribe to bob");
+        assert!(
+            !responses.contains(&RegistryResponse::Send {
+                recipient_id: 1,
+                sub_id: "sub1".into()
+            }),
+            "alice event should NOT match after re-subscribe to bob"
+        );
 
         let bob_event = Event {
             id: "e2".into(),
@@ -145,11 +199,17 @@ fn test_hibernation_subscribe_cycles() {
             sig: "sig".into(),
         };
         let responses2 = registry2.match_event(&bob_event).await;
-        assert!(responses2.contains(&RegistryResponse::WakeUp(1)),
-            "bob event must produce WakeUp after re-subscribe");
-        assert!(responses2.contains(&RegistryResponse::Send {
-            recipient_id: 1, sub_id: "sub1".into()
-        }), "bob event must produce Send after re-subscribe");
+        assert!(
+            responses2.contains(&RegistryResponse::WakeUp(1)),
+            "bob event must produce WakeUp after re-subscribe"
+        );
+        assert!(
+            responses2.contains(&RegistryResponse::Send {
+                recipient_id: 1,
+                sub_id: "sub1".into()
+            }),
+            "bob event must produce Send after re-subscribe"
+        );
     });
 }
 
@@ -158,13 +218,20 @@ fn test_registry_match_routing() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
         let mut registry = WalletRegistry::new(storage, Limits::default());
-        
+
         let wallet_pk = "wallet_pk";
-        registry.subscribe(1, "sub1".into(), vec![Filter {
-            p_tags: Some(vec![wallet_pk.into()]),
-            ..Default::default()
-        }]).await.unwrap();
-        
+        registry
+            .subscribe(
+                1,
+                "sub1".into(),
+                vec![Filter {
+                    p_tags: Some(vec![wallet_pk.into()]),
+                    ..Default::default()
+                }],
+            )
+            .await
+            .unwrap();
+
         let event = Event {
             id: "event1".into(),
             pubkey: "app_pk".into(),
@@ -174,10 +241,13 @@ fn test_registry_match_routing() {
             content: "test".into(),
             sig: "sig".into(),
         };
-        
+
         let matches = registry.match_event(&event).await;
         assert!(matches.contains(&RegistryResponse::WakeUp(1)));
-        assert!(matches.contains(&RegistryResponse::Send { recipient_id: 1, sub_id: "sub1".into() }));
+        assert!(matches.contains(&RegistryResponse::Send {
+            recipient_id: 1,
+            sub_id: "sub1".into()
+        }));
     });
 }
 
@@ -187,14 +257,21 @@ fn test_registry_lazy_load() {
         let storage = MockStorage::new();
         let wallet_pk = "hibernated_pk";
         let conn_id = 42;
-        
-        seed_subscription(&storage, conn_id, "sub1", wallet_pk, vec![Filter {
-            p_tags: Some(vec![wallet_pk.into()]),
-            ..Default::default()
-        }]).await;
-        
+
+        seed_subscription(
+            &storage,
+            conn_id,
+            "sub1",
+            wallet_pk,
+            vec![Filter {
+                p_tags: Some(vec![wallet_pk.into()]),
+                ..Default::default()
+            }],
+        )
+        .await;
+
         let mut registry = WalletRegistry::new(storage, Limits::default());
-        
+
         let event = Event {
             id: "event1".into(),
             pubkey: "app_pk".into(),
@@ -204,11 +281,14 @@ fn test_registry_lazy_load() {
             content: "test".into(),
             sig: "sig".into(),
         };
-        
+
         let responses = registry.match_event(&event).await;
-        
+
         assert!(responses.contains(&RegistryResponse::WakeUp(conn_id)));
-        assert!(responses.contains(&RegistryResponse::Send { recipient_id: conn_id, sub_id: "sub1".into() }));
+        assert!(responses.contains(&RegistryResponse::Send {
+            recipient_id: conn_id,
+            sub_id: "sub1".into()
+        }));
     });
 }
 
@@ -218,14 +298,28 @@ fn test_index_matching_grouped() {
         let storage = MockStorage::new();
         let mut registry = WalletRegistry::new(storage, Limits::default());
 
-        registry.subscribe(1, "sub1".into(), vec![Filter {
-            authors: Some(vec!["alice".into()]),
-            ..Default::default()
-        }]).await.unwrap();
-        registry.subscribe(2, "sub1".into(), vec![Filter {
-            authors: Some(vec!["alice".into()]),
-            ..Default::default()
-        }]).await.unwrap();
+        registry
+            .subscribe(
+                1,
+                "sub1".into(),
+                vec![Filter {
+                    authors: Some(vec!["alice".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await
+            .unwrap();
+        registry
+            .subscribe(
+                2,
+                "sub1".into(),
+                vec![Filter {
+                    authors: Some(vec!["alice".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await
+            .unwrap();
 
         let event_alice = Event {
             id: "id".into(),
@@ -238,9 +332,13 @@ fn test_index_matching_grouped() {
         };
         let responses = registry.match_event(&event_alice).await;
 
-        let grouped: Vec<_> = responses.iter()
+        let grouped: Vec<_> = responses
+            .iter()
             .filter_map(|r| match r {
-                RegistryResponse::Send { recipient_id, sub_id } if sub_id == "sub1" => Some(*recipient_id),
+                RegistryResponse::Send {
+                    recipient_id,
+                    sub_id,
+                } if sub_id == "sub1" => Some(*recipient_id),
                 _ => None,
             })
             .collect();
@@ -334,10 +432,17 @@ fn test_delete_info_preserves_subscriptions() {
         let storage = MockStorage::new();
         let mut registry = WalletRegistry::new(storage, Limits::default());
 
-        registry.subscribe(1, "sub1".into(), vec![Filter {
-            authors: Some(vec!["alice".into()]),
-            ..Default::default()
-        }]).await.unwrap();
+        registry
+            .subscribe(
+                1,
+                "sub1".into(),
+                vec![Filter {
+                    authors: Some(vec!["alice".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await
+            .unwrap();
 
         let event = Event {
             id: "id1".into(),
@@ -363,10 +468,17 @@ fn test_registry_sync() {
         let storage = MockStorage::new();
         let mut registry = WalletRegistry::new(storage, Limits::default());
 
-        registry.subscribe(1, "sub1".into(), vec![Filter {
-            authors: Some(vec!["alice".into()]),
-            ..Default::default()
-        }]).await.unwrap();
+        registry
+            .subscribe(
+                1,
+                "sub1".into(),
+                vec![Filter {
+                    authors: Some(vec!["alice".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await
+            .unwrap();
 
         let data = registry.storage.data.lock().unwrap();
         assert!(data.contains_key("conn:1"));
@@ -380,10 +492,17 @@ fn test_registry_terminate() {
         let storage = MockStorage::new();
         let mut registry = WalletRegistry::new(storage, Limits::default());
 
-        registry.subscribe(1, "sub1".into(), vec![Filter {
-            authors: Some(vec!["alice".into()]),
-            ..Default::default()
-        }]).await.unwrap();
+        registry
+            .subscribe(
+                1,
+                "sub1".into(),
+                vec![Filter {
+                    authors: Some(vec!["alice".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await
+            .unwrap();
 
         registry.on_terminate(1).await;
 
@@ -419,12 +538,21 @@ fn test_subscription_limit_exceeded() {
         let limits = Limits::new(65536, 0);
         let mut registry = WalletRegistry::new(storage, limits);
 
-        let result = registry.subscribe(1, "sub1".into(), vec![Filter {
-            authors: Some(vec!["alice".into()]),
-            ..Default::default()
-        }]).await;
+        let result = registry
+            .subscribe(
+                1,
+                "sub1".into(),
+                vec![Filter {
+                    authors: Some(vec!["alice".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("too many subscriptions"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("too many subscriptions"));
     });
 }
 
@@ -434,15 +562,29 @@ fn test_subscribe_rejected_on_storage_failure() {
         let storage = MockStorage::with_fail();
         let mut registry = WalletRegistry::new(storage, Limits::default());
 
-        let result = registry.subscribe(1, "sub1".into(), vec![Filter {
-            authors: Some(vec!["alice".into()]),
-            ..Default::default()
-        }]).await;
+        let result = registry
+            .subscribe(
+                1,
+                "sub1".into(),
+                vec![Filter {
+                    authors: Some(vec!["alice".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await;
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("persist failed"), "expected persist failure, got: {}", err);
-        assert!(err.contains("mock storage unavailable"), "expected mock error message, got: {}", err);
+        assert!(
+            err.contains("persist failed"),
+            "expected persist failure, got: {}",
+            err
+        );
+        assert!(
+            err.contains("mock storage unavailable"),
+            "expected mock error message, got: {}",
+            err
+        );
     });
 }
 
@@ -452,22 +594,45 @@ fn test_unsubscribe_graceful_on_storage_failure() {
         let storage = MockStorage::new();
         let mut registry = WalletRegistry::new(storage, Limits::default());
 
-        registry.subscribe(1, "sub1".into(), vec![Filter {
-            authors: Some(vec!["alice".into()]),
-            ..Default::default()
-        }]).await.unwrap();
-        registry.subscribe(1, "sub2".into(), vec![Filter {
-            authors: Some(vec!["alice".into()]),
-            ..Default::default()
-        }]).await.unwrap();
+        registry
+            .subscribe(
+                1,
+                "sub1".into(),
+                vec![Filter {
+                    authors: Some(vec!["alice".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await
+            .unwrap();
+        registry
+            .subscribe(
+                1,
+                "sub2".into(),
+                vec![Filter {
+                    authors: Some(vec!["alice".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await
+            .unwrap();
 
         registry.storage.fail_put_batch = true;
 
         let result = registry.unsubscribe(1, "sub1".into()).await;
-        assert!(result.is_ok(), "unsubscribe should not propagate storage error");
+        assert!(
+            result.is_ok(),
+            "unsubscribe should not propagate storage error"
+        );
 
-        assert!(!has_subscription(&registry, 1, "sub1"), "sub1 should be removed in-memory");
-        assert!(has_subscription(&registry, 1, "sub2"), "sub2 should still exist");
+        assert!(
+            !has_subscription(&registry, 1, "sub1"),
+            "sub1 should be removed in-memory"
+        );
+        assert!(
+            has_subscription(&registry, 1, "sub2"),
+            "sub2 should still exist"
+        );
     });
 }
 
@@ -487,12 +652,15 @@ fn test_read_pk_list_with_number_value() {
         let storage = MockStorage::new();
         let mut entries = HashMap::new();
         entries.insert("pk:single".to_string(), serde_json::json!(42));
-        entries.insert("conn:42".to_string(), serde_json::json!({
-            "subscriptions": {
-                "sub1": [{"#p": ["single"]}]
-            },
-            "info_event": null
-        }));
+        entries.insert(
+            "conn:42".to_string(),
+            serde_json::json!({
+                "subscriptions": {
+                    "sub1": [{"#p": ["single"]}]
+                },
+                "info_event": null
+            }),
+        );
         storage.put_batch(entries).await.unwrap();
 
         let mut registry = WalletRegistry::new(storage, Limits::default());
@@ -523,21 +691,37 @@ fn test_two_connections_same_pubkey_different_filters() {
 
         let shared_pk = "shared_pk";
 
-        registry.subscribe(1, "wallet_sub".into(), vec![Filter {
-            kinds: Some(vec![23194]),
-            p_tags: Some(vec![shared_pk.into()]),
-            ..Default::default()
-        }]).await.unwrap();
+        registry
+            .subscribe(
+                1,
+                "wallet_sub".into(),
+                vec![Filter {
+                    kinds: Some(vec![23194]),
+                    p_tags: Some(vec![shared_pk.into()]),
+                    ..Default::default()
+                }],
+            )
+            .await
+            .unwrap();
 
-        registry.subscribe(2, "app_sub".into(), vec![Filter {
-            kinds: Some(vec![23195]),
-            authors: Some(vec![shared_pk.into()]),
-            ..Default::default()
-        }]).await.unwrap();
+        registry
+            .subscribe(
+                2,
+                "app_sub".into(),
+                vec![Filter {
+                    kinds: Some(vec![23195]),
+                    authors: Some(vec![shared_pk.into()]),
+                    ..Default::default()
+                }],
+            )
+            .await
+            .unwrap();
 
         let snapshot: HashMap<String, Value> = {
             let data = registry.storage.data.lock().unwrap();
-            let pk_val = data.get(&format!("pk:{}", shared_pk)).expect("pk: entry should exist");
+            let pk_val = data
+                .get(&format!("pk:{}", shared_pk))
+                .expect("pk: entry should exist");
             let ids: Vec<u32> = serde_json::from_value(pk_val.clone()).unwrap();
             assert!(ids.contains(&1), "pk: entry should contain conn 1");
             assert!(ids.contains(&2), "pk: entry should contain conn 2");
@@ -560,8 +744,14 @@ fn test_two_connections_same_pubkey_different_filters() {
             };
             let responses = registry2.match_event(&req_event).await;
             assert!(responses.contains(&RegistryResponse::WakeUp(1)));
-            assert!(responses.contains(&RegistryResponse::Send { recipient_id: 1, sub_id: "wallet_sub".into() }));
-            assert!(!responses.contains(&RegistryResponse::Send { recipient_id: 2, sub_id: "app_sub".into() }));
+            assert!(responses.contains(&RegistryResponse::Send {
+                recipient_id: 1,
+                sub_id: "wallet_sub".into()
+            }));
+            assert!(!responses.contains(&RegistryResponse::Send {
+                recipient_id: 2,
+                sub_id: "app_sub".into()
+            }));
         }
 
         {
@@ -580,8 +770,14 @@ fn test_two_connections_same_pubkey_different_filters() {
             };
             let responses2 = registry3.match_event(&resp_event).await;
             assert!(responses2.contains(&RegistryResponse::WakeUp(2)));
-            assert!(responses2.contains(&RegistryResponse::Send { recipient_id: 2, sub_id: "app_sub".into() }));
-            assert!(!responses2.contains(&RegistryResponse::Send { recipient_id: 1, sub_id: "wallet_sub".into() }));
+            assert!(responses2.contains(&RegistryResponse::Send {
+                recipient_id: 2,
+                sub_id: "app_sub".into()
+            }));
+            assert!(!responses2.contains(&RegistryResponse::Send {
+                recipient_id: 1,
+                sub_id: "wallet_sub".into()
+            }));
         }
     });
 }

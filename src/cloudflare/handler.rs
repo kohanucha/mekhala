@@ -1,7 +1,7 @@
-use worker::*;
 use crate::cloudflare::create_cors_response;
 use crate::common::{NwcTransport, UserStore};
 use crate::lnaddress::gateway as lnurl;
+use worker::*;
 
 pub struct LnAddressHandler<'a, S: UserStore> {
     store: &'a S,
@@ -61,7 +61,10 @@ async fn handle_callback_inner<S: UserStore>(
         .and_then(|(_, v)| v.parse::<u64>().ok())
         .ok_or_else(|| Error::from("Missing amount"))?;
 
-    let nwc_uri = handler.store.get_nwc_uri(username).await
+    let nwc_uri = handler
+        .store
+        .get_nwc_uri(username)
+        .await
         .ok_or_else(|| Error::from("User not found"))?;
 
     let pr = lnurl::create_invoice(transport, &nwc_uri, username, amount_msat)

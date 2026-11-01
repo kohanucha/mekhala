@@ -2,14 +2,18 @@ use super::*;
 
 #[test]
 fn test_access_policy_public_mode() {
-    let policy = AccessPolicy { expected_secret: None };
+    let policy = AccessPolicy {
+        expected_secret: None,
+    };
     assert_eq!(policy.check_access(""), Ok(()));
     assert_eq!(policy.check_access("any-secret"), Ok(()));
 }
 
 #[test]
 fn test_access_policy_private_mode() {
-    let policy = AccessPolicy { expected_secret: Some("secret123".into()) };
+    let policy = AccessPolicy {
+        expected_secret: Some("secret123".into()),
+    };
 
     // Correct secret
     assert_eq!(policy.check_access("secret123"), Ok(()));
@@ -42,21 +46,27 @@ fn test_constant_time_eq_all_same_bytes() {
 
 #[test]
 fn test_access_policy_from_env_treated_as_none() {
-    let policy = AccessPolicy { expected_secret: Some("".into()) };
+    let policy = AccessPolicy {
+        expected_secret: Some("".into()),
+    };
     assert_eq!(policy.check_access(""), Ok(()));
     assert_eq!(policy.check_access("any"), Err(AuthError::Forbidden));
 }
 
 #[test]
 fn test_access_policy_empty_string_as_none() {
-    let policy = AccessPolicy { expected_secret: None };
+    let policy = AccessPolicy {
+        expected_secret: None,
+    };
     assert_eq!(policy.check_access(""), Ok(()));
     assert_eq!(policy.check_access("anything"), Ok(()));
 }
 
 #[test]
 fn test_access_policy_private_mode_case_sensitive() {
-    let policy = AccessPolicy { expected_secret: Some("Secret123".into()) };
+    let policy = AccessPolicy {
+        expected_secret: Some("Secret123".into()),
+    };
     assert_eq!(policy.check_access("Secret123"), Ok(()));
     assert_eq!(policy.check_access("secret123"), Err(AuthError::Forbidden));
     assert_eq!(policy.check_access("SECRET123"), Err(AuthError::Forbidden));
@@ -64,11 +74,22 @@ fn test_access_policy_private_mode_case_sensitive() {
 
 #[test]
 fn test_access_policy_private_mode_similar() {
-    let policy = AccessPolicy { expected_secret: Some("test-secret-123".into()) };
+    let policy = AccessPolicy {
+        expected_secret: Some("test-secret-123".into()),
+    };
     assert_eq!(policy.check_access("test-secret-123"), Ok(()));
-    assert_eq!(policy.check_access("test-secret-124"), Err(AuthError::Forbidden));
-    assert_eq!(policy.check_access("test-secret-12"), Err(AuthError::Forbidden));
-    assert_eq!(policy.check_access("test-secret123"), Err(AuthError::Forbidden));
+    assert_eq!(
+        policy.check_access("test-secret-124"),
+        Err(AuthError::Forbidden)
+    );
+    assert_eq!(
+        policy.check_access("test-secret-12"),
+        Err(AuthError::Forbidden)
+    );
+    assert_eq!(
+        policy.check_access("test-secret123"),
+        Err(AuthError::Forbidden)
+    );
 }
 
 #[test]

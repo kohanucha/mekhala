@@ -1,6 +1,6 @@
 use crate::nostr::{Event, Filter};
-use serde_json::value::RawValue;
 use serde::Deserialize;
+use serde_json::value::RawValue;
 
 /// A fully validated NIP-01 client message after [`ClientMessage::from_json`].
 #[derive(Debug, Clone)]
@@ -30,7 +30,9 @@ impl PartialClientMessage {
     /// NIP-01 `EVENT` array.
     pub fn from_json(text: &str) -> Option<Self> {
         let arr: Vec<&RawValue> = serde_json::from_str(text).ok()?;
-        if arr.len() < 2 { return None; }
+        if arr.len() < 2 {
+            return None;
+        }
 
         let msg_type: String = serde_json::from_str(arr[0].get()).ok()?;
         if msg_type == "EVENT" {
@@ -63,16 +65,19 @@ impl ClientMessage {
                 Ok(Self::Event(event))
             }
             "REQ" if arr.len() >= 3 => {
-                let sub_id: String = serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
+                let sub_id: String =
+                    serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
                 let mut filters = Vec::new();
                 for value in &arr[2..] {
-                    let filter: Filter = serde_json::from_str(value.get()).map_err(|e| e.to_string())?;
+                    let filter: Filter =
+                        serde_json::from_str(value.get()).map_err(|e| e.to_string())?;
                     filters.push(filter);
                 }
                 Ok(Self::Req(sub_id, filters))
             }
             "CLOSE" if arr.len() >= 2 => {
-                let sub_id: String = serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
+                let sub_id: String =
+                    serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
                 Ok(Self::Close(sub_id))
             }
             v => Err(format!("unknown message type: {}", v)),
@@ -121,12 +126,15 @@ impl RelayMessage {
                 Ok(Self::Ok(id, ok, msg))
             }
             "EVENT" if arr.len() >= 3 => {
-                let sub_id: String = serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
-                let event: crate::nostr::Event = serde_json::from_str(arr[2].get()).map_err(|e| e.to_string())?;
+                let sub_id: String =
+                    serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
+                let event: crate::nostr::Event =
+                    serde_json::from_str(arr[2].get()).map_err(|e| e.to_string())?;
                 Ok(Self::Event(sub_id, event))
             }
             "EOSE" if arr.len() >= 2 => {
-                let sub_id: String = serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
+                let sub_id: String =
+                    serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
                 Ok(Self::Eose(sub_id))
             }
             "NOTICE" if arr.len() >= 2 => {
@@ -134,7 +142,8 @@ impl RelayMessage {
                 Ok(Self::Notice(msg))
             }
             "CLOSED" if arr.len() >= 3 => {
-                let sub_id: String = serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
+                let sub_id: String =
+                    serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
                 let msg: String = serde_json::from_str(arr[2].get()).map_err(|e| e.to_string())?;
                 Ok(Self::Closed(sub_id, msg))
             }

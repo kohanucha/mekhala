@@ -16,18 +16,21 @@ impl CloudflareConfig {
                 65536,
             ),
             max_subscriptions_per_connection: Self::parse_opt(
-                env.var("MAX_SUBSCRIPTIONS_PER_CONNECTION").ok().map(|v| v.to_string()),
+                env.var("MAX_SUBSCRIPTIONS_PER_CONNECTION")
+                    .ok()
+                    .map(|v| v.to_string()),
                 100,
             ),
             max_connections: Self::parse_opt(
                 env.var("MAX_CONNECTIONS").ok().map(|v| v.to_string()),
                 100,
             ),
-            wallet_region: env.var("WALLET_REGION").ok()
+            wallet_region: env
+                .var("WALLET_REGION")
+                .ok()
                 .map(|v| v.to_string())
                 .filter(|s| !s.is_empty()),
-            relay_secret: env.var("RELAY_SECRET").ok()
-                .map(|v| v.to_string()),
+            relay_secret: env.var("RELAY_SECRET").ok().map(|v| v.to_string()),
         }
     }
 

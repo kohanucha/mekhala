@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use futures::channel::oneshot;
+use std::collections::HashMap;
 use worker::*;
 
 pub enum ConnectionKind {
@@ -23,7 +23,8 @@ impl ConnectionRegistry {
             crate::log_warn!("serialize_attachment failed for conn={}: {}", id, e);
         }
         state.accept_web_socket(ws);
-        self.connections.insert(id, ConnectionKind::External(ws.clone()));
+        self.connections
+            .insert(id, ConnectionKind::External(ws.clone()));
         crate::log_debug!("✓ conn={} registered, attachment verified", id);
     }
 
@@ -32,7 +33,8 @@ impl ConnectionRegistry {
     }
 
     pub fn add_internal(&mut self, id: u32, sender: oneshot::Sender<String>) {
-        self.connections.insert(id, ConnectionKind::Internal(sender));
+        self.connections
+            .insert(id, ConnectionKind::Internal(sender));
     }
 
     pub fn identify(&self, ws: &WebSocket) -> Option<u32> {
@@ -45,7 +47,10 @@ impl ConnectionRegistry {
         }
 
         let id: u32 = ws.deserialize_attachment::<u32>().ok().flatten()?;
-        crate::log_debug!("identify: recovered conn={} from hibernation attachment", id);
+        crate::log_debug!(
+            "identify: recovered conn={} from hibernation attachment",
+            id
+        );
         Some(id)
     }
 

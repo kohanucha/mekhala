@@ -1,7 +1,7 @@
 //! Shared types: `NwcError`, `NwcTransport` trait, `UserStore` trait.
 
-use crate::nostr::Event;
 use crate::nostr::nip_47::NwcUriError;
+use crate::nostr::Event;
 
 /// Error type for the wallet-service side of NWC interactions.
 #[derive(Debug, Clone, thiserror::Error)]
@@ -74,4 +74,3 @@ pub(crate) mod test_helpers;
 #[cfg(test)]
 #[path = "common_test.rs"]
 mod common_test;
-

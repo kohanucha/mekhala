@@ -12,7 +12,10 @@ fn test_parse_opt_valid() {
 
 #[test]
 fn test_parse_opt_invalid_uses_default() {
-    assert_eq!(CloudflareConfig::parse_opt(Some("not-a-number".into()), 42), 42);
+    assert_eq!(
+        CloudflareConfig::parse_opt(Some("not-a-number".into()), 42),
+        42
+    );
 }
 
 #[test]
@@ -26,5 +29,4 @@ fn test_parse_opt_empty_uses_default() {
 }
 
 #[test]
-fn test_from_env_defaults() {
-}
+fn test_from_env_defaults() {}

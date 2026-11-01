@@ -1,27 +1,29 @@
 use crate::nostr::Event;
 use crate::nostr::Tag;
+use crate::nostr::{Limits, RelayError, Result};
 use k256::schnorr::{signature::hazmat::PrehashSigner, SigningKey};
 use k256::{PublicKey as K256PublicKey, SecretKey as K256SecretKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use url::Url;
-use crate::nostr::{RelayError, Result, Limits};
 
 /// The only Nostr event kind this relay treats as an NWC request.
 pub const KIND_NWC_REQUEST: u64 = 23194;
 
 fn get_shared_secret(secret_key_hex: &str, public_key_hex: &str) -> Result<Vec<u8>> {
-    let secret_key_bytes = hex::decode(secret_key_hex).map_err(|e| RelayError::MalformedHex(e.to_string()))?;
-    let sk =
-        K256SecretKey::from_slice(&secret_key_bytes).map_err(|e| RelayError::CryptoError(e.to_string()))?;
+    let secret_key_bytes =
+        hex::decode(secret_key_hex).map_err(|e| RelayError::MalformedHex(e.to_string()))?;
+    let sk = K256SecretKey::from_slice(&secret_key_bytes)
+        .map_err(|e| RelayError::CryptoError(e.to_string()))?;
 
-    let public_key_bytes = hex::decode(public_key_hex).map_err(|e| RelayError::MalformedHex(e.to_string()))?;
+    let public_key_bytes =
+        hex::decode(public_key_hex).map_err(|e| RelayError::MalformedHex(e.to_string()))?;
     let mut full_pk_bytes = [0u8; 33];
     full_pk_bytes[0] = 0x02;
     full_pk_bytes[1..].copy_from_slice(&public_key_bytes);
 
-    let pk =
-        K256PublicKey::from_sec1_bytes(&full_pk_bytes).map_err(|e| RelayError::CryptoError(e.to_string()))?;
+    let pk = K256PublicKey::from_sec1_bytes(&full_pk_bytes)
+        .map_err(|e| RelayError::CryptoError(e.to_string()))?;
 
     let shared = k256::ecdh::diffie_hellman(sk.to_nonzero_scalar(), pk.as_affine());
     Ok(shared.raw_secret_bytes().to_vec())
@@ -32,7 +34,7 @@ fn get_shared_secret(secret_key_hex: &str, public_key_hex: &str) -> Result<Vec<u
 #[serde(rename_all = "snake_case")]
 pub enum NwcMethod {
     /// Create an invoice (`make_invoice`).
-    MakeInvoice
+    MakeInvoice,
 }
 
 /// Encrypted JSON payload of an NIP-47 request event.
@@ -121,7 +123,9 @@ pub fn parse_wallet_info(event: &crate::nostr::Event) -> WalletInfo {
         encryption.push(EncryptionMethod::Nip04);
     }
 
-    WalletInfo { encryption_algorithms: encryption }
+    WalletInfo {
+        encryption_algorithms: encryption,
+    }
 }
 
 /// Errors produced while parsing a `nostr+walletconnect://` URI.
@@ -218,12 +222,13 @@ impl NwcClient {
     pub fn new(uri: NwcUri) -> Result<Self> {
         let shared_secret = get_shared_secret(&uri.secret, &uri.wallet_pubkey)?;
 
-        let sk_bytes = hex::decode(&uri.secret).map_err(|e| RelayError::MalformedHex(e.to_string()))?;
+        let sk_bytes =
+            hex::decode(&uri.secret).map_err(|e| RelayError::MalformedHex(e.to_string()))?;
         let sk_bytes_arr: [u8; 32] = sk_bytes
             .try_into()
             .map_err(|_| RelayError::Generic("Invalid secret key length".into()))?;
-        let signing_key =
-            SigningKey::from_slice(&sk_bytes_arr).map_err(|e| RelayError::CryptoError(e.to_string()))?;
+        let signing_key = SigningKey::from_slice(&sk_bytes_arr)
+            .map_err(|e| RelayError::CryptoError(e.to_string()))?;
         let my_pubkey = hex::encode(signing_key.verifying_key().to_bytes());
 
         Ok(Self {
@@ -240,8 +245,12 @@ impl NwcClient {
     /// (see [`EncryptionMethod`]).
     pub fn encrypt(&self, payload: &Value) -> Result<String> {
         match self.encryption_method {
-            EncryptionMethod::Nip04 => crate::nostr::nip_04::encrypt_nip04(&self.shared_secret, &payload.to_string()),
-            EncryptionMethod::Nip44 => crate::nostr::nip_44::encrypt_nip44(&self.shared_secret, &payload.to_string()),
+            EncryptionMethod::Nip04 => {
+                crate::nostr::nip_04::encrypt_nip04(&self.shared_secret, &payload.to_string())
+            }
+            EncryptionMethod::Nip44 => {
+                crate::nostr::nip_44::encrypt_nip44(&self.shared_secret, &payload.to_string())
+            }
         }
     }
 
@@ -249,8 +258,12 @@ impl NwcClient {
     /// (see [`EncryptionMethod`]).
     pub fn decrypt(&self, encrypted: &str) -> Result<String> {
         match self.encryption_method {
-            EncryptionMethod::Nip04 => crate::nostr::nip_04::decrypt_nip04(&self.shared_secret, encrypted),
-            EncryptionMethod::Nip44 => crate::nostr::nip_44::decrypt_nip44(&self.shared_secret, encrypted),
+            EncryptionMethod::Nip04 => {
+                crate::nostr::nip_04::decrypt_nip04(&self.shared_secret, encrypted)
+            }
+            EncryptionMethod::Nip44 => {
+                crate::nostr::nip_44::decrypt_nip44(&self.shared_secret, encrypted)
+            }
         }
     }
 
@@ -306,12 +319,15 @@ impl NwcClient {
             return Err(RelayError::Generic("Response pubkey mismatch".into()));
         }
 
-        let has_e_tag = event.tags.iter().any(|t| {
-            t.event_id().is_some_and(|eid| eid == request_id)
-        });
+        let has_e_tag = event
+            .tags
+            .iter()
+            .any(|t| t.event_id().is_some_and(|eid| eid == request_id));
 
         if !has_e_tag {
-            return Err(RelayError::Generic("Response missing 'e' tag for request".into()));
+            return Err(RelayError::Generic(
+                "Response missing 'e' tag for request".into(),
+            ));
         }
 
         let decrypted = self.decrypt(&event.content)?;

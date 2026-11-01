@@ -1,6 +1,6 @@
-use super::*;
-use crate::common::test_helpers::{MockStorage, new_test_engine, test_now, set_test_time};
 use super::super::Tag;
+use super::*;
+use crate::common::test_helpers::{new_test_engine, set_test_time, test_now, MockStorage};
 
 #[test]
 fn test_engine_req_storage() {
@@ -68,8 +68,12 @@ fn test_engine_get_wallet_info_with_encryption_tag() {
         engine.process_info_event(event).await;
 
         let info = engine.get_wallet_info("pk1").await.unwrap();
-        assert!(info.encryption_algorithms.contains(&super::super::nip_47::EncryptionMethod::Nip44));
-        assert!(info.encryption_algorithms.contains(&super::super::nip_47::EncryptionMethod::Nip04));
+        assert!(info
+            .encryption_algorithms
+            .contains(&super::super::nip_47::EncryptionMethod::Nip44));
+        assert!(info
+            .encryption_algorithms
+            .contains(&super::super::nip_47::EncryptionMethod::Nip04));
     });
 }
 
@@ -89,7 +93,10 @@ fn test_engine_get_wallet_info_default_nip04() {
         engine.process_info_event(event).await;
 
         let info = engine.get_wallet_info("pk1").await.unwrap();
-        assert_eq!(info.encryption_algorithms, vec![super::super::nip_47::EncryptionMethod::Nip04]);
+        assert_eq!(
+            info.encryption_algorithms,
+            vec![super::super::nip_47::EncryptionMethod::Nip04]
+        );
     });
 }
 
@@ -100,11 +107,17 @@ fn test_bridge_signaling() {
         let mut engine = new_test_engine();
         engine.on_connect(1).await;
         let wallet_pk = "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f";
-        let _ = engine.process_req(1, "sub1".into(), vec![Filter {
-            kinds: Some(vec![23194]),
-            p_tags: Some(vec![wallet_pk.into()]),
-            ..Default::default()
-        }]).await;
+        let _ = engine
+            .process_req(
+                1,
+                "sub1".into(),
+                vec![Filter {
+                    kinds: Some(vec![23194]),
+                    p_tags: Some(vec![wallet_pk.into()]),
+                    ..Default::default()
+                }],
+            )
+            .await;
 
         let bridge_id = 100;
         let bridge_sk = "0202020202020202020202020202020202020202020202020202020202020202";
@@ -116,12 +129,20 @@ fn test_bridge_signaling() {
         };
         let client = crate::nostr::nip_47::NwcClient::new(uri).unwrap();
 
-        let bridge_req = serde_json::json!(["REQ", "sub_bridge", {"kinds": [23194], "#p": [client.my_pubkey]}]).to_string();
+        let bridge_req =
+            serde_json::json!(["REQ", "sub_bridge", {"kinds": [23194], "#p": [client.my_pubkey]}])
+                .to_string();
         let msg = ClientMessage::from_json(&bridge_req).unwrap();
         let responses = engine.handle_typed(bridge_id, msg).await;
 
         // REQ should return EOSE Send
-        assert!(responses.iter().any(|r| matches!(r, EngineResponse::Send { recipient_id: 100, message: RelayMessage::Eose(_) })));
+        assert!(responses.iter().any(|r| matches!(
+            r,
+            EngineResponse::Send {
+                recipient_id: 100,
+                message: RelayMessage::Eose(_)
+            }
+        )));
 
         // Create a valid signed event for the bridge
         let uri = crate::nostr::nip_47::NwcUri {
@@ -129,20 +150,35 @@ fn test_bridge_signaling() {
             secret: bridge_sk.to_string(),
         };
         let client = crate::nostr::nip_47::NwcClient::new(uri).unwrap();
-        let (bridge_event, _) = client.create_request_event(crate::nostr::nip_47::NwcMethod::MakeInvoice, serde_json::json!({}), vec![]).unwrap();
+        let (bridge_event, _) = client
+            .create_request_event(
+                crate::nostr::nip_47::NwcMethod::MakeInvoice,
+                serde_json::json!({}),
+                vec![],
+            )
+            .unwrap();
 
-        let bridge_event_json = serde_json::json!([
-            "EVENT",
-            bridge_event
-        ]).to_string();
+        let bridge_event_json = serde_json::json!(["EVENT", bridge_event]).to_string();
 
         let msg = ClientMessage::from_json(&bridge_event_json).unwrap();
         let responses = engine.handle_typed(bridge_id, msg).await;
 
         // Event should be routed to connection 1 as Send
-        assert!(responses.iter().any(|r| matches!(r, EngineResponse::Send { recipient_id: 1, .. })));
+        assert!(responses.iter().any(|r| matches!(
+            r,
+            EngineResponse::Send {
+                recipient_id: 1,
+                ..
+            }
+        )));
         // EVENT should return OK Send
-        assert!(responses.iter().any(|r| matches!(r, EngineResponse::Send { recipient_id: 100, message: RelayMessage::Ok(_, true, _) })));
+        assert!(responses.iter().any(|r| matches!(
+            r,
+            EngineResponse::Send {
+                recipient_id: 100,
+                message: RelayMessage::Ok(_, true, _)
+            }
+        )));
 
         let wallet_response_event: Event = serde_json::from_value(serde_json::json!({
             "id": "resp1",
@@ -152,17 +188,25 @@ fn test_bridge_signaling() {
             "tags": [["p", "bridge"], ["e", "event1"]],
             "content": "",
             "sig": "dummy_sig"
-        })).unwrap();
-        
+        }))
+        .unwrap();
+
         let mut wallet_response_event = wallet_response_event;
-        wallet_response_event.tags = vec![super::super::Tag::p(&client.my_pubkey), super::super::Tag::E(bridge_event.id.clone(), vec![])];
+        wallet_response_event.tags = vec![
+            super::super::Tag::p(&client.my_pubkey),
+            super::super::Tag::E(bridge_event.id.clone(), vec![]),
+        ];
 
         // Wallet response comes from connection 1
         let responses = engine.process_event(1, wallet_response_event).await;
 
         // Routed EVENT SHOULD go to connection 100 as Send
         assert!(responses.iter().any(|r| {
-            if let EngineResponse::Send { recipient_id, message: RelayMessage::Event(_, event) } = r {
+            if let EngineResponse::Send {
+                recipient_id,
+                message: RelayMessage::Event(_, event),
+            } = r
+            {
                 *recipient_id == 100 && event.id == "resp1"
             } else {
                 false
@@ -178,11 +222,17 @@ fn test_virtual_connection_lifecycle() {
         engine.on_connect(1).await;
 
         let id = 100;
-        let _ = engine.process_req(id, "sub1".into(), vec![Filter {
-            authors: Some(vec!["alice".into()]),
-            kinds: Some(vec![23194]),
-            ..Default::default()
-        }]).await;
+        let _ = engine
+            .process_req(
+                id,
+                "sub1".into(),
+                vec![Filter {
+                    authors: Some(vec!["alice".into()]),
+                    kinds: Some(vec![23194]),
+                    ..Default::default()
+                }],
+            )
+            .await;
 
         let event = Event {
             id: "event1".into(),
@@ -197,7 +247,11 @@ fn test_virtual_connection_lifecycle() {
         let responses = engine.process_event(2, event).await;
 
         assert!(responses.iter().any(|r| {
-            if let EngineResponse::Send { recipient_id, message: RelayMessage::Event(_, event) } = r {
+            if let EngineResponse::Send {
+                recipient_id,
+                message: RelayMessage::Event(_, event),
+            } = r
+            {
                 *recipient_id == 100 && event.id == "event1"
             } else {
                 false
@@ -205,18 +259,26 @@ fn test_virtual_connection_lifecycle() {
         }));
 
         engine.process_close(id, "sub1".into()).await;
-        let responses_after = engine.process_event(2, Event {
-            id: "event2".into(),
-            pubkey: "alice".into(),
-            created_at: test_now(),
-            kind: 23194,
-            tags: vec![],
-            content: "test".into(),
-            sig: "sig".into(),
-        }).await;
-        assert!(!responses_after.iter().any(|r| {
-            matches!(r, EngineResponse::Send { recipient_id, .. } if *recipient_id == id)
-        }), "closed subscription should not receive events");
+        let responses_after = engine
+            .process_event(
+                2,
+                Event {
+                    id: "event2".into(),
+                    pubkey: "alice".into(),
+                    created_at: test_now(),
+                    kind: 23194,
+                    tags: vec![],
+                    content: "test".into(),
+                    sig: "sig".into(),
+                },
+            )
+            .await;
+        assert!(
+            !responses_after.iter().any(|r| {
+                matches!(r, EngineResponse::Send { recipient_id, .. } if *recipient_id == id)
+            }),
+            "closed subscription should not receive events"
+        );
     });
 }
 
@@ -227,14 +289,19 @@ fn test_engine_wakeup_logic() {
         let id = 42;
         let pk = "hibernated_pk";
         let storage = MockStorage::new();
-        crate::common::test_helpers::seed_subscription(&storage, id, "sub1", pk, vec![
-            Filter {
+        crate::common::test_helpers::seed_subscription(
+            &storage,
+            id,
+            "sub1",
+            pk,
+            vec![Filter {
                 kinds: Some(vec![23194]),
                 authors: Some(vec![pk.into()]),
                 ..Default::default()
-            }
-        ]).await;
-        
+            }],
+        )
+        .await;
+
         let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
 
         // 2. Handle an event that targets the hibernated pubkey
@@ -251,10 +318,18 @@ fn test_engine_wakeup_logic() {
         let responses = engine.process_event(99, event).await;
 
         // 3. Verify that a WakeUp response was returned
-        assert!(responses.iter().any(|r| matches!(r, EngineResponse::WakeUp { connection_id: 42 })));
-        
+        assert!(responses
+            .iter()
+            .any(|r| matches!(r, EngineResponse::WakeUp { connection_id: 42 })));
+
         // 4. Verify that a Data response was ALSO returned (since matching happens after loading)
-        assert!(responses.iter().any(|r| matches!(r, EngineResponse::Send { recipient_id: 42, .. })));
+        assert!(responses.iter().any(|r| matches!(
+            r,
+            EngineResponse::Send {
+                recipient_id: 42,
+                ..
+            }
+        )));
     });
 }
 
@@ -274,21 +349,32 @@ fn test_engine_uses_clock_for_event_verification() {
             "tags": [],
             "content": "test",
             "sig": "badsig"
-        }]).to_string();
+        }])
+        .to_string();
 
         let msg = ClientMessage::from_json(&event_json).unwrap();
         let responses = engine.handle_typed(1, msg).await;
 
         let ok_response = responses.iter().find_map(|r| {
-            if let EngineResponse::Send { message: RelayMessage::Ok(_, success, msg), .. } = r {
+            if let EngineResponse::Send {
+                message: RelayMessage::Ok(_, success, msg),
+                ..
+            } = r
+            {
                 Some((success, msg.clone()))
-            } else { None }
+            } else {
+                None
+            }
         });
 
         assert!(ok_response.is_some(), "should get an OK response");
         let (success, msg) = ok_response.unwrap();
         assert!(!success, "event too far in future should be rejected");
-        assert!(msg.contains("too far"), "expected timestamp rejection, got: {}", msg);
+        assert!(
+            msg.contains("too far"),
+            "expected timestamp rejection, got: {}",
+            msg
+        );
 
         set_test_time(now + 901);
         let event_json_recent = serde_json::json!(["EVENT", {
@@ -299,20 +385,31 @@ fn test_engine_uses_clock_for_event_verification() {
             "tags": [],
             "content": "test",
             "sig": "badsig"
-        }]).to_string();
+        }])
+        .to_string();
 
         let msg = ClientMessage::from_json(&event_json_recent).unwrap();
         let responses = engine.handle_typed(1, msg).await;
 
         let ok_response = responses.iter().find_map(|r| {
-            if let EngineResponse::Send { message: RelayMessage::Ok(_, success, msg), .. } = r {
+            if let EngineResponse::Send {
+                message: RelayMessage::Ok(_, success, msg),
+                ..
+            } = r
+            {
                 Some((success, msg.clone()))
-            } else { None }
+            } else {
+                None
+            }
         });
 
         assert!(ok_response.is_some(), "should get an OK response");
         let (success, msg) = ok_response.unwrap();
-        assert!(msg.contains("invalid"), "event within tolerance should fail for id/sig, not timestamp, got: {}", msg);
+        assert!(
+            msg.contains("invalid"),
+            "event within tolerance should fail for id/sig, not timestamp, got: {}",
+            msg
+        );
         assert!(!success);
     });
 }
@@ -500,24 +597,38 @@ fn test_on_terminate_removes_state() {
         let mut engine = new_test_engine();
         engine.on_connect(1).await;
 
-        let _ = engine.process_req(1, "sub1".into(), vec![Filter {
-            authors: Some(vec!["alice".into()]),
-            ..Default::default()
-        }]).await;
+        let _ = engine
+            .process_req(
+                1,
+                "sub1".into(),
+                vec![Filter {
+                    authors: Some(vec!["alice".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await;
 
         engine.on_terminate(1).await;
-        let responses_after = engine.process_event(2, Event {
-            id: "event2".into(),
-            pubkey: "alice".into(),
-            created_at: test_now(),
-            kind: 23194,
-            tags: vec![],
-            content: "test".into(),
-            sig: "sig".into(),
-        }).await;
-        assert!(!responses_after.iter().any(|r| {
-            matches!(r, EngineResponse::Send { recipient_id, .. } if *recipient_id == 1)
-        }), "terminated connection should not receive events");
+        let responses_after = engine
+            .process_event(
+                2,
+                Event {
+                    id: "event2".into(),
+                    pubkey: "alice".into(),
+                    created_at: test_now(),
+                    kind: 23194,
+                    tags: vec![],
+                    content: "test".into(),
+                    sig: "sig".into(),
+                },
+            )
+            .await;
+        assert!(
+            !responses_after.iter().any(|r| {
+                matches!(r, EngineResponse::Send { recipient_id, .. } if *recipient_id == 1)
+            }),
+            "terminated connection should not receive events"
+        );
     });
 }
 
@@ -542,8 +653,8 @@ fn test_req_filter_too_broad() {
 #[test]
 fn test_handle_req_returns_closed_on_storage_failure() {
     futures::executor::block_on(async {
-        use std::sync::{Arc, Mutex};
         use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
         let storage = crate::common::test_helpers::MockStorage {
             data: Arc::new(Mutex::new(HashMap::new())),
             fail_put_batch: true,
@@ -551,20 +662,33 @@ fn test_handle_req_returns_closed_on_storage_failure() {
         let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
         engine.on_connect(1).await;
 
-        let responses = engine.handle_req(1, "sub1".into(), vec![Filter {
-            kinds: Some(vec![23194]),
-            authors: Some(vec!["alice".into()]),
-            ..Default::default()
-        }]).await;
+        let responses = engine
+            .handle_req(
+                1,
+                "sub1".into(),
+                vec![Filter {
+                    kinds: Some(vec![23194]),
+                    authors: Some(vec!["alice".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await;
 
         assert_eq!(responses.len(), 1, "should only have CLOSED response");
         match &responses[0] {
-            EngineResponse::Send { recipient_id, message } => {
+            EngineResponse::Send {
+                recipient_id,
+                message,
+            } => {
                 assert_eq!(*recipient_id, 1);
                 match message {
                     RelayMessage::Closed(sub_id, reason) => {
                         assert_eq!(sub_id, "sub1");
-                        assert!(reason.contains("persist failed"), "reason should mention persist failure, got: {}", reason);
+                        assert!(
+                            reason.contains("persist failed"),
+                            "reason should mention persist failure, got: {}",
+                            reason
+                        );
                     }
                     other => panic!("expected CLOSED, got: {:?}", other),
                 }
@@ -577,8 +701,8 @@ fn test_handle_req_returns_closed_on_storage_failure() {
 #[test]
 fn test_handle_req_internal_returns_closed_on_storage_failure() {
     futures::executor::block_on(async {
-        use std::sync::{Arc, Mutex};
         use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
         let storage = crate::common::test_helpers::MockStorage {
             data: Arc::new(Mutex::new(HashMap::new())),
             fail_put_batch: true,
@@ -586,20 +710,33 @@ fn test_handle_req_internal_returns_closed_on_storage_failure() {
         let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
         engine.on_connect(1).await;
 
-        let responses = engine.handle_req_internal(1, "sub1".into(), vec![Filter {
-            kinds: Some(vec![23194]),
-            authors: Some(vec!["alice".into()]),
-            ..Default::default()
-        }]).await;
+        let responses = engine
+            .handle_req_internal(
+                1,
+                "sub1".into(),
+                vec![Filter {
+                    kinds: Some(vec![23194]),
+                    authors: Some(vec!["alice".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await;
 
         assert_eq!(responses.len(), 1, "should only have CLOSED response");
         match &responses[0] {
-            EngineResponse::Send { recipient_id, message } => {
+            EngineResponse::Send {
+                recipient_id,
+                message,
+            } => {
                 assert_eq!(*recipient_id, 1);
                 match message {
                     RelayMessage::Closed(sub_id, reason) => {
                         assert_eq!(sub_id, "sub1");
-                        assert!(reason.contains("persist failed"), "reason should mention persist failure, got: {}", reason);
+                        assert!(
+                            reason.contains("persist failed"),
+                            "reason should mention persist failure, got: {}",
+                            reason
+                        );
                     }
                     other => panic!("expected CLOSED, got: {:?}", other),
                 }

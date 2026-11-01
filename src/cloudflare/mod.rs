@@ -2,16 +2,16 @@
 
 pub mod auth;
 pub mod config;
-pub mod transport;
-pub mod durable_object;
 pub mod connection;
+pub mod durable_object;
+pub mod handler;
 pub mod kv;
 pub mod router;
-pub mod handler;
+pub mod transport;
 
-pub use transport::CloudflareTransport;
 pub use durable_object::get_durable_stub;
 pub use kv::CloudflareKvStore;
+pub use transport::CloudflareTransport;
 
 use worker::*;
 
@@ -23,7 +23,10 @@ impl From<crate::common::NwcError> for Error {
 
 pub fn apply_security_headers(response: Response) -> Result<Response> {
     let headers = response.headers().clone();
-    headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")?;
+    headers.set(
+        "Strict-Transport-Security",
+        "max-age=31536000; includeSubDomains",
+    )?;
     headers.set("X-Content-Type-Options", "nosniff")?;
     headers.set("Content-Security-Policy", "default-src 'self'")?;
     Ok(response.with_headers(headers))

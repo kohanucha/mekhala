@@ -1,6 +1,6 @@
 //! Access control: relay secret authentication via constant-time comparison.
 
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 /// Auth failure returned by [`AccessPolicy::check_access`].
 #[derive(Debug, PartialEq, thiserror::Error)]

@@ -1,10 +1,10 @@
+use crate::nostr::{RelayError, Result};
 use aes::Aes256;
 use base64::{engine::general_purpose, Engine as _};
 use block_padding::Pkcs7;
 use cbc::{Decryptor, Encryptor};
 use cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit};
 use rand::Rng;
-use crate::nostr::{RelayError, Result};
 
 /// Encrypts UTF-8 plaintext with AES-256-CBC (NIP-04); returns
 /// `<base64(ciphertext)>?iv=<base64(iv)>` with a fresh random IV.
