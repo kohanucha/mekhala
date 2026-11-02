@@ -87,3 +87,26 @@ fn test_rpc_machine_state_accessor() {
     machine.transition(RelayMessage::Notice("nope".into()));
     assert!(matches!(machine.state(), RpcState::Failed(_)));
 }
+
+#[test]
+fn test_rpc_machine_start_scopes_filter_to_request() {
+    let req = mock_event("req1", "pk1");
+    let mut machine = NwcRpcMachine::new(req);
+
+    let actions = machine.start();
+    match &actions[0] {
+        RpcAction::Subscribe(sub_id, filter) => {
+            assert_eq!(sub_id, "rpc_sub");
+            // The response must be correlated by both the `e` tag (request id)
+            // and the `p` tag (wallet pubkey); dropping either widens the
+            // subscription to unrelated traffic.
+            assert_eq!(filter.e_tags, Some(vec!["req1".to_string()]));
+            assert_eq!(filter.p_tags, Some(vec!["pk1".to_string()]));
+        }
+        other => panic!("expected Subscribe, got {other:?}"),
+    }
+    match &actions[1] {
+        RpcAction::Publish(event) => assert_eq!(event.id, "req1"),
+        other => panic!("expected Publish, got {other:?}"),
+    }
+}

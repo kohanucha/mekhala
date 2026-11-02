@@ -265,3 +265,18 @@ fn test_relay_message_below_variant_arity_is_unknown() {
         assert!(err.contains("unknown message type"), "{json}: {err}");
     }
 }
+
+#[test]
+fn test_partial_client_message_single_element_array() {
+    // One element cannot be a valid EVENT frame; it must be rejected instead
+    // of indexing past the end of the array.
+    assert!(PartialClientMessage::from_json(r#"["EVENT"]"#).is_none());
+}
+
+#[test]
+fn test_partial_client_message_two_element_event() {
+    match PartialClientMessage::from_json(r#"["EVENT",{"id":"abc"}]"#) {
+        Some(PartialClientMessage::Event(id)) => assert_eq!(id, "abc"),
+        None => panic!("a two-element EVENT frame must parse"),
+    }
+}

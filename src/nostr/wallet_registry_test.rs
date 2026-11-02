@@ -1107,3 +1107,116 @@ fn test_sync_ignores_unparseable_pk_index() {
         assert_eq!(data.lock().unwrap()["pk:pk"], serde_json::json!([9]));
     });
 }
+
+#[test]
+fn test_unsubscribe_keeps_pk_index_while_info_is_cached() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let info = crate::common::test_helpers::test_event("info1", "pk", 13194, vec![], 0);
+        registry.cache_info(info).await;
+        registry
+            .subscribe(1, "s1".into(), vec![authors_filter("pk")])
+            .await
+            .unwrap();
+
+        registry.unsubscribe(1, "s1".into()).await.unwrap();
+
+        // The last subscription is gone, but the pk index entry still owns the
+        // cached info event and must survive.
+        assert!(
+            registry.index.get_info("pk").is_some(),
+            "cached info was dropped with the last subscription"
+        );
+    });
+}
+
+#[test]
+fn test_subscribe_enforces_max_subscriptions() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::new(65536, 2));
+        registry
+            .subscribe(1, "s1".into(), vec![authors_filter("pk")])
+            .await
+            .unwrap();
+        registry
+            .subscribe(1, "s2".into(), vec![authors_filter("pk")])
+            .await
+            .unwrap();
+
+        let err = registry
+            .subscribe(1, "s3".into(), vec![authors_filter("pk")])
+            .await
+            .expect_err("third subscription exceeds the limit of 2");
+        assert!(err.to_string().contains("too many subscriptions"), "{err}");
+    });
+}
+
+#[test]
+fn test_delete_info_keeps_pk_index_while_subscriptions_remain() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .subscribe(1, "s1".into(), vec![authors_filter("pk")])
+            .await
+            .unwrap();
+        let info = crate::common::test_helpers::test_event("info1", "pk", 13194, vec![], 0);
+        registry.cache_info(info).await;
+
+        registry.delete_info("pk").await;
+
+        // Info is gone, but the entry still carries a live subscription.
+        assert!(registry.index.get_info("pk").is_none());
+        assert!(
+            registry.index.pk_index.contains_key("pk"),
+            "subscription lost its pk index entry with the deleted info"
+        );
+    });
+}
+
+#[test]
+fn test_get_connection_id_picks_highest_connection() {
+    futures::executor::block_on(async {
+        // Two distinct subscriptions give the entry multiple candidates, so a
+        // max-reduction that just takes the last iterated id is exposed.
+        for _ in 0..32 {
+            let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+            registry
+                .subscribe(1, "s1".into(), vec![authors_filter("pk")])
+                .await
+                .unwrap();
+            registry
+                .subscribe(2, "s1".into(), vec![authors_filter("pk")])
+                .await
+                .unwrap();
+            registry
+                .subscribe(3, "s2".into(), vec![authors_filter("pk")])
+                .await
+                .unwrap();
+
+            assert_eq!(registry.index.get_connection_id("pk"), Some(3));
+        }
+    });
+}
+
+#[test]
+fn test_on_terminate_keeps_numeric_pk_index_for_other_connections() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        seed_subscription(&storage, 42, "s1", "pk", vec![authors_filter("pk")]).await;
+        // Legacy single-value index pointing at a different connection.
+        data.lock()
+            .unwrap()
+            .insert("pk:pk".into(), serde_json::json!(99));
+
+        let mut registry = WalletRegistry::new(storage, Limits::default());
+        assert!(registry.load(42).await);
+        registry.on_terminate(42).await;
+
+        assert_eq!(
+            data.lock().unwrap().get("pk:pk"),
+            Some(&serde_json::json!([99])),
+            "terminating one connection must keep the others indexed"
+        );
+    });
+}

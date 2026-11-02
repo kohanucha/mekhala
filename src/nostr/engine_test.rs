@@ -1248,3 +1248,14 @@ fn test_kind_5_deletion_with_unrelated_k_tag() {
         assert!(engine.get_wallet_info("alice").await.is_some());
     });
 }
+
+#[test]
+fn test_engine_load_unknown_connection_is_false() {
+    futures::executor::block_on(async {
+        let mut engine = new_test_engine();
+        assert!(
+            !engine.load(4242).await,
+            "a connection that was never persisted cannot be loaded"
+        );
+    });
+}

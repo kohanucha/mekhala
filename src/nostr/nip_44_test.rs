@@ -203,3 +203,61 @@ fn test_nip44_invalid_base64() {
         "{result:?}"
     );
 }
+
+#[test]
+fn test_nip44_pad_lengths_follow_the_v2_buckets() {
+    // Bucket edges: 32-byte steps up to 256 bytes, then chunked at 1/8 of the
+    // next power of two.
+    let cases = [
+        (0usize, 32usize),
+        (1, 32),
+        (32, 32),
+        (33, 64),
+        (64, 64),
+        (65, 96),
+        (96, 96),
+        (97, 128),
+        (128, 128),
+        (129, 160),
+        (160, 160),
+        (161, 192),
+        (256, 256),
+        (257, 320),
+        (320, 320),
+        (321, 384),
+        (511, 512),
+        (512, 512),
+        (513, 640),
+    ];
+    for (len, expected) in cases {
+        let plaintext = "a".repeat(len);
+        let padded = pad(&plaintext);
+        assert_eq!(padded.len(), 2 + expected, "plaintext length {len}");
+        assert_eq!(&padded[..2], &(len as u16).to_be_bytes());
+        assert_eq!(unpad(&padded).unwrap(), plaintext);
+    }
+}
+
+#[test]
+fn test_nip44_unpad_minimum_length() {
+    // A two-byte payload is a valid empty message; it must not be rejected.
+    assert_eq!(unpad(&[0, 0]).unwrap(), "");
+    assert_eq!(unpad(&[0, 1, b'a']).unwrap(), "a");
+}
+
+#[test]
+fn test_nip44_size_boundaries() {
+    let shared_secret = [1u8; 32];
+    // Smallest acceptable payload: version + 32-byte nonce + 32-byte MAC.
+    // It must reach the MAC check rather than be rejected as too short.
+    let min = general_purpose::STANDARD.encode(vec![0x02u8; 65]);
+    let err =
+        decrypt_nip44(&shared_secret, &min).expect_err("empty ciphertext cannot authenticate");
+    assert_eq!(err.to_string(), "error: crypto failure: Invalid NIP-44 MAC");
+
+    // Exactly at the decoded ceiling (65603 bytes) the payload is still
+    // processed; only one byte more is rejected.
+    let max = general_purpose::STANDARD.encode(vec![0x02u8; 65603]);
+    let err = decrypt_nip44(&shared_secret, &max).expect_err("random MAC cannot match");
+    assert_eq!(err.to_string(), "error: crypto failure: Invalid NIP-44 MAC");
+}
