@@ -645,7 +645,7 @@ fn test_delete_info_for_nonexistent_pubkey() {
 }
 
 #[test]
-fn test_read_pk_list_with_number_value() {
+fn test_load_by_pubkey_with_number_value() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
         let mut entries = HashMap::new();
@@ -668,7 +668,7 @@ fn test_read_pk_list_with_number_value() {
 }
 
 #[test]
-fn test_read_pk_list_with_unknown_value_type() {
+fn test_load_by_pubkey_with_unknown_value_type() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
         let mut entries = HashMap::new();
@@ -777,5 +777,333 @@ fn test_two_connections_same_pubkey_different_filters() {
                 sub_id: "wallet_sub".into()
             }));
         }
+    });
+}
+
+fn authors_filter(pk: &str) -> Filter {
+    Filter {
+        authors: Some(vec![pk.into()]),
+        ..Default::default()
+    }
+}
+
+fn send_targets(responses: &[RegistryResponse]) -> Vec<(u32, String)> {
+    responses
+        .iter()
+        .filter_map(|r| match r {
+            RegistryResponse::Send {
+                recipient_id,
+                sub_id,
+            } => Some((*recipient_id, sub_id.clone())),
+            RegistryResponse::WakeUp(_) => None,
+        })
+        .collect()
+}
+
+#[test]
+fn test_subscribe_same_subscription_twice_is_idempotent() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let mut registry = WalletRegistry::new(storage, Limits::default());
+
+        registry
+            .subscribe(1, "s1".into(), vec![authors_filter("pk")])
+            .await
+            .unwrap();
+        registry
+            .subscribe(1, "s1".into(), vec![authors_filter("pk")])
+            .await
+            .unwrap();
+
+        let event = crate::common::test_helpers::test_event("e1", "pk", 23194, vec![], 0);
+        assert_eq!(
+            send_targets(&registry.match_event(&event).await),
+            vec![(1, "s1".to_string())]
+        );
+    });
+}
+
+#[test]
+fn test_unsubscribe_clears_live_index_and_conn_state() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        let mut registry = WalletRegistry::new(storage, Limits::default());
+
+        registry
+            .subscribe(1, "s1".into(), vec![authors_filter("pk")])
+            .await
+            .unwrap();
+        assert!(data.lock().unwrap().contains_key("pk:pk"));
+
+        registry.unsubscribe(1, "s1".into()).await.unwrap();
+
+        assert!(
+            !registry.index.pk_index.contains_key("pk"),
+            "orphan live pk index left behind"
+        );
+        assert!(
+            !data.lock().unwrap().contains_key("conn:1"),
+            "empty conn state left behind"
+        );
+    });
+}
+
+#[test]
+fn test_delete_info_removes_id_index_entry() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let info = crate::common::test_helpers::test_event("info1", "wallet", 13194, vec![], 0);
+
+        registry.cache_info(info).await;
+        assert_eq!(
+            registry.find_info_pubkey_by_id("info1"),
+            Some("wallet".to_string())
+        );
+
+        registry.delete_info("wallet").await;
+        assert_eq!(registry.find_info_pubkey_by_id("info1"), None);
+    });
+}
+
+#[test]
+fn test_match_event_delivers_only_to_latest_connection() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let mut registry = WalletRegistry::new(storage, Limits::default());
+
+        registry
+            .subscribe(1, "s1".into(), vec![authors_filter("pk")])
+            .await
+            .unwrap();
+        registry
+            .subscribe(2, "s1".into(), vec![authors_filter("pk")])
+            .await
+            .unwrap();
+
+        let event = crate::common::test_helpers::test_event("e1", "pk", 23194, vec![], 0);
+        assert_eq!(
+            send_targets(&registry.match_event(&event).await),
+            vec![(2, "s1".to_string())],
+            "the most recent connection for a subscription wins"
+        );
+    });
+}
+
+#[test]
+fn test_load_by_pubkey_falls_back_to_live_connection() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        let mut registry = WalletRegistry::new(storage, Limits::default());
+
+        registry
+            .subscribe(3, "s1".into(), vec![authors_filter("pk")])
+            .await
+            .unwrap();
+        registry
+            .subscribe(5, "s2".into(), vec![authors_filter("pk")])
+            .await
+            .unwrap();
+        // Drop the persisted index so the in-memory fallback is used.
+        data.lock().unwrap().remove("pk:pk");
+
+        assert_eq!(
+            registry.load_by_pubkey("pk").await,
+            vec![5],
+            "highest connection id must win"
+        );
+        assert!(registry.load_by_pubkey("other").await.is_empty());
+    });
+}
+
+#[test]
+fn test_save_persists_cached_info_event() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let info = crate::common::test_helpers::test_event("info1", "pk", 13194, vec![], 0);
+
+        registry.cache_info(info).await;
+        registry
+            .subscribe(1, "s1".into(), vec![authors_filter("pk")])
+            .await
+            .unwrap();
+
+        let data = data.lock().unwrap();
+        let saved = &data["conn:1"];
+        assert_eq!(saved["info_event"]["id"], "info1");
+    });
+}
+
+#[test]
+fn test_restore_recaches_persisted_info_event() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let shared = storage.data.clone();
+        let info = crate::common::test_helpers::test_event("info1", "pk", 13194, vec![], 0);
+        let mut registry = WalletRegistry::new(storage, Limits::default());
+        registry.cache_info(info).await;
+        registry
+            .subscribe(1, "s1".into(), vec![authors_filter("pk")])
+            .await
+            .unwrap();
+
+        let cold = MockStorage {
+            data: shared,
+            fail_put_batch: false,
+        };
+        let mut hibernated = simulate_hibernation(&cold).await;
+        assert!(hibernated.load(1).await);
+        assert!(
+            hibernated.index.get_info("pk").is_some(),
+            "restore must re-cache the info event in the live index"
+        );
+    });
+}
+
+#[test]
+fn test_load_by_pubkey_prunes_stale_ids() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        // conn 7 exists, conn 99 was terminated without cleaning the index.
+        seed_subscription(&storage, 7, "s1", "pk", vec![authors_filter("pk")]).await;
+        data.lock()
+            .unwrap()
+            .insert("pk:pk".into(), serde_json::json!([7, 99]));
+
+        let mut registry = WalletRegistry::new(storage, Limits::default());
+        assert_eq!(registry.load_by_pubkey("pk").await, vec![7]);
+        assert_eq!(data.lock().unwrap()["pk:pk"], serde_json::json!([7]));
+    });
+}
+
+#[test]
+fn test_on_disconnect_keeps_persisted_state() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let mut registry = WalletRegistry::new(storage, Limits::default());
+        registry
+            .subscribe(1, "s1".into(), vec![authors_filter("pk")])
+            .await
+            .unwrap();
+
+        registry.on_disconnect(1).await;
+
+        assert!(!has_subscription(&registry, 1, "s1"));
+        assert!(registry.load(1).await, "storage must still hold the state");
+        assert!(has_subscription(&registry, 1, "s1"));
+    });
+}
+
+#[test]
+fn test_on_terminate_handles_numeric_pk_index() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        seed_subscription(&storage, 42, "s1", "pk", vec![authors_filter("pk")]).await;
+        data.lock()
+            .unwrap()
+            .insert("pk:pk".into(), serde_json::json!(42));
+
+        let mut registry = WalletRegistry::new(storage, Limits::default());
+        assert!(registry.load(42).await);
+        registry.on_terminate(42).await;
+
+        assert!(!data.lock().unwrap().contains_key("pk:pk"));
+    });
+}
+
+#[test]
+fn test_on_terminate_rewrites_shared_pk_index() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        seed_subscription(&storage, 1, "s1", "pk", vec![authors_filter("pk")]).await;
+        seed_subscription(&storage, 2, "s2", "pk", vec![authors_filter("pk")]).await;
+        data.lock()
+            .unwrap()
+            .insert("pk:pk".into(), serde_json::json!([1, 2]));
+
+        let mut registry = WalletRegistry::new(storage, Limits::default());
+        assert!(registry.load(2).await);
+        registry.on_terminate(2).await;
+
+        assert_eq!(data.lock().unwrap()["pk:pk"], serde_json::json!([1]));
+    });
+}
+
+#[test]
+fn test_on_terminate_ignores_missing_pk_index() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        seed_subscription(&storage, 3, "s1", "ghost", vec![authors_filter("ghost")]).await;
+        // The pk index entry is gone even though the connection state remains.
+        data.lock().unwrap().remove("pk:ghost");
+
+        let mut registry = WalletRegistry::new(storage, Limits::default());
+        assert!(registry.load(3).await);
+        registry.on_terminate(3).await;
+
+        assert!(!data.lock().unwrap().contains_key("conn:3"));
+    });
+}
+
+#[test]
+fn test_get_info_ignores_corrupt_stored_event() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        storage
+            .put_batch(HashMap::from([(
+                "info:pk".to_string(),
+                serde_json::json!("not an event"),
+            )]))
+            .await
+            .unwrap();
+
+        let mut registry = WalletRegistry::new(storage, Limits::default());
+        assert!(registry.get_info("pk").await.is_none());
+    });
+}
+
+#[test]
+fn test_sync_merges_numeric_existing_pk_index() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        data.lock()
+            .unwrap()
+            .insert("pk:pk".into(), serde_json::json!(42));
+
+        let mut registry = WalletRegistry::new(storage, Limits::default());
+        registry
+            .subscribe(9, "s1".into(), vec![authors_filter("pk")])
+            .await
+            .unwrap();
+
+        assert_eq!(data.lock().unwrap()["pk:pk"], serde_json::json!([42, 9]));
+    });
+}
+
+#[test]
+fn test_sync_ignores_unparseable_pk_index() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        data.lock()
+            .unwrap()
+            .insert("pk:pk".into(), serde_json::json!("garbage"));
+
+        let mut registry = WalletRegistry::new(storage, Limits::default());
+        registry
+            .subscribe(9, "s1".into(), vec![authors_filter("pk")])
+            .await
+            .unwrap();
+
+        assert_eq!(data.lock().unwrap()["pk:pk"], serde_json::json!([9]));
     });
 }
