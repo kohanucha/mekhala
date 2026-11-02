@@ -81,7 +81,15 @@ Single-context layout. See `docs/agents/domain.md`.
 - Available to all tests in that file via direct module scope.
 
 ## Coverage Gate
-- Maintain ≥90% line coverage on testable modules (everything outside `cloudflare/`)
-- Run: `cargo llvm-cov --ignore-filename-regex 'cloudflare/' --fail-under-lines 90`
+- Measure **production code only**: test files (`*_test.rs`) and `cloudflare/`
+  are excluded. Test files would otherwise count their own ~99% coverage into
+  the denominator; `cloudflare/` needs a live workerd and is covered by the
+  integration suite instead.
+- Thresholds: **95% lines / 90% regions / 80% functions**
+- Run:
+  ```
+  cargo llvm-cov --locked --ignore-filename-regex '(cloudflare/|_test\.rs$)' \
+    --fail-under-lines 95 --fail-under-regions 90 --fail-under-functions 80
+  ```
 
 > All worker-dependent modules live under `cloudflare/`. The core relay logic (`nostr/*`, `auth.rs`, `lnaddress/*`) has zero `worker` crate dependency and is fully testable.

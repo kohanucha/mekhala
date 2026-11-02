@@ -51,8 +51,14 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
+      # Production code only: `cloudflare/` needs a live workerd (the integration
+      # suite exercises it instead), and `*_test.rs` would otherwise count its
+      # own ~99% coverage into the denominator and mask gaps in the source.
       - name: Coverage gate
-        run: cargo llvm-cov --locked --ignore-filename-regex 'cloudflare/' --fail-under-lines 90
+        run: >-
+          cargo llvm-cov --locked
+          --ignore-filename-regex '(cloudflare/|_test\.rs$)'
+          --fail-under-lines 95 --fail-under-regions 90 --fail-under-functions 80
 
       - name: Install cargo-deny
         uses: taiki-e/install-action@cargo-deny
