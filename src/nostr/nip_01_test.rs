@@ -169,3 +169,99 @@ fn test_relay_message_event_parsing() {
         _ => panic!("Expected EVENT message"),
     }
 }
+
+// Every malformed payload below is reachable from a WebSocket frame, so each
+// one must be rejected with an error rather than panicking.
+
+#[test]
+fn test_partial_client_message_non_string_type() {
+    assert!(PartialClientMessage::from_json(r#"[42,{"id":"abc"}]"#).is_none());
+}
+
+#[test]
+fn test_partial_client_message_event_without_string_id() {
+    assert!(PartialClientMessage::from_json(r#"["EVENT",{"id":42}]"#).is_none());
+}
+
+#[test]
+fn test_client_message_non_string_type() {
+    assert!(ClientMessage::from_json(r#"[42]"#).is_err());
+}
+
+#[test]
+fn test_client_message_event_payload_invalid() {
+    assert!(ClientMessage::from_json(r#"["EVENT",{"kind":1}]"#).is_err());
+}
+
+#[test]
+fn test_client_message_req_non_string_sub_id() {
+    assert!(ClientMessage::from_json(r#"["REQ",42,{}]"#).is_err());
+}
+
+#[test]
+fn test_client_message_req_invalid_filter() {
+    assert!(ClientMessage::from_json(r#"["REQ","sub1",[]]"#).is_err());
+}
+
+#[test]
+fn test_client_message_close_non_string_sub_id() {
+    assert!(ClientMessage::from_json(r#"["CLOSE",42]"#).is_err());
+}
+
+#[test]
+fn test_client_message_below_variant_arity_is_unknown() {
+    for json in [r#"["EVENT"]"#, r#"["REQ","sub1"]"#, r#"["CLOSE"]"#] {
+        let err = ClientMessage::from_json(json).expect_err("short message must be rejected");
+        assert!(err.contains("unknown message type"), "{json}: {err}");
+    }
+}
+
+#[test]
+fn test_relay_message_non_array_payload() {
+    assert!(RelayMessage::from_json("{}").is_err());
+    assert!(RelayMessage::from_json("not json").is_err());
+}
+
+#[test]
+fn test_relay_message_non_string_type() {
+    assert!(RelayMessage::from_json(r#"[42]"#).is_err());
+}
+
+#[test]
+fn test_relay_message_ok_field_types() {
+    assert!(RelayMessage::from_json(r#"["OK",1,true,""]"#).is_err());
+    assert!(RelayMessage::from_json(r#"["OK","id1","yes",""]"#).is_err());
+    assert!(RelayMessage::from_json(r#"["OK","id1",true,42]"#).is_err());
+}
+
+#[test]
+fn test_relay_message_event_field_types() {
+    assert!(RelayMessage::from_json(r#"["EVENT",42,{}]"#).is_err());
+    assert!(RelayMessage::from_json(r#"["EVENT","sub1",{"kind":1}]"#).is_err());
+}
+
+#[test]
+fn test_relay_message_eose_and_notice_field_types() {
+    assert!(RelayMessage::from_json(r#"["EOSE",42]"#).is_err());
+    assert!(RelayMessage::from_json(r#"["NOTICE",42]"#).is_err());
+}
+
+#[test]
+fn test_relay_message_closed_field_types() {
+    assert!(RelayMessage::from_json(r#"["CLOSED",42,"reason"]"#).is_err());
+    assert!(RelayMessage::from_json(r#"["CLOSED","sub1",42]"#).is_err());
+}
+
+#[test]
+fn test_relay_message_below_variant_arity_is_unknown() {
+    for json in [
+        r#"["OK","id1",true]"#,
+        r#"["EVENT","sub1"]"#,
+        r#"["EOSE"]"#,
+        r#"["NOTICE"]"#,
+        r#"["CLOSED","sub1"]"#,
+    ] {
+        let err = RelayMessage::from_json(json).expect_err("short message must be rejected");
+        assert!(err.contains("unknown message type"), "{json}: {err}");
+    }
+}

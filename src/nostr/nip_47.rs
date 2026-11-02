@@ -18,6 +18,12 @@ fn get_shared_secret(secret_key_hex: &str, public_key_hex: &str) -> Result<Vec<u
 
     let public_key_bytes =
         hex::decode(public_key_hex).map_err(|e| RelayError::MalformedHex(e.to_string()))?;
+    // `copy_from_slice` below requires exactly 32 bytes; a URI with a shorter
+    // or longer key must be rejected instead of panicking (panic = "abort"
+    // would take the whole isolate down).
+    let public_key_bytes: [u8; 32] = public_key_bytes
+        .try_into()
+        .map_err(|_| RelayError::MalformedHex("wallet public key must be 32 bytes".into()))?;
     let mut full_pk_bytes = [0u8; 33];
     full_pk_bytes[0] = 0x02;
     full_pk_bytes[1..].copy_from_slice(&public_key_bytes);
@@ -216,8 +222,8 @@ impl NwcClient {
     ///
     /// # Errors
     ///
-    /// Returns [`RelayError::MalformedHex`] for non-hex inputs,
-    /// [`RelayError::Generic`] when the secret is not 32 bytes, and
+    /// Returns [`RelayError::MalformedHex`] for non-hex or wrong-length
+    /// inputs, [`RelayError::Generic`] when the secret is not 32 bytes, and
     /// [`RelayError::CryptoError`] for key agreement failures.
     pub fn new(uri: NwcUri) -> Result<Self> {
         let shared_secret = get_shared_secret(&uri.secret, &uri.wallet_pubkey)?;

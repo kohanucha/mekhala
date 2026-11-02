@@ -206,3 +206,85 @@ fn test_tag_deserialize_non_string_name() {
     let result: Result<Tag, _> = serde_json::from_value(serde_json::json!([42]));
     assert!(result.is_err());
 }
+
+#[test]
+fn test_tag_deserialize_non_array() {
+    let result: Result<Tag, _> = serde_json::from_value(serde_json::json!({"k": "v"}));
+    let err = result.expect_err("object is not a tag");
+    assert!(err.to_string().contains("sequence"), "{err}");
+}
+
+#[test]
+fn test_tag_deserialize_p_without_value() {
+    for json in [serde_json::json!(["p"]), serde_json::json!(["p", 42])] {
+        let result: Result<Tag, _> = serde_json::from_value(json);
+        let err = result.expect_err("p tag needs a string pubkey");
+        assert!(
+            err.to_string().contains("p-tag requires a pubkey value"),
+            "{err}"
+        );
+    }
+}
+
+#[test]
+fn test_tag_deserialize_e_without_value() {
+    for json in [serde_json::json!(["e"]), serde_json::json!(["e", true])] {
+        let result: Result<Tag, _> = serde_json::from_value(json);
+        let err = result.expect_err("e tag needs a string event id");
+        assert!(
+            err.to_string().contains("e-tag requires an event id value"),
+            "{err}"
+        );
+    }
+}
+
+#[test]
+fn test_tag_deserialize_encryption_without_scheme() {
+    for json in [
+        serde_json::json!(["encryption"]),
+        serde_json::json!(["encryption", 44]),
+    ] {
+        let result: Result<Tag, _> = serde_json::from_value(json);
+        let err = result.expect_err("encryption tag needs a scheme");
+        assert!(
+            err.to_string()
+                .contains("encryption-tag requires a scheme value"),
+            "{err}"
+        );
+    }
+}
+
+#[test]
+fn test_tag_deserialize_expiration_without_value() {
+    let result: Result<Tag, _> = serde_json::from_value(serde_json::json!(["expiration"]));
+    let err = result.expect_err("expiration tag needs a timestamp");
+    assert!(
+        err.to_string()
+            .contains("expiration-tag requires a timestamp value"),
+        "{err}"
+    );
+}
+
+#[test]
+fn test_tag_deserialize_expiration_non_numeric_value() {
+    for json in [
+        serde_json::json!(["expiration", true]),
+        serde_json::json!(["expiration", 1.5]),
+        serde_json::json!(["expiration", null]),
+    ] {
+        let result: Result<Tag, _> = serde_json::from_value(json);
+        let err = result.expect_err("expiration must be a number or numeric string");
+        assert!(
+            err.to_string()
+                .contains("must be a number or numeric string"),
+            "{err}"
+        );
+    }
+}
+
+#[test]
+fn test_tag_deserialize_expiration_non_numeric_string() {
+    let result: Result<Tag, _> = serde_json::from_value(serde_json::json!(["expiration", "abc"]));
+    let err = result.expect_err("expiration string must parse as u64");
+    assert!(err.to_string().contains("must be a number"), "{err}");
+}

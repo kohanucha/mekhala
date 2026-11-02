@@ -75,3 +75,15 @@ fn test_rpc_machine_notice_transition() {
         RpcState::Failed("Relay notice: rate limited".into())
     );
 }
+
+#[test]
+fn test_rpc_machine_state_accessor() {
+    let mut machine = NwcRpcMachine::new(mock_event("req1", "pk1"));
+    assert_eq!(machine.state(), &RpcState::Initial);
+
+    machine.start();
+    assert_eq!(machine.state(), &RpcState::AwaitingResponse);
+
+    machine.transition(RelayMessage::Notice("nope".into()));
+    assert!(matches!(machine.state(), RpcState::Failed(_)));
+}

@@ -70,3 +70,28 @@ fn test_create_invoice_invalid_uri() {
     let err = futures::executor::block_on(result).unwrap_err();
     assert!(matches!(err, NwcError::ProtocolError(_)));
 }
+
+#[test]
+fn test_create_invoice_success() {
+    use crate::common::test_helpers::{MockTransport, TEST_NWC_URI, TEST_WALLET_SK};
+    use crate::nostr::nip_47::{EncryptionMethod, NwcClient, NwcUri};
+    use crate::nostr::WalletInfo;
+
+    let uri_obj = NwcUri::from_uri(TEST_NWC_URI).unwrap();
+    let app_client = NwcClient::new(uri_obj).unwrap();
+    let transport = MockTransport {
+        wallet_info: Some(WalletInfo {
+            encryption_algorithms: vec![EncryptionMethod::Nip04],
+        }),
+        wallet_uri: Some(NwcUri {
+            wallet_pubkey: app_client.my_pubkey,
+            secret: TEST_WALLET_SK.into(),
+        }),
+        error_code: None,
+        response_payload: None,
+    };
+
+    let result =
+        futures::executor::block_on(create_invoice(&transport, TEST_NWC_URI, "alice", 1000));
+    assert_eq!(result.unwrap(), "lnbc1test");
+}

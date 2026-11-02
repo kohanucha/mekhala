@@ -309,22 +309,10 @@ impl<S: Storage> NostrEngine<S> {
         }
 
         if let Some(limit) = global_limit {
-            let event_count = responses
-                .iter()
-                .filter(|r| {
-                    matches!(
-                        r,
-                        EngineResponse::Send {
-                            message: RelayMessage::Event(..),
-                            ..
-                        }
-                    )
-                })
-                .count();
-            if event_count >= limit as usize {
-                responses.push(EngineResponse::send(id, RelayMessage::Eose(sub_id)));
-                return responses;
-            }
+            // NIP-01 `limit`: replay at most this many cached info events.
+            // `responses` only holds those events at this point.
+            let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+            responses.truncate(limit);
         }
 
         responses.push(EngineResponse::send(id, RelayMessage::Eose(sub_id)));
