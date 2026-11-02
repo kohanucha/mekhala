@@ -775,3 +775,408 @@ fn test_kind_5_deletion_no_tags() {
         assert!(engine.get_wallet_info("alice").await.is_none());
     });
 }
+
+use k256::schnorr::{signature::hazmat::PrehashSigner, SigningKey};
+
+fn wallet_sk() -> SigningKey {
+    let bytes = hex::decode(crate::common::test_helpers::TEST_WALLET_SK).unwrap();
+    let arr: [u8; 32] = bytes.try_into().unwrap();
+    SigningKey::from_slice(&arr).unwrap()
+}
+
+fn signed_event(sk: &SigningKey, kind: u64, tags: Vec<Tag>, content: &str) -> Event {
+    let pk = crate::common::test_helpers::TEST_WALLET_PK;
+    let created_at = test_now();
+    let (id, id_bytes) = Event::compute_id(pk, created_at, kind, &tags, content).unwrap();
+    let sig = hex::encode(sk.sign_prehash(&id_bytes).unwrap().to_bytes());
+    Event {
+        id,
+        pubkey: pk.into(),
+        created_at,
+        kind,
+        tags,
+        content: content.into(),
+        sig,
+    }
+}
+
+fn ok_response(responses: &[EngineResponse]) -> (bool, String) {
+    responses
+        .iter()
+        .find_map(|r| match r {
+            EngineResponse::Send {
+                message: RelayMessage::Ok(_, success, msg),
+                ..
+            } => Some((*success, msg.clone())),
+            _ => None,
+        })
+        .expect("expected an OK response")
+}
+
+#[test]
+fn test_handle_typed_caches_info_event() {
+    futures::executor::block_on(async {
+        set_test_time(crate::util::now());
+        let mut engine = new_test_engine();
+        engine.on_connect(1).await;
+
+        let event = signed_event(&wallet_sk(), 13194, vec![Tag::encryption("nip44_v2")], "{}");
+        let responses = engine
+            .handle_typed(1, ClientMessage::Event(event))
+            .await;
+
+        assert!(ok_response(&responses).0);
+        let info = engine
+            .get_wallet_info(crate::common::test_helpers::TEST_WALLET_PK)
+            .await
+            .expect("info event must be cached");
+        assert_eq!(
+            info.encryption_algorithms,
+            vec![super::super::nip_47::EncryptionMethod::Nip44]
+        );
+    });
+}
+
+#[test]
+fn test_handle_typed_deletion_removes_cached_info() {
+    futures::executor::block_on(async {
+        set_test_time(crate::util::now());
+        let mut engine = new_test_engine();
+        engine.on_connect(1).await;
+        let sk = wallet_sk();
+        let pk = crate::common::test_helpers::TEST_WALLET_PK;
+
+        let info = signed_event(&sk, 13194, vec![], "{}");
+        engine.process_info_event(info.clone()).await;
+        assert!(engine.get_wallet_info(pk).await.is_some());
+
+        let deletion = signed_event(&sk, 5, vec![Tag::E(info.id, vec![])], "");
+        let responses = engine
+            .handle_typed(1, ClientMessage::Event(deletion))
+            .await;
+
+        assert!(ok_response(&responses).0);
+        assert!(engine.get_wallet_info(pk).await.is_none());
+    });
+}
+
+#[test]
+fn test_handle_typed_blocks_disallowed_kind() {
+    futures::executor::block_on(async {
+        set_test_time(crate::util::now());
+        let mut engine = new_test_engine();
+        engine.on_connect(1).await;
+
+        // A correctly signed kind 1 event is still rejected by the allow list.
+        let event = signed_event(&wallet_sk(), 1, vec![], "text");
+        let responses = engine
+            .handle_typed(1, ClientMessage::Event(event))
+            .await;
+        let (success, msg) = ok_response(&responses);
+        assert!(!success);
+        assert!(msg.contains("kind not allowed"), "{msg}");
+
+        // A disallowed kind with a broken signature still reports the kind
+        // rejection, because the kind check runs before verification.
+        let mut broken = signed_event(&wallet_sk(), 1, vec![], "text");
+        broken.id = "tampered".into();
+        let responses = engine
+            .handle_typed(1, ClientMessage::Event(broken))
+            .await;
+        let (success, msg) = ok_response(&responses);
+        assert!(!success);
+        assert!(msg.contains("kind not allowed"), "{msg}");
+    });
+}
+
+#[test]
+fn test_route_verified_event_deletion_removes_cached_info() {
+    futures::executor::block_on(async {
+        set_test_time(crate::util::now());
+        let mut engine = new_test_engine();
+        engine.on_connect(1).await;
+        let sk = wallet_sk();
+        let pk = crate::common::test_helpers::TEST_WALLET_PK;
+
+        let info = signed_event(&sk, 13194, vec![], "{}");
+        engine.process_info_event(info.clone()).await;
+
+        let deletion = signed_event(&sk, 5, vec![Tag::E(info.id, vec![])], "");
+        let responses = engine.route_verified_event(1, deletion).await;
+
+        assert!(!responses
+            .iter()
+            .any(|r| matches!(r, EngineResponse::Send { message: RelayMessage::Ok(..), .. })));
+        assert!(engine.get_wallet_info(pk).await.is_none());
+    });
+}
+
+#[test]
+fn test_validate_event_accepts_nwc_kinds() {
+    set_test_time(crate::util::now());
+    let engine = new_test_engine();
+    let sk = wallet_sk();
+
+    for kind in [23194u64, 23195, 23196, 23197] {
+        let tags = match kind {
+            23195 => vec![Tag::p("recipient"), Tag::E("event".into(), vec![])],
+            23196 | 23197 => vec![Tag::p("recipient")],
+            _ => vec![],
+        };
+        let event = signed_event(&sk, kind, tags, "");
+        assert_eq!(engine.validate_event(&event), Ok(()), "kind {kind}");
+    }
+}
+
+#[test]
+fn test_route_verified_event_delivers_to_subscriber() {
+    futures::executor::block_on(async {
+        set_test_time(crate::util::now());
+        let mut engine = new_test_engine();
+        engine.on_connect(1).await;
+        engine.on_connect(2).await;
+        let pk = crate::common::test_helpers::TEST_WALLET_PK;
+
+        let responses = engine
+            .handle_typed(
+                2,
+                ClientMessage::Req(
+                    "sub1".into(),
+                    vec![Filter {
+                        kinds: Some(vec![23194]),
+                        authors: Some(vec![pk.into()]),
+                        ..Default::default()
+                    }],
+                ),
+            )
+            .await;
+        assert!(responses
+            .iter()
+            .any(|r| matches!(r, EngineResponse::Send { message: RelayMessage::Eose(_), .. })));
+
+        let event = signed_event(&wallet_sk(), 23194, vec![], "payload");
+        let event_id = event.id.clone();
+        let responses = engine.route_verified_event(1, event).await;
+
+        assert!(
+            responses.iter().any(|r| matches!(
+                r,
+                EngineResponse::Send {
+                    recipient_id: 2,
+                    message: RelayMessage::Event(sub_id, e),
+                } if sub_id == "sub1" && e.id == event_id
+            )),
+            "subscriber must receive the event: {responses:?}"
+        );
+    });
+}
+
+#[test]
+fn test_route_verified_event_wakes_hibernated_subscriber() {
+    futures::executor::block_on(async {
+        set_test_time(crate::util::now());
+        let storage = MockStorage::new();
+        crate::common::test_helpers::seed_subscription(
+            &storage,
+            42,
+            "sub1",
+            crate::common::test_helpers::TEST_WALLET_PK,
+            vec![Filter {
+                kinds: Some(vec![23194]),
+                authors: Some(vec![crate::common::test_helpers::TEST_WALLET_PK.into()]),
+                ..Default::default()
+            }],
+        )
+        .await;
+        let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
+
+        let event = signed_event(&wallet_sk(), 23194, vec![], "payload");
+        let responses = engine.route_verified_event(1, event).await;
+
+        assert!(responses
+            .iter()
+            .any(|r| matches!(r, EngineResponse::WakeUp { connection_id: 42 })));
+    });
+}
+
+#[test]
+fn test_process_req_replays_cached_info() {
+    futures::executor::block_on(async {
+        let mut engine = new_test_engine();
+        let pk = crate::common::test_helpers::TEST_WALLET_PK;
+
+        let info = Event {
+            id: "info1".into(),
+            pubkey: pk.into(),
+            created_at: test_now(),
+            kind: 13194,
+            tags: vec![],
+            content: String::new(),
+            sig: "sig".into(),
+        };
+        engine.process_info_event(info.clone()).await;
+
+        let responses = engine
+            .process_req(
+                1,
+                "sub1".into(),
+                vec![Filter {
+                    kinds: Some(vec![13194]),
+                    authors: Some(vec![pk.into()]),
+                    ..Default::default()
+                }],
+            )
+            .await;
+
+        let event_count = responses
+            .iter()
+            .filter(|r| matches!(r, EngineResponse::Send { message: RelayMessage::Event(..), .. }))
+            .count();
+        assert_eq!(event_count, 1, "cached info must be replayed: {responses:?}");
+        assert!(matches!(
+            responses.last(),
+            Some(EngineResponse::Send { message: RelayMessage::Eose(sub), .. }) if sub == "sub1"
+        ));
+    });
+}
+
+#[test]
+fn test_engine_on_disconnect_keeps_persisted_state() {
+    futures::executor::block_on(async {
+        let mut engine = new_test_engine();
+        engine.on_connect(7).await;
+        let _ = engine
+            .process_req(
+                7,
+                "sub1".into(),
+                vec![Filter {
+                    authors: Some(vec!["alice".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await;
+
+        let responses = engine.on_disconnect(7).await;
+        assert!(responses.is_empty());
+
+        // The live index is gone, but the subscription is still in storage.
+        assert!(engine.load(7).await);
+    });
+}
+
+#[test]
+fn test_engine_add_connection_and_load() {
+    futures::executor::block_on(async {
+        let mut engine = new_test_engine();
+        let mut subs = HashMap::new();
+        subs.insert(
+            "sub1".to_string(),
+            vec![Filter {
+                authors: Some(vec!["alice".into()]),
+                ..Default::default()
+            }],
+        );
+
+        engine.add_connection(9, subs).await;
+        assert!(engine.load(9).await);
+
+        let responses = engine
+            .process_event(
+                1,
+                Event {
+                    id: "e1".into(),
+                    pubkey: "alice".into(),
+                    created_at: test_now(),
+                    kind: 23194,
+                    tags: vec![],
+                    content: String::new(),
+                    sig: "sig".into(),
+                },
+            )
+            .await;
+        assert!(responses
+            .iter()
+            .any(|r| matches!(r, EngineResponse::Send { recipient_id: 9, .. })));
+    });
+}
+
+#[test]
+fn test_engine_load_by_pubkey() {
+    futures::executor::block_on(async {
+        let mut engine = new_test_engine();
+        engine.on_connect(5).await;
+        let _ = engine
+            .process_req(
+                5,
+                "sub1".into(),
+                vec![Filter {
+                    p_tags: Some(vec!["wallet_pk".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await;
+
+        assert_eq!(engine.load_by_pubkey("wallet_pk").await, vec![5]);
+        assert!(engine.load_by_pubkey("unknown_pk").await.is_empty());
+    });
+}
+
+#[test]
+fn test_kind_5_deletion_with_unknown_e_tag() {
+    futures::executor::block_on(async {
+        let mut engine = new_test_engine();
+        let info = Event {
+            id: "info1".into(),
+            pubkey: "alice".into(),
+            created_at: test_now(),
+            kind: 13194,
+            tags: vec![],
+            content: String::new(),
+            sig: "sig".into(),
+        };
+        engine.process_info_event(info).await;
+
+        let deletion = Event {
+            id: "del1".into(),
+            pubkey: "alice".into(),
+            created_at: test_now(),
+            kind: 5,
+            tags: vec![Tag::E("unknown_event".into(), vec![])],
+            content: String::new(),
+            sig: "sig".into(),
+        };
+        engine.process_deletion_event(&deletion).await;
+
+        assert!(engine.get_wallet_info("alice").await.is_some());
+    });
+}
+
+#[test]
+fn test_kind_5_deletion_with_unrelated_k_tag() {
+    futures::executor::block_on(async {
+        let mut engine = new_test_engine();
+        let info = Event {
+            id: "info1".into(),
+            pubkey: "alice".into(),
+            created_at: test_now(),
+            kind: 13194,
+            tags: vec![],
+            content: String::new(),
+            sig: "sig".into(),
+        };
+        engine.process_info_event(info).await;
+
+        let deletion = Event {
+            id: "del1".into(),
+            pubkey: "alice".into(),
+            created_at: test_now(),
+            kind: 5,
+            tags: vec![Tag::Other("k".into(), vec![serde_json::json!("23194")])],
+            content: String::new(),
+            sig: "sig".into(),
+        };
+        engine.process_deletion_event(&deletion).await;
+
+        assert!(engine.get_wallet_info("alice").await.is_some());
+    });
+}
