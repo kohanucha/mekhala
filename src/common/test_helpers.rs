@@ -140,6 +140,9 @@ pub struct MockTransport {
     pub wallet_info: Option<WalletInfo>,
     pub wallet_uri: Option<NwcUri>,
     pub error_code: Option<String>,
+    /// Overrides the encrypted response payload. When `None`, a successful
+    /// `make_invoice` result is returned (or `error_code` when set).
+    pub response_payload: Option<serde_json::Value>,
 }
 
 impl MockTransport {
@@ -148,6 +151,7 @@ impl MockTransport {
             wallet_info: None,
             wallet_uri: None,
             error_code: None,
+            response_payload: None,
         }
     }
 }
@@ -185,6 +189,8 @@ impl NwcTransport for MockTransport {
                     "message": "insufficient balance"
                 }
             })
+        } else if let Some(ref payload) = self.response_payload {
+            payload.clone()
         } else {
             serde_json::json!({
                 "result": {

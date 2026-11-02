@@ -175,3 +175,241 @@ fn test_parse_wallet_info_no_encryption_tag_defaults_nip04() {
     let info = parse_wallet_info(&event);
     assert_eq!(info.encryption_algorithms, vec![EncryptionMethod::Nip04]);
 }
+
+fn wallet_signing_key() -> SigningKey {
+    let sk_bytes = hex::decode(TEST_WALLET_SK).unwrap();
+    let sk_arr: [u8; 32] = sk_bytes.try_into().unwrap();
+    SigningKey::from_slice(&sk_arr).unwrap()
+}
+
+/// A second, deterministic keypair used to produce events that are correctly
+/// signed but by the wrong identity.
+fn other_signing_key() -> SigningKey {
+    SigningKey::from_slice(&[2u8; 32]).unwrap()
+}
+
+fn signed_event(pubkey: &str, sk: &SigningKey, kind: u64, tags: Vec<Tag>, content: &str) -> Event {
+    let created_at = crate::util::now();
+    let (id, id_bytes) = Event::compute_id(pubkey, created_at, kind, &tags, content).unwrap();
+    let sig = hex::encode(sk.sign_prehash(&id_bytes).unwrap().to_bytes());
+    Event {
+        id,
+        pubkey: pubkey.into(),
+        created_at,
+        kind,
+        tags,
+        content: content.into(),
+        sig,
+    }
+}
+
+#[test]
+fn test_nwc_client_new_rejects_non_hex_secret() {
+    let uri = NwcUri {
+        wallet_pubkey: TEST_WALLET_PK.into(),
+        secret: "zz".into(),
+    };
+    let err = NwcClient::new(uri).err().expect("non-hex secret must fail");
+    assert!(matches!(err, RelayError::MalformedHex(_)), "{err}");
+}
+
+#[test]
+fn test_nwc_client_new_rejects_short_secret() {
+    let uri = NwcUri {
+        wallet_pubkey: TEST_WALLET_PK.into(),
+        secret: "00".into(),
+    };
+    let err = NwcClient::new(uri).err().expect("short secret must fail");
+    assert!(matches!(err, RelayError::CryptoError(_)), "{err}");
+}
+
+#[test]
+fn test_nwc_client_new_rejects_non_hex_wallet_pubkey() {
+    let uri = NwcUri {
+        wallet_pubkey: "zz".into(),
+        secret: TEST_WALLET_SK.into(),
+    };
+    let err = NwcClient::new(uri).err().expect("non-hex pubkey must fail");
+    assert!(matches!(err, RelayError::MalformedHex(_)), "{err}");
+}
+
+#[test]
+fn test_nwc_client_new_rejects_wrong_length_wallet_pubkey() {
+    // A 31-byte key is valid hex but cannot be a secp256k1 x-only public key.
+    let uri = NwcUri {
+        wallet_pubkey: "11".repeat(31),
+        secret: TEST_WALLET_SK.into(),
+    };
+    let err = NwcClient::new(uri).err().expect("short pubkey must fail");
+    assert!(err.to_string().contains("32 bytes"), "{err}");
+}
+
+#[test]
+fn test_nwc_client_new_rejects_invalid_wallet_pubkey_point() {
+    // 32 bytes, but x = 0 is not on the curve.
+    let uri = NwcUri {
+        wallet_pubkey: "00".repeat(32),
+        secret: TEST_WALLET_SK.into(),
+    };
+    let err = NwcClient::new(uri)
+        .err()
+        .expect("off-curve pubkey must fail");
+    assert!(matches!(err, RelayError::CryptoError(_)), "{err}");
+}
+
+#[test]
+fn test_parse_wallet_info_deduplicates_schemes() {
+    let event = Event {
+        id: "id1".into(),
+        pubkey: "pk1".into(),
+        created_at: 1000,
+        kind: 13194,
+        tags: vec![
+            Tag::encryption("nip44_v2 nip44_v2 nip04"),
+            Tag::encryption("nip04"),
+        ],
+        content: String::new(),
+        sig: "sig".into(),
+    };
+    let info = parse_wallet_info(&event);
+    assert_eq!(
+        info.encryption_algorithms,
+        vec![EncryptionMethod::Nip44, EncryptionMethod::Nip04]
+    );
+}
+
+#[test]
+fn test_parse_wallet_info_skips_unknown_schemes() {
+    let event = Event {
+        id: "id1".into(),
+        pubkey: "pk1".into(),
+        created_at: 1000,
+        kind: 13194,
+        tags: vec![Tag::encryption("nip04 future_scheme")],
+        content: String::new(),
+        sig: "sig".into(),
+    };
+    let info = parse_wallet_info(&event);
+    assert_eq!(info.encryption_algorithms, vec![EncryptionMethod::Nip04]);
+}
+
+#[test]
+fn test_create_request_event_carries_expiration_and_encryption() {
+    let nwc_uri = NwcUri::from_uri(TEST_NWC_URI).unwrap();
+    let client = NwcClient::new(nwc_uri).unwrap();
+    let (event, request_id) = client
+        .create_request_event(NwcMethod::MakeInvoice, serde_json::json!({}), vec![])
+        .unwrap();
+
+    assert_eq!(event.id, request_id);
+    assert!(event.tags.iter().any(|t| t.pubkey().is_some()));
+    assert!(event.tags.iter().any(|t| matches!(t, Tag::Expiration(_))));
+    assert_eq!(
+        event.tags.iter().find_map(Tag::encryption_scheme),
+        Some("nip04")
+    );
+}
+
+#[test]
+fn test_parse_response_event_rejects_pubkey_mismatch() {
+    let nwc_uri = NwcUri::from_uri(TEST_NWC_URI).unwrap();
+    let client = NwcClient::new(nwc_uri).unwrap();
+    let content = client.encrypt(&serde_json::json!({"result": {}})).unwrap();
+    // Validly signed, but by an identity other than the wallet's.
+    let other_sk = other_signing_key();
+    let other_pk = hex::encode(other_sk.verifying_key().to_bytes());
+    let event = signed_event(
+        &other_pk,
+        &other_sk,
+        23194,
+        vec![Tag::E("request_id".into(), vec![])],
+        &content,
+    );
+
+    match client.parse_response_event(&event, "request_id") {
+        Err(RelayError::Generic(msg)) => assert!(msg.contains("pubkey mismatch"), "{msg}"),
+        other => panic!("expected Generic(pubkey mismatch), got {other:?}"),
+    }
+}
+
+#[test]
+fn test_parse_response_event_rejects_missing_e_tag() {
+    let nwc_uri = NwcUri::from_uri(TEST_NWC_URI).unwrap();
+    let client = NwcClient::new(nwc_uri).unwrap();
+    let content = client.encrypt(&serde_json::json!({"result": {}})).unwrap();
+    // Kind 23197 only requires a `p` tag, so verification passes and the
+    // missing `e` tag is the branch under test.
+    let event = signed_event(
+        &client.wallet_pubkey,
+        &wallet_signing_key(),
+        23197,
+        vec![Tag::p(&client.my_pubkey)],
+        &content,
+    );
+
+    match client.parse_response_event(&event, "request_id") {
+        Err(RelayError::Generic(msg)) => assert!(msg.contains("missing 'e' tag"), "{msg}"),
+        other => panic!("expected Generic(missing e tag), got {other:?}"),
+    }
+}
+
+#[test]
+fn test_parse_response_event_rejects_bad_signature() {
+    let nwc_uri = NwcUri::from_uri(TEST_NWC_URI).unwrap();
+    let client = NwcClient::new(nwc_uri).unwrap();
+    let content = client.encrypt(&serde_json::json!({"result": {}})).unwrap();
+    // Correct pubkey and id, but the signature belongs to another key, so it
+    // parses as a signature yet fails verification.
+    let event = signed_event(
+        &client.wallet_pubkey,
+        &other_signing_key(),
+        23194,
+        vec![Tag::E("request_id".into(), vec![])],
+        &content,
+    );
+
+    match client.parse_response_event(&event, "request_id") {
+        Err(RelayError::InvalidSignature) => {}
+        other => panic!("expected InvalidSignature, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_parse_response_event_rejects_undecryptable_content() {
+    let nwc_uri = NwcUri::from_uri(TEST_NWC_URI).unwrap();
+    let client = NwcClient::new(nwc_uri).unwrap();
+    let event = signed_event(
+        &client.wallet_pubkey,
+        &wallet_signing_key(),
+        23194,
+        vec![Tag::E("request_id".into(), vec![])],
+        "not-a-nip04-payload",
+    );
+
+    let err = client
+        .parse_response_event(&event, "request_id")
+        .expect_err("garbage content must not decrypt");
+    assert!(matches!(err, RelayError::Generic(_)), "{err}");
+}
+
+#[test]
+fn test_parse_response_event_rejects_non_json_payload() {
+    let nwc_uri = NwcUri::from_uri(TEST_NWC_URI).unwrap();
+    let client = NwcClient::new(nwc_uri).unwrap();
+    // Encrypt a raw non-JSON body, which `NwcClient::encrypt` cannot produce
+    // because it always serializes a `Value` first.
+    let content =
+        crate::nostr::nip_04::encrypt_nip04(&client.shared_secret, "not json at all").unwrap();
+    let event = signed_event(
+        &client.wallet_pubkey,
+        &wallet_signing_key(),
+        23194,
+        vec![Tag::E("request_id".into(), vec![])],
+        &content,
+    );
+
+    let err = client
+        .parse_response_event(&event, "request_id")
+        .expect_err("non-JSON body must be rejected");
+    assert!(matches!(err, RelayError::SerializationError(_)), "{err}");
+}

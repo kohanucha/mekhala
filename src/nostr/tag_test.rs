@@ -219,7 +219,10 @@ fn test_tag_deserialize_p_without_value() {
     for json in [serde_json::json!(["p"]), serde_json::json!(["p", 42])] {
         let result: Result<Tag, _> = serde_json::from_value(json);
         let err = result.expect_err("p tag needs a string pubkey");
-        assert!(err.to_string().contains("p-tag requires a pubkey value"), "{err}");
+        assert!(
+            err.to_string().contains("p-tag requires a pubkey value"),
+            "{err}"
+        );
     }
 }
 

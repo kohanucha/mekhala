@@ -158,3 +158,48 @@ fn test_nip44_unpad_invalid_length() {
         "error: Invalid padding length"
     );
 }
+
+#[test]
+fn test_nip44_non_utf8_plaintext() {
+    // Build a well-formed payload (valid MAC, valid padding) whose content is
+    // not UTF-8: decryption must report Utf8Error rather than panicking.
+    let shared_secret = [42u8; 32];
+    let nonce = [9u8; 32];
+    let conversation_key = derive_conversation_key(&shared_secret);
+    let (chacha_key, chacha_nonce, hmac_key) =
+        derive_message_keys(&conversation_key, &nonce).unwrap();
+
+    let mut padded = vec![0u8; 32];
+    padded[0] = 0x00;
+    padded[1] = 0x03;
+    padded[2..5].copy_from_slice(&[0xff, 0xfe, 0xfd]);
+
+    let mut ciphertext = padded;
+    let mut cipher = ChaCha20::new_from_slices(&chacha_key, &chacha_nonce).unwrap();
+    cipher.apply_keystream(&mut ciphertext);
+
+    let mut hmac = Hmac::<Sha256>::new_from_slice(&hmac_key).unwrap();
+    hmac.update(&nonce);
+    hmac.update(&ciphertext);
+    let mac = hmac.finalize().into_bytes();
+
+    let mut payload = vec![0x02];
+    payload.extend_from_slice(&nonce);
+    payload.extend_from_slice(&ciphertext);
+    payload.extend_from_slice(&mac);
+    let encrypted = general_purpose::STANDARD.encode(&payload);
+
+    match decrypt_nip44(&shared_secret, &encrypted) {
+        Err(RelayError::Utf8Error(msg)) => assert!(!msg.is_empty()),
+        other => panic!("expected Utf8Error, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_nip44_invalid_base64() {
+    let result = decrypt_nip44(&[1u8; 32], "not base64!!");
+    assert!(
+        matches!(result, Err(RelayError::Base64Error(_))),
+        "{result:?}"
+    );
+}
