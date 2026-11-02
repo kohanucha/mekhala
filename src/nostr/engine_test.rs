@@ -821,9 +821,7 @@ fn test_handle_typed_caches_info_event() {
         engine.on_connect(1).await;
 
         let event = signed_event(&wallet_sk(), 13194, vec![Tag::encryption("nip44_v2")], "{}");
-        let responses = engine
-            .handle_typed(1, ClientMessage::Event(event))
-            .await;
+        let responses = engine.handle_typed(1, ClientMessage::Event(event)).await;
 
         assert!(ok_response(&responses).0);
         let info = engine
@@ -851,9 +849,7 @@ fn test_handle_typed_deletion_removes_cached_info() {
         assert!(engine.get_wallet_info(pk).await.is_some());
 
         let deletion = signed_event(&sk, 5, vec![Tag::E(info.id, vec![])], "");
-        let responses = engine
-            .handle_typed(1, ClientMessage::Event(deletion))
-            .await;
+        let responses = engine.handle_typed(1, ClientMessage::Event(deletion)).await;
 
         assert!(ok_response(&responses).0);
         assert!(engine.get_wallet_info(pk).await.is_none());
@@ -869,9 +865,7 @@ fn test_handle_typed_blocks_disallowed_kind() {
 
         // A correctly signed kind 1 event is still rejected by the allow list.
         let event = signed_event(&wallet_sk(), 1, vec![], "text");
-        let responses = engine
-            .handle_typed(1, ClientMessage::Event(event))
-            .await;
+        let responses = engine.handle_typed(1, ClientMessage::Event(event)).await;
         let (success, msg) = ok_response(&responses);
         assert!(!success);
         assert!(msg.contains("kind not allowed"), "{msg}");
@@ -880,9 +874,7 @@ fn test_handle_typed_blocks_disallowed_kind() {
         // rejection, because the kind check runs before verification.
         let mut broken = signed_event(&wallet_sk(), 1, vec![], "text");
         broken.id = "tampered".into();
-        let responses = engine
-            .handle_typed(1, ClientMessage::Event(broken))
-            .await;
+        let responses = engine.handle_typed(1, ClientMessage::Event(broken)).await;
         let (success, msg) = ok_response(&responses);
         assert!(!success);
         assert!(msg.contains("kind not allowed"), "{msg}");
@@ -904,9 +896,13 @@ fn test_route_verified_event_deletion_removes_cached_info() {
         let deletion = signed_event(&sk, 5, vec![Tag::E(info.id, vec![])], "");
         let responses = engine.route_verified_event(1, deletion).await;
 
-        assert!(!responses
-            .iter()
-            .any(|r| matches!(r, EngineResponse::Send { message: RelayMessage::Ok(..), .. })));
+        assert!(!responses.iter().any(|r| matches!(
+            r,
+            EngineResponse::Send {
+                message: RelayMessage::Ok(..),
+                ..
+            }
+        )));
         assert!(engine.get_wallet_info(pk).await.is_none());
     });
 }
@@ -950,9 +946,13 @@ fn test_route_verified_event_delivers_to_subscriber() {
                 ),
             )
             .await;
-        assert!(responses
-            .iter()
-            .any(|r| matches!(r, EngineResponse::Send { message: RelayMessage::Eose(_), .. })));
+        assert!(responses.iter().any(|r| matches!(
+            r,
+            EngineResponse::Send {
+                message: RelayMessage::Eose(_),
+                ..
+            }
+        )));
 
         let event = signed_event(&wallet_sk(), 23194, vec![], "payload");
         let event_id = event.id.clone();
@@ -1030,12 +1030,76 @@ fn test_process_req_replays_cached_info() {
 
         let event_count = responses
             .iter()
-            .filter(|r| matches!(r, EngineResponse::Send { message: RelayMessage::Event(..), .. }))
+            .filter(|r| {
+                matches!(
+                    r,
+                    EngineResponse::Send {
+                        message: RelayMessage::Event(..),
+                        ..
+                    }
+                )
+            })
             .count();
-        assert_eq!(event_count, 1, "cached info must be replayed: {responses:?}");
+        assert_eq!(
+            event_count, 1,
+            "cached info must be replayed: {responses:?}"
+        );
         assert!(matches!(
             responses.last(),
             Some(EngineResponse::Send { message: RelayMessage::Eose(sub), .. }) if sub == "sub1"
+        ));
+    });
+}
+
+#[test]
+fn test_process_req_limit_stops_after_cached_info() {
+    futures::executor::block_on(async {
+        let mut engine = new_test_engine();
+        for (i, pk) in ["pk1", "pk2"].iter().enumerate() {
+            let info = Event {
+                id: format!("info{i}"),
+                pubkey: (*pk).into(),
+                created_at: test_now(),
+                kind: 13194,
+                tags: vec![],
+                content: String::new(),
+                sig: "sig".into(),
+            };
+            engine.process_info_event(info).await;
+        }
+
+        let responses = engine
+            .process_req(
+                1,
+                "sub1".into(),
+                vec![Filter {
+                    kinds: Some(vec![13194]),
+                    authors: Some(vec!["pk1".into(), "pk2".into()]),
+                    limit: Some(1),
+                    ..Default::default()
+                }],
+            )
+            .await;
+
+        let events = responses
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r,
+                    EngineResponse::Send {
+                        message: RelayMessage::Event(..),
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(events, 1, "limit must cap replayed info events");
+        assert!(matches!(
+            responses.last(),
+            Some(EngineResponse::Send {
+                message: RelayMessage::Eose(_),
+                ..
+            })
         ));
     });
 }
@@ -1094,9 +1158,13 @@ fn test_engine_add_connection_and_load() {
                 },
             )
             .await;
-        assert!(responses
-            .iter()
-            .any(|r| matches!(r, EngineResponse::Send { recipient_id: 9, .. })));
+        assert!(responses.iter().any(|r| matches!(
+            r,
+            EngineResponse::Send {
+                recipient_id: 9,
+                ..
+            }
+        )));
     });
 }
 
