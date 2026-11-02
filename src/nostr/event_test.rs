@@ -215,3 +215,103 @@ fn test_verify_valid_signature() {
     let result = event.verify(1700000000, &Limits::default());
     assert_eq!(result, Ok(()));
 }
+
+#[test]
+fn test_verify_created_at_too_old() {
+    let now = 1_700_000_000;
+    let event = Event {
+        id: "id_old".into(),
+        pubkey: "pk1".into(),
+        created_at: now,
+        kind: 13194,
+        tags: vec![],
+        content: String::new(),
+        sig: "sig".into(),
+    };
+    // One second past the one-year window.
+    let result = event.verify(now + 31_536_001, &Limits::default());
+    assert_eq!(
+        result,
+        Err(RelayError::TimestampTooFar(
+            "event creation date is too old".into()
+        ))
+    );
+}
+
+#[test]
+fn test_verify_pubkey_not_hex() {
+    // Compute the id over the same pubkey string so the id check passes and
+    // verification reaches the hex decoding step.
+    let (id, _) = Event::compute_id("not-hex", 1_700_000_000, 13194, &[], "").unwrap();
+    let event = Event {
+        id,
+        pubkey: "not-hex".into(),
+        created_at: 1_700_000_000,
+        kind: 13194,
+        tags: vec![],
+        content: String::new(),
+        sig: "00".repeat(64),
+    };
+    match event.verify(1_700_000_000, &Limits::default()) {
+        Err(RelayError::MalformedHex(msg)) => assert!(!msg.is_empty()),
+        other => panic!("expected MalformedHex, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_verify_sig_not_hex() {
+    let id_pk = crate::common::test_helpers::TEST_WALLET_PK;
+    let (id, _) = Event::compute_id(id_pk, 1_700_000_000, 13194, &[], "").unwrap();
+    let event = Event {
+        id,
+        pubkey: id_pk.into(),
+        created_at: 1_700_000_000,
+        kind: 13194,
+        tags: vec![],
+        content: String::new(),
+        sig: "zz".into(),
+    };
+    match event.verify(1_700_000_000, &Limits::default()) {
+        Err(RelayError::MalformedHex(msg)) => assert!(!msg.is_empty()),
+        other => panic!("expected MalformedHex, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_verify_pubkey_wrong_length() {
+    // 31 bytes instead of the 32-byte x-only key.
+    let short_pk = "11".repeat(31);
+    let (id, _) = Event::compute_id(&short_pk, 1_700_000_000, 13194, &[], "").unwrap();
+    let event = Event {
+        id,
+        pubkey: short_pk,
+        created_at: 1_700_000_000,
+        kind: 13194,
+        tags: vec![],
+        content: String::new(),
+        sig: "00".repeat(64),
+    };
+    match event.verify(1_700_000_000, &Limits::default()) {
+        Err(RelayError::MalformedHex(msg)) => assert_eq!(msg, "public key format"),
+        other => panic!("expected MalformedHex(\"public key format\"), got {other:?}"),
+    }
+}
+
+#[test]
+fn test_verify_signature_wrong_length() {
+    let pk = crate::common::test_helpers::TEST_WALLET_PK;
+    let (id, _) = Event::compute_id(pk, 1_700_000_000, 13194, &[], "").unwrap();
+    let event = Event {
+        id,
+        pubkey: pk.into(),
+        created_at: 1_700_000_000,
+        kind: 13194,
+        tags: vec![],
+        content: String::new(),
+        sig: "00".repeat(63),
+    };
+    match event.verify(1_700_000_000, &Limits::default()) {
+        Err(RelayError::MalformedHex(msg)) => assert_eq!(msg, "signature format"),
+        other => panic!("expected MalformedHex(\"signature format\"), got {other:?}"),
+    }
+}
