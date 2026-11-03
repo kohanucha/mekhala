@@ -320,10 +320,12 @@ fn test_filter_is_valid_with_ids_only() {
 
 #[test]
 fn test_filter_is_valid_rejects_empty_kinds_without_narrowing() {
-    // An empty kinds list must not count as "kinds present": with no other
-    // narrowing the filter would scan the whole event space.
+    // An empty kinds list must not count as "kinds present", even when the
+    // filter is narrowed by authors: accepting it would subscribe to every
+    // allowed kind for those authors instead of the intended subset.
     let filter = Filter {
         kinds: Some(vec![]),
+        authors: Some(vec!["a".into()]),
         ..Default::default()
     };
     assert!(!filter.is_valid());

@@ -30,4 +30,9 @@ exclude_re = [
   # Equivalent: a connection id appears at most once per pk entry, so `>` and
   # `>=` pick the same maximum.
   'replace > with >= in WalletIndex::get_connection_id',
+  # Equivalent: the `unpadded_len - 1` term only feeds `floor(log2(..)) +
+  # 1`, which produces the same `next_power` bucket for `+ 1` and `/ 1`
+  # (verified exhaustively for 33..200000 bytes). The padded length is
+  # unchanged, so no test can distinguish them.
+  'replace - with [+/] in pad$',
 ]

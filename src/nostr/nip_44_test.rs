@@ -255,6 +255,13 @@ fn test_nip44_size_boundaries() {
         decrypt_nip44(&shared_secret, &min).expect_err("empty ciphertext cannot authenticate");
     assert_eq!(err.to_string(), "error: crypto failure: Invalid NIP-44 MAC");
 
+    // One byte below that minimum must be rejected before any slicing: the
+    // nonce alone would overlap the MAC field.
+    let too_short = general_purpose::STANDARD.encode(vec![0x02u8; 64]);
+    let err = decrypt_nip44(&shared_secret, &too_short)
+        .expect_err("64 bytes is one short of the minimum payload");
+    assert_eq!(err.to_string(), "error: Invalid NIP-44 payload length");
+
     // Exactly at the decoded ceiling (65603 bytes) the payload is still
     // processed; only one byte more is rejected.
     let max = general_purpose::STANDARD.encode(vec![0x02u8; 65603]);

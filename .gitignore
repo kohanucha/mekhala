@@ -15,5 +15,8 @@ node_modules/
 # IDE
 .idea/
 
+# Mutation testing output
+/mutants.out/
+
 # Test
 test/wrangler.log
