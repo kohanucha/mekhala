@@ -93,3 +93,22 @@ Single-context layout. See `docs/agents/domain.md`.
   ```
 
 > All worker-dependent modules live under `cloudflare/`. The core relay logic (`nostr/*`, `auth.rs`, `lnaddress/*`) has zero `worker` crate dependency and is fully testable.
+
+## Mutation Testing
+- Coverage says the code was *executed*; mutation testing proves the tests
+  *fail* when behaviour changes. Run it on demand before a release, not in CI
+  (a full run takes ~15 minutes):
+  ```
+  cargo install cargo-mutants --locked   # once
+  cargo mutants --in-place -t 60
+  ```
+  `--in-place` keeps the runtime sane (without it every mutant copies the tree
+  and rebuilds all dependencies) and cannot be combined with `-j`/`--jobs`.
+- Scope and documented equivalent mutants live in `.cargo/mutants.toml`.
+  `exclude_re` patterns are matched against `file:line:col: description`, so
+  prefer matching the description over line numbers, which shift.
+- The run must end with `0 missed` and no timeouts. Survivors are listed in
+  `mutants.out/missed.txt`; fix the test (assert the exact error/edge) rather
+  than widening the exclusion.
+- If a run is interrupted, `git status` may show a mutated source file; restore
+  it with `git checkout -- <file>` before doing anything else.

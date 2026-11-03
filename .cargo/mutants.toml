@@ -1,0 +1,38 @@
+# Mutation-testing scope for the relay core (cargo-mutants).
+#
+# Run with:
+#   cargo mutants --in-place -t 60
+#
+# `--in-place` matters: the default copies the tree once per mutant and
+# rebuilds every dependency, turning a ten-minute run into hours.
+#
+# Worker-dependent code (`src/cloudflare/`, `src/lib.rs`) needs a live workerd
+# and is exercised by the integration suite instead, so it is out of scope.
+
+examine_globs = [
+  "src/auth.rs",
+  "src/util/mod.rs",
+  "src/nostr/*.rs",
+  "src/lnaddress/*.rs",
+]
+
+# Mutants that cannot change observable behaviour (equivalent), plus mutations
+# in code the native test build never compiles.
+exclude_re = [
+  # `now()` divides the wasm clock; that branch is cfg'd out of native builds.
+  'replace / with [%*] in now',
+  # Equivalent: the body is already `Vec::new()`.
+  'on_connect -> Vec<EngineResponse> with vec!\[',
+  'on_disconnect -> Vec<EngineResponse> with vec!\[',
+  # Equivalent: deleting the EOSE arm falls through to `_ => None`, leaving the
+  # state untouched exactly as the deleted arm did.
+  'delete match arm \(RpcState::AwaitingResponse, RelayMessage::Eose',
+  # Equivalent: a connection id appears at most once per pk entry, so `>` and
+  # `>=` pick the same maximum.
+  'replace > with >= in WalletIndex::get_connection_id',
+  # Equivalent: the `unpadded_len - 1` term only feeds `floor(log2(..)) +
+  # 1`, which produces the same `next_power` bucket for `+ 1` and `/ 1`
+  # (verified exhaustively for 33..200000 bytes). The padded length is
+  # unchanged, so no test can distinguish them.
+  'replace - with [+/] in pad$',
+]

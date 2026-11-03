@@ -127,3 +127,15 @@ fn test_access_policy_new_empty_string() {
     let policy = AccessPolicy::new(Some(String::new()));
     assert_eq!(policy.check_access("anything"), Ok(()));
 }
+
+#[test]
+fn test_constant_time_eq_rejects_many_distinct_secrets() {
+    // Comparison folds the SHA-256 digests, so a single differing pair can
+    // accidentally leave the accumulator at zero if the combine is broken
+    // (e.g. XOR instead of OR). Every distinct pair must still compare unequal.
+    for i in 0..64u32 {
+        let a = format!("secret-{i}");
+        let b = format!("secret-{}", i + 1);
+        assert!(!constant_time_eq(&a, &b), "{a} must not equal {b}");
+    }
+}

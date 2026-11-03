@@ -288,3 +288,11 @@ fn test_tag_deserialize_expiration_non_numeric_string() {
     let err = result.expect_err("expiration string must parse as u64");
     assert!(err.to_string().contains("must be a number"), "{err}");
 }
+
+#[test]
+fn test_tag_kind_value_ignores_non_k_tags() {
+    // Only the `k` tag carries a kind; a numeric value in any other tag must
+    // not be misread as one (it would delete the wrong events).
+    let tag = Tag::Other("expiration".into(), vec![serde_json::json!(23194u64)]);
+    assert_eq!(tag.kind_value(), None);
+}

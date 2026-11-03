@@ -315,3 +315,126 @@ fn test_verify_signature_wrong_length() {
         other => panic!("expected MalformedHex(\"signature format\"), got {other:?}"),
     }
 }
+
+#[test]
+fn test_compute_id_matches_nip01_golden_vector() {
+    // sha256 of `[0,pubkey,created_at,kind,tags,content]`, pinned so a change
+    // in serialization cannot silently change every event id.
+    let (id, id_bytes) = Event::compute_id(
+        crate::common::test_helpers::TEST_WALLET_PK,
+        1_700_000_000,
+        23194,
+        &[],
+        "golden",
+    )
+    .unwrap();
+    assert_eq!(
+        id,
+        "44d56cc9d30fa1b0b4a17b21f21ce6f5e022be1322643316762b0290f0dba640"
+    );
+    assert_eq!(hex::decode(&id).unwrap(), id_bytes);
+}
+
+#[test]
+fn test_compute_id_covers_tags_and_content() {
+    let (id, _) = Event::compute_id(
+        crate::common::test_helpers::TEST_WALLET_PK,
+        1_700_000_000,
+        23194,
+        &[Tag::p("abc")],
+        "",
+    )
+    .unwrap();
+    assert_eq!(
+        id,
+        "3820353c3414592191a2930c3225b31b95d783b040e2018ac8047553f166f59f"
+    );
+}
+
+#[test]
+fn test_verify_content_length_boundary() {
+    let limits = Limits::new(4, 100);
+    let event = Event {
+        id: "id".into(),
+        pubkey: "pk".into(),
+        created_at: 1_700_000_000,
+        kind: 13194,
+        tags: vec![],
+        content: "abcd".into(),
+        sig: "sig".into(),
+    };
+    // Exactly at the limit passes the size check (and fails later on the id).
+    assert!(
+        !matches!(
+            event.verify(1_700_000_000, &limits),
+            Err(RelayError::LimitExceeded(_))
+        ),
+        "content of exactly max_content_length must be accepted"
+    );
+
+    let over = Event {
+        content: "abcde".into(),
+        ..event
+    };
+    match over.verify(1_700_000_000, &limits) {
+        Err(RelayError::LimitExceeded(msg)) => assert!(msg.contains("content too large")),
+        other => panic!("expected LimitExceeded, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_verify_timestamp_window_boundaries() {
+    let limits = Limits::default();
+    let now = 1_700_000_000;
+    let in_window = Event {
+        id: "id".into(),
+        pubkey: "pk".into(),
+        created_at: now + 900,
+        kind: 13194,
+        tags: vec![],
+        content: String::new(),
+        sig: "sig".into(),
+    };
+    // Exactly +900 s is inside the window; one second more is not.
+    assert!(
+        !matches!(
+            in_window.verify(now, &limits),
+            Err(RelayError::TimestampTooFar(_))
+        ),
+        "created_at == now + 900 must be accepted"
+    );
+    let future = Event {
+        created_at: now + 901,
+        ..in_window
+    };
+    match future.verify(now, &limits) {
+        Err(RelayError::TimestampTooFar(msg)) => assert!(msg.contains("too far off")),
+        other => panic!("expected TimestampTooFar, got {other:?}"),
+    }
+
+    let oldest = Event {
+        id: "id".into(),
+        pubkey: "pk".into(),
+        created_at: now - 31_536_000,
+        kind: 13194,
+        tags: vec![],
+        content: String::new(),
+        sig: "sig".into(),
+    };
+    // Exactly one year old is still accepted; one second older is not.
+    assert!(
+        !matches!(
+            oldest.verify(now, &limits),
+            Err(RelayError::TimestampTooFar(_))
+        ),
+        "created_at == now - 31_536_000 must be accepted"
+    );
+    let too_old = Event {
+        created_at: now - 31_536_001,
+        ..oldest
+    };
+    match too_old.verify(now, &limits) {
+        Err(RelayError::TimestampTooFar(msg)) => assert!(msg.contains("too old")),
+        other => panic!("expected TimestampTooFar, got {other:?}"),
+    }
+}

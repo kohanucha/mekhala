@@ -282,3 +282,51 @@ fn test_filter_is_valid_empty_authors_valid_kinds() {
     };
     assert!(filter.is_valid());
 }
+
+#[test]
+fn test_filter_matches_since_and_until_are_inclusive() {
+    let filter = Filter {
+        since: Some(1000),
+        until: Some(2000),
+        ..Default::default()
+    };
+    assert!(
+        filter.matches(&make_event("id1", "author1", 1, vec![], 1000)),
+        "created_at == since must match"
+    );
+    assert!(
+        filter.matches(&make_event("id1", "author1", 1, vec![], 2000)),
+        "created_at == until must match"
+    );
+}
+
+#[test]
+fn test_filter_is_valid_with_e_tags_only() {
+    let filter = Filter {
+        e_tags: Some(vec!["event1".into()]),
+        ..Default::default()
+    };
+    assert!(filter.is_valid());
+}
+
+#[test]
+fn test_filter_is_valid_with_ids_only() {
+    let filter = Filter {
+        ids: Some(vec!["id1".into()]),
+        ..Default::default()
+    };
+    assert!(filter.is_valid());
+}
+
+#[test]
+fn test_filter_is_valid_rejects_empty_kinds_without_narrowing() {
+    // An empty kinds list must not count as "kinds present", even when the
+    // filter is narrowed by authors: accepting it would subscribe to every
+    // allowed kind for those authors instead of the intended subset.
+    let filter = Filter {
+        kinds: Some(vec![]),
+        authors: Some(vec!["a".into()]),
+        ..Default::default()
+    };
+    assert!(!filter.is_valid());
+}

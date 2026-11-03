@@ -28,9 +28,13 @@ pub fn short(s: &str, len: usize) -> &str {
     if s.len() <= len {
         return s;
     }
-    let mut end = len;
-    while !s.is_char_boundary(end) {
-        end -= 1;
+    // Walk forward to the last character boundary at or below `len`.
+    let mut end = 0;
+    for (idx, _) in s.char_indices() {
+        if idx > len {
+            break;
+        }
+        end = idx;
     }
     &s[..end]
 }
