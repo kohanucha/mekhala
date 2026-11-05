@@ -10,7 +10,8 @@ use std::collections::{HashMap, HashSet};
 /// Persistence boundary of the registry: a key/value store backed by Durable
 /// Object storage in production (see `cloudflare`) and `MockStorage` in
 /// tests. Keys follow the `conn:<id>`, `pk:<pubkey>`, `eid:<event id>`,
-/// `etag:<event id>`, `info:<pubkey>` and `info-p:<pubkey>` conventions.
+/// `etag:<event id>`, `info:<pubkey>`, `infoid:<event id>` and
+/// `info-p:<pubkey>` conventions.
 #[async_trait(?Send)]
 pub trait Storage {
     /// Reads the JSON value stored under `key`, if any.
@@ -184,7 +185,24 @@ impl WalletIndex {
         self.reverse_index.get(&conn_id).map_or(0, |m| m.len())
     }
 
+    fn has_subscription(&self, conn_id: u32, sub_id: &str) -> bool {
+        self.reverse_index
+            .get(&conn_id)
+            .is_some_and(|m| m.contains_key(sub_id))
+    }
+
     fn cache_info(&mut self, event: Event) {
+        // The author has at most one info event: drop the reverse id mapping
+        // of the previous one before recording the new event.
+        if let Some(previous_id) = self
+            .pk_index
+            .get(&event.pubkey)
+            .and_then(|entry| entry.1.as_ref())
+            .map(|previous| previous.id.clone())
+        {
+            self.info_id_index.remove(&previous_id);
+        }
+
         // Drop aliases that belonged to the previous info event of this
         // author and are not part of the new one (a wallet may re-publish
         // with a different `p` tag set).
@@ -426,8 +444,10 @@ impl<S: Storage> WalletRegistry<S> {
     /// # Errors
     ///
     /// Returns [`RelayError::Generic`](crate::nostr::RelayError::Generic)
-    /// when the connection exceeds `limits.max_subscriptions_per_connection`
-    /// or persistence fails.
+    /// when a *new* subscription would exceed
+    /// `limits.max_subscriptions_per_connection` or persistence fails. A
+    /// `REQ` that reuses an existing `sub_id` replaces that subscription
+    /// (NIP-01), so it is allowed at the limit.
     pub async fn subscribe(
         &mut self,
         conn_id: u32,
@@ -435,7 +455,8 @@ impl<S: Storage> WalletRegistry<S> {
         filters: Vec<Filter>,
     ) -> crate::nostr::Result<()> {
         let count = self.index.sub_count(conn_id);
-        if count >= self.limits.max_subscriptions_per_connection {
+        let replacing = self.index.has_subscription(conn_id, &sub_id);
+        if !replacing && count >= self.limits.max_subscriptions_per_connection {
             return Err(crate::nostr::RelayError::Generic(format!(
                 "too many subscriptions: {} (max {})",
                 count, self.limits.max_subscriptions_per_connection
@@ -603,16 +624,48 @@ impl<S: Storage> WalletRegistry<S> {
     }
 
     /// Caches a wallet-service info event in memory and in storage:
-    /// `info:<author>` holds the event itself, while `info-p:<p tag>` maps
-    /// each addressed app back to the author so `#p`-scoped subscriptions
-    /// can be replayed after hibernation.
+    /// `info:<author>` holds the event itself, `infoid:<event id>` maps the
+    /// event back to its author (so kind `5` deletion by `e` tag still works
+    /// after hibernation), and `info-p:<p tag>` maps each addressed app back
+    /// to the author so `#p`-scoped subscriptions can be replayed.
     pub async fn cache_info(&mut self, event: Event) {
         log_debug!("persist info: pk={}", short(&event.pubkey, 8));
 
-        for stale in self.index.stale_info_aliases(&event) {
-            self.storage
-                .delete_batch(vec![format!("info-p:{stale}")])
-                .await;
+        // The author has at most one info event. A republish must drop the
+        // previous event's reverse mapping and any `p` alias it no longer
+        // carries; after hibernation only storage knows the previous event.
+        let previous = match self
+            .index
+            .pk_index
+            .get(&event.pubkey)
+            .and_then(|entry| entry.1.clone())
+        {
+            Some(previous) => Some(previous),
+            None => {
+                self.read_info_event(&format!("info:{}", event.pubkey))
+                    .await
+            }
+        };
+
+        let mut stale_keys: Vec<String> = Vec::new();
+        if let Some(previous) = &previous {
+            let current: HashSet<String> = p_tag_pubkeys(&event).into_iter().collect();
+            for pk in p_tag_pubkeys(previous) {
+                if current.contains(&pk) {
+                    continue;
+                }
+                let alias_key = format!("info-p:{pk}");
+                let owner = self.storage.get(&alias_key).await;
+                if owner.as_ref().and_then(Value::as_str) == Some(event.pubkey.as_str()) {
+                    stale_keys.push(alias_key);
+                }
+            }
+            if previous.id != event.id {
+                stale_keys.push(format!("infoid:{}", previous.id));
+            }
+        }
+        if !stale_keys.is_empty() {
+            self.storage.delete_batch(stale_keys).await;
         }
 
         let mut entries = HashMap::new();
@@ -620,6 +673,10 @@ impl<S: Storage> WalletRegistry<S> {
         if !value.is_null() {
             entries.insert(format!("info:{}", event.pubkey), value);
         }
+        entries.insert(
+            format!("infoid:{}", event.id),
+            serde_json::json!(event.pubkey.clone()),
+        );
         for pk in p_tag_pubkeys(&event) {
             entries.insert(
                 format!("info-p:{pk}"),
@@ -668,10 +725,11 @@ impl<S: Storage> WalletRegistry<S> {
     }
 
     /// Removes the cached info event for `pubkey` (its author) from memory
-    /// and storage, including every `p` tag alias that resolves to it.
-    /// Aliases owned by another author (two wallets can address the same
-    /// app) are left untouched, and the event is read from storage when the
-    /// in-memory index was lost to hibernation.
+    /// and storage, including every `p` tag alias that resolves to it and
+    /// the event's `infoid:` reverse mapping. Aliases owned by another author
+    /// (two wallets can address the same app) are left untouched, and the
+    /// event is read from storage when the in-memory index was lost to
+    /// hibernation.
     pub async fn delete_info(&mut self, pubkey: &str) {
         let removed = self.index.delete_info(pubkey);
 
@@ -684,6 +742,7 @@ impl<S: Storage> WalletRegistry<S> {
         match stored_event {
             Some(event) => {
                 log_debug!("info deleted: pk={}", short(pubkey, 8));
+                keys.push(format!("infoid:{}", event.id));
                 for pk in p_tag_pubkeys(&event) {
                     let alias_key = format!("info-p:{pk}");
                     let owner = self.storage.get(&alias_key).await;
@@ -700,8 +759,43 @@ impl<S: Storage> WalletRegistry<S> {
     }
 
     /// Maps an info event's ID back to the wallet service's public key.
-    pub fn find_info_pubkey_by_id(&self, event_id: &str) -> Option<String> {
-        self.index.find_info_pubkey_by_id(event_id)
+    /// Reads the in-memory index first and falls back to the persisted
+    /// `infoid:` key, so the lookup works after hibernation.
+    pub async fn find_info_pubkey_by_id(&self, event_id: &str) -> Option<String> {
+        if let Some(pubkey) = self.index.find_info_pubkey_by_id(event_id) {
+            return Some(pubkey);
+        }
+        self.storage
+            .get(&format!("infoid:{event_id}"))
+            .await?
+            .as_str()
+            .map(str::to_string)
+    }
+
+    /// Handles a kind `5` deletion that references an info event by id: the
+    /// event is deleted only when `author` signed the deletion and the id is
+    /// still the author's current info event. A superseded id (the author
+    /// republished since) is ignored so an old reference cannot delete the
+    /// newer event. Returns whether something was deleted.
+    pub async fn delete_info_by_event(&mut self, event_id: &str, author: &str) -> bool {
+        let Some(info_pk) = self.find_info_pubkey_by_id(event_id).await else {
+            return false;
+        };
+        if info_pk != author {
+            log_debug!("info delete by e-tag denied: author mismatch");
+            return false;
+        }
+        match self.get_info(&info_pk).await {
+            Some(event) if event.id == event_id => {
+                self.delete_info(&info_pk).await;
+                true
+            }
+            Some(_) => {
+                log_debug!("info delete by e-tag ignored: superseded event id");
+                false
+            }
+            None => false,
+        }
     }
 
     async fn sync(&self, conn_id: u32) -> Result<(), StorageError> {

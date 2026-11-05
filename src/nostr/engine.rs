@@ -190,15 +190,12 @@ impl<S: Storage> NostrEngine<S> {
 
         if !e_tag_ids.is_empty() {
             for event_id in &e_tag_ids {
-                if let Some(info_pk) = self.registry.find_info_pubkey_by_id(event_id) {
-                    if info_pk == *author {
-                        log_info!(
-                            "info deleted by e-tag: pk={} event_id={}",
-                            short(&info_pk, 8),
-                            short(event_id, 8)
-                        );
-                        self.registry.delete_info(&info_pk).await;
-                    }
+                if self.registry.delete_info_by_event(event_id, author).await {
+                    log_info!(
+                        "info deleted by e-tag: pk={} event_id={}",
+                        short(author, 8),
+                        short(event_id, 8)
+                    );
                 }
             }
         } else {
