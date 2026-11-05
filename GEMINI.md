@@ -44,7 +44,7 @@ Mekhala is highly configurable via `wrangler.toml`:
 - `MAX_CONNECTIONS`: Max concurrent WebSockets per Durable Object (Default: 20 - Optimized for 1 user across devices).
 - `MAX_FILTER_ITEMS`: Max items allowed in filter arrays (ids, authors, etc.) (Default: 10 - NWC filters are narrow).
 - `MAX_EVENT_TAGS`: Max tags allowed per event (Default: 10 - NWC events are functional).
-- `MAX_CONTENT_LENGTH`: Max event content size in bytes (Default: 16384 - Fits invoices and history).
+- `MAX_CONTENT_LENGTH`: Max event content size in bytes (Default: 98304 - covers the 87472-character NIP-44 payload ceiling).
 - `RELAY_SECRET`: Optional secret path for private relay mode.
 - `MEKHALA_NWC_KV`: KV namespace binding for LN Address mapping.
 

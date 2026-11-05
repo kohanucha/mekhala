@@ -32,7 +32,7 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 - `MAX_SUBSCRIPTIONS_PER_CONNECTION` - optional, default: 100
 - `MAX_FILTER_ITEMS` - default: 10
 - `MAX_EVENT_TAGS` - default: 10
-- `MAX_CONTENT_LENGTH` - default: 16384 (16 KB)
+- `MAX_CONTENT_LENGTH` - default: 98304 (96 KB, covers the 87,472-character NIP-44 ceiling)
 
 ## Wrangler Config
 - Output: `build/worker/shim.mjs`
@@ -44,6 +44,7 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 2. **WebSocket tags**: Use `utils::HibernationState` trait
 3. **Panic = Abort**: The project uses `panic = "abort"`. **NEVER** use `unwrap()` or `expect()`. Use `?`, `.get()` for indexing, and checked math to prevent isolate crashes.
 4. **`sync()` required for persistence**: Every `subscribe()`/`unsubscribe()` must call `sync()`. The in-memory index is lost on DO hibernation — only `state.storage()` survives. Removing `sync()` breaks event routing after wake. Regression test: `test_hibernation_contract`.
+5. **Routing index families**: A subscription can be indexed under `pk:` (`authors`/`#p`), `eid:` (`ids`) or `etag:` (`#e`); `sync()`, `load_indexed()` and `on_terminate()` must treat all three the same or routing silently degrades to "accepted, EOSE, no event". Cached info events also persist an `info-p:<p tag>` alias so `#p`-only subscribers reach the author's `info:<author>` event.
 
 ## Agent skills
 

@@ -13,7 +13,7 @@ impl CloudflareConfig {
         Self {
             max_content_length: Self::parse_opt(
                 env.var("MAX_CONTENT_LENGTH").ok().map(|v| v.to_string()),
-                65536,
+                98_304,
             ),
             max_subscriptions_per_connection: Self::parse_opt(
                 env.var("MAX_SUBSCRIPTIONS_PER_CONNECTION")

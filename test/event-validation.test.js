@@ -2,6 +2,10 @@ import { WebSocket } from "ws";
 import { RELAY_URL } from "./env.js";
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools/pure";
 
+// Mirrors `MAX_CONTENT_LENGTH` in wrangler.toml (98,304 = 96 KiB), which
+// covers the largest NIP-44 payload. Oversized content must exceed it.
+const MAX_CONTENT_LENGTH = 98304;
+
 export async function testMalformedEventProducesOK() {
   console.log("\n--- Testing Malformed Event Produces OK False ---");
   const ws = new WebSocket(RELAY_URL);
@@ -39,7 +43,7 @@ export async function testOversizedEventProducesOK() {
         kind: 23194,
         created_at: Math.floor(Date.now() / 1000),
         tags: [],
-        content: "a".repeat(70000)
+        content: "a".repeat(MAX_CONTENT_LENGTH + 1)
       }, sk);
 
       ws.send(JSON.stringify(["EVENT", largeEvent]));
@@ -190,7 +194,7 @@ export async function testLimitEnforcement() {
     let contentLimitRejected = false;
 
     ws.on("open", () => {
-      const bigContent = "a".repeat(65537);
+      const bigContent = "a".repeat(MAX_CONTENT_LENGTH + 1);
       const eventTooLarge = finalizeEvent({
         kind: 23194,
         created_at: Math.floor(Date.now() / 1000),
@@ -206,7 +210,7 @@ export async function testLimitEnforcement() {
       if (msg[0] === "OK" && msg[2] === false) {
         if (msg[3].includes("content too large")) {
           contentLimitRejected = true;
-          console.log("✅ Event with >64KB content rejected.");
+          console.log("✅ Event with >96KB content rejected.");
         }
       }
 

@@ -343,3 +343,67 @@ export async function testRealisticPaymentFlow() {
   walletWs.close();
   console.log("✅ Realistic payment flow completed successfully.");
 }
+
+export async function testNwaInfoReplayByPTag() {
+  console.log("\n--- NWA: info replay for a #p-only subscription ---");
+
+  const walletSk = generateSecretKey();
+  const walletPk = getPublicKey(walletSk);
+  const appPk = getPublicKey(generateSecretKey());
+
+  // 1. Wallet publishes its info event addressed to the app through a p tag.
+  const publisher = new WebSocket(RELAY_URL);
+  await new Promise((resolve, reject) => {
+    const sentinel = setTimeout(() => {
+      publisher.close();
+      reject(new Error("NWA: info publish timeout"));
+    }, 5000);
+    publisher.on("open", () => {
+      const info = finalizeEvent({
+        kind: 13194,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [["encryption", "nip44_v2"], ["p", appPk]],
+        content: "pay_invoice get_info",
+      }, walletSk);
+      publisher.send(JSON.stringify(["EVENT", info]));
+    });
+    publisher.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg[0] === "OK" && msg[2] === true) {
+        clearTimeout(sentinel);
+        resolve();
+      }
+    });
+    publisher.on("error", (e) => { clearTimeout(sentinel); reject(e); });
+  });
+  publisher.close();
+
+  // 2. A fresh app connection subscribes exactly like `NWAClient`: #p only.
+  const app = new WebSocket(RELAY_URL);
+  await new Promise((resolve, reject) => {
+    const sentinel = setTimeout(() => {
+      app.close();
+      reject(new Error(
+        "FAIL: cached info event was not replayed for a #p-only subscription",
+      ));
+    }, 5000);
+    app.on("open", () => {
+      app.send(JSON.stringify(["REQ", "nwa-info", { kinds: [13194], "#p": [appPk] }]));
+    });
+    app.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+      if (
+        msg[0] === "EVENT" &&
+        msg[1] === "nwa-info" &&
+        msg[2].kind === 13194 &&
+        msg[2].pubkey === walletPk
+      ) {
+        clearTimeout(sentinel);
+        console.log("  ✅ NWA: cached info event replayed through the p-tag alias.");
+        resolve();
+      }
+    });
+    app.on("error", (e) => { clearTimeout(sentinel); reject(e); });
+  });
+  app.close();
+}
