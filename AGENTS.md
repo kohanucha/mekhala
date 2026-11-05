@@ -97,19 +97,30 @@ Single-context layout. See `docs/agents/domain.md`.
 
 ## Mutation Testing
 - Coverage says the code was *executed*; mutation testing proves the tests
-  *fail* when behaviour changes. Run it on demand before a release, not in CI
-  (a full run takes ~15 minutes):
+  *fail* when behaviour changes. Run it on demand before a release, not in CI.
+- Use the wrapper — it picks the right flags for each phase:
   ```
   cargo install cargo-mutants --locked   # once
-  cargo mutants --in-place -t 60
+  ./scripts/mutants.sh            # mutants in lines changed vs main (~2-3 min)
+  ./scripts/mutants.sh --iterate  # ... skipping mutants caught last run (~0s)
+  ./scripts/mutants.sh --full     # whole configured scope, parallel (release)
   ```
-  `--in-place` keeps the runtime sane (without it every mutant copies the tree
-  and rebuilds all dependencies) and cannot be combined with `-j`/`--jobs`.
+  Two flag facts drive the script: `--in-diff` takes a *diff file*, not a git
+  ref, and `-j`/`--jobs` cannot be combined with `--in-place`. Without
+  `--in-place` cargo-mutants works on its own copy of the tree — safe for
+  parallel jobs and interrupted runs — and the baseline build is ~20s because
+  dependency artifacts are cached. Measured here: 411 mutants single-threaded
+  with `--in-place` took ~25 min; full scope with `-j 8` took 6 min, and the
+  60 diff-only mutants took ~2 min.
 - Scope and documented equivalent mutants live in `.cargo/mutants.toml`.
   `exclude_re` patterns are matched against `file:line:col: description`, so
   prefer matching the description over line numbers, which shift.
+- `--iterate` matches mutants by `file:line:col: description`; clear
+  `mutants.out/` before a release run so a stale result cannot hide a line
+  whose behaviour changed.
 - The run must end with `0 missed` and no timeouts. Survivors are listed in
   `mutants.out/missed.txt`; fix the test (assert the exact error/edge) rather
   than widening the exclusion.
-- If a run is interrupted, `git status` may show a mutated source file; restore
-  it with `git checkout -- <file>` before doing anything else.
+- If a run is interrupted, `git status` may show a mutated source file (only
+  possible when `--in-place` was used); restore it with
+  `git checkout -- <file>` before doing anything else.

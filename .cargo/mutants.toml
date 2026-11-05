@@ -1,10 +1,12 @@
 # Mutation-testing scope for the relay core (cargo-mutants).
 #
 # Run with:
-#   cargo mutants --in-place -t 60
+#   ./scripts/mutants.sh          # changed lines only (fast, ~2 min)
+#   ./scripts/mutants.sh --full   # whole scope (release run)
 #
-# `--in-place` matters: the default copies the tree once per mutant and
-# rebuilds every dependency, turning a ten-minute run into hours.
+# The script drops `--in-place` so `-j` can be used; cargo-mutants then works
+# on its own copy of the tree and reuses cached dependency artifacts, so the
+# baseline build stays around 20s.
 #
 # Worker-dependent code (`src/cloudflare/`, `src/lib.rs`) needs a live workerd
 # and is exercised by the integration suite instead, so it is out of scope.
