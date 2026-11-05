@@ -40,6 +40,8 @@ Usage: ./scripts/mutants.sh [options]
 
 Without --full only mutants in lines changed since the merge-base of <ref> and
 HEAD are tested, which is ~7x fewer mutants while iterating on a branch.
+Untracked Rust files are not in that diff; run `git add -N <file>` to include
+them.
 EOF
 }
 
@@ -96,8 +98,19 @@ fi
 DIFF_FILE="$(mktemp "${TMPDIR:-/tmp}/mekhala-mutants.XXXXXX")"
 trap 'rm -f "$DIFF_FILE"' EXIT
 
+# `git diff` ignores untracked files, so a brand-new module would silently be
+# left out of the diff. `git add -N` makes the diff include it.
+UNTRACKED="$(git ls-files --others --exclude-standard -- '*.rs')"
+if [[ -n "$UNTRACKED" ]]; then
+    echo "warning: untracked Rust files are not in the diff (run 'git add -N <file>':" >&2
+    echo "$UNTRACKED" | sed 's/^/  /' >&2
+fi
+
 git diff "$MERGE_BASE" > "$DIFF_FILE"
-COUNT="$(cargo mutants --list --in-diff "$DIFF_FILE" 2>/dev/null | wc -l | tr -d ' ')"
+if ! COUNT="$(cargo mutants --list --in-diff "$DIFF_FILE" | wc -l | tr -d ' ')"; then
+    echo "cargo mutants --list failed; see the error above" >&2
+    exit 1
+fi
 if [[ "$COUNT" == "0" ]]; then
     echo "No mutants in the diff vs $BASE ($MERGE_BASE); nothing to do."
     exit 0
