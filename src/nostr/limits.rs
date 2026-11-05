@@ -22,10 +22,13 @@ impl Limits {
 
 impl Default for Limits {
     /// Conservative defaults used when no configuration is provided
-    /// (64 KiB content, 100 subscriptions per connection).
+    /// (96 KiB content, 100 subscriptions per connection). The content
+    /// ceiling covers the largest NIP-44 payload (87,472 base64 characters)
+    /// with room for the JSON envelope while staying inside the 128 KiB
+    /// WebSocket message cap.
     fn default() -> Self {
         Self {
-            max_content_length: 65536,
+            max_content_length: 98_304,
             max_subscriptions_per_connection: 100,
         }
     }

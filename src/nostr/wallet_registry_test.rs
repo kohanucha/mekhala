@@ -1220,3 +1220,430 @@ fn test_on_terminate_keeps_numeric_pk_index_for_other_connections() {
         );
     });
 }
+
+// ── NWA `#p` info replay ──
+
+fn info_with_p_tags(id: &str, author: &str, p_tags: &[&str]) -> Event {
+    crate::common::test_helpers::test_event(
+        id,
+        author,
+        13194,
+        p_tags.iter().map(|pk| Tag::p(*pk)).collect(),
+        1000,
+    )
+}
+
+#[test]
+fn test_get_info_resolves_p_tag_alias() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
+            .await;
+
+        // The author keeps working as before.
+        assert_eq!(
+            registry.index.get_info("wallet").map(|e| e.id),
+            Some("info1".into())
+        );
+        // A NWA app finds the event through its `p` tag.
+        assert_eq!(
+            registry.get_info("app").await.map(|e| e.id),
+            Some("info1".into())
+        );
+        assert!(registry.get_info("unrelated").await.is_none());
+    });
+}
+
+#[test]
+fn test_p_tag_alias_survives_hibernation() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
+            .await;
+
+        let mut restarted = simulate_hibernation(&registry.storage).await;
+        // Fresh index, only persisted keys available.
+        assert!(restarted.index.get_info("app").is_none());
+
+        let info = restarted.get_info("app").await.expect("alias must resolve");
+        assert_eq!(info.id, "info1");
+        assert_eq!(info.pubkey, "wallet");
+        // Resolving through the alias re-caches the event in memory.
+        assert_eq!(
+            restarted.index.get_info("app").map(|e| e.id),
+            Some("info1".into())
+        );
+    });
+}
+
+#[test]
+fn test_republish_drops_stale_p_tag_alias() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .cache_info(info_with_p_tags("info1", "wallet", &["app1"]))
+            .await;
+        registry
+            .cache_info(info_with_p_tags("info2", "wallet", &["app2"]))
+            .await;
+
+        assert!(
+            registry.get_info("app1").await.is_none(),
+            "the old app must not resolve to the new info event"
+        );
+        assert_eq!(
+            registry.get_info("app2").await.map(|e| e.id),
+            Some("info2".into())
+        );
+        assert!(
+            registry
+                .storage
+                .data
+                .lock()
+                .unwrap()
+                .get("info-p:app1")
+                .is_none(),
+            "stale alias must be deleted from storage"
+        );
+    });
+}
+
+#[test]
+fn test_delete_info_removes_p_tag_alias() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
+            .await;
+
+        registry.delete_info("wallet").await;
+
+        assert!(registry.get_info("app").await.is_none());
+        assert!(registry.get_info("wallet").await.is_none());
+        let data = registry.storage.data.lock().unwrap();
+        assert!(data.get("info:wallet").is_none());
+        assert!(data.get("info-p:app").is_none());
+    });
+}
+
+// ── `#e` / `ids`-only routing ──
+
+fn e_tag_filter(kind: u64, event_id: &str) -> Filter {
+    Filter {
+        kinds: Some(vec![kind]),
+        e_tags: Some(vec![event_id.into()]),
+        ..Default::default()
+    }
+}
+
+fn ids_filter(event_id: &str) -> Filter {
+    Filter {
+        ids: Some(vec![event_id.into()]),
+        ..Default::default()
+    }
+}
+
+fn response_event(id: &str, e_tag: &str) -> Event {
+    crate::common::test_helpers::test_event(
+        id,
+        "wallet",
+        23195,
+        vec![Tag::p("app"), Tag::E(e_tag.into(), vec![])],
+        1000,
+    )
+}
+
+#[test]
+fn test_e_tag_only_filter_routes_live() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .subscribe(1, "sub-e".into(), vec![e_tag_filter(23195, "req1")])
+            .await
+            .unwrap();
+
+        let responses = registry.match_event(&response_event("resp1", "req1")).await;
+        assert_eq!(send_targets(&responses), vec![(1, "sub-e".into())]);
+        assert!(
+            registry
+                .storage
+                .data
+                .lock()
+                .unwrap()
+                .contains_key("etag:req1"),
+            "the #e index must be persisted for hibernation"
+        );
+    });
+}
+
+#[test]
+fn test_e_tag_only_filter_requires_matching_kind() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .subscribe(1, "sub-e".into(), vec![e_tag_filter(23195, "req1")])
+            .await
+            .unwrap();
+
+        // Same `e` tag, different kind: the full filter must still match.
+        let deletion = crate::common::test_helpers::test_event(
+            "del1",
+            "wallet",
+            5,
+            vec![Tag::E("req1".into(), vec![])],
+            1000,
+        );
+        assert!(send_targets(&registry.match_event(&deletion).await).is_empty());
+    });
+}
+
+#[test]
+fn test_e_tag_only_filter_survives_hibernation() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .subscribe(1, "sub-e".into(), vec![e_tag_filter(23195, "req1")])
+            .await
+            .unwrap();
+
+        let mut restarted = simulate_hibernation(&registry.storage).await;
+        let responses = restarted
+            .match_event(&response_event("resp1", "req1"))
+            .await;
+
+        assert!(responses.contains(&RegistryResponse::WakeUp(1)));
+        assert!(responses.contains(&RegistryResponse::Send {
+            recipient_id: 1,
+            sub_id: "sub-e".into()
+        }));
+    });
+}
+
+#[test]
+fn test_ids_only_filter_routes_live() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .subscribe(1, "sub-id".into(), vec![ids_filter("resp1")])
+            .await
+            .unwrap();
+
+        let responses = registry.match_event(&response_event("resp1", "req1")).await;
+        assert_eq!(send_targets(&responses), vec![(1, "sub-id".into())]);
+        assert!(
+            registry
+                .storage
+                .data
+                .lock()
+                .unwrap()
+                .contains_key("eid:resp1"),
+            "the ids index must be persisted for hibernation"
+        );
+    });
+}
+
+#[test]
+fn test_ids_only_filter_survives_hibernation() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .subscribe(1, "sub-id".into(), vec![ids_filter("resp1")])
+            .await
+            .unwrap();
+
+        let mut restarted = simulate_hibernation(&registry.storage).await;
+        let responses = restarted
+            .match_event(&response_event("resp1", "req1"))
+            .await;
+
+        assert!(responses.contains(&RegistryResponse::WakeUp(1)));
+        assert!(responses.contains(&RegistryResponse::Send {
+            recipient_id: 1,
+            sub_id: "sub-id".into()
+        }));
+    });
+}
+
+#[test]
+fn test_unsubscribe_stops_secondary_index_routing() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .subscribe(1, "sub-e".into(), vec![e_tag_filter(23195, "req1")])
+            .await
+            .unwrap();
+        registry
+            .subscribe(1, "sub-id".into(), vec![ids_filter("resp1")])
+            .await
+            .unwrap();
+
+        registry.unsubscribe(1, "sub-e".into()).await.unwrap();
+        registry.unsubscribe(1, "sub-id".into()).await.unwrap();
+
+        let responses = registry.match_event(&response_event("resp1", "req1")).await;
+        assert!(
+            responses.is_empty(),
+            "unsubscribed indexes must not deliver"
+        );
+    });
+}
+
+#[test]
+fn test_unsubscribe_keeps_other_subscription_in_same_index() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .subscribe(1, "sub-a".into(), vec![e_tag_filter(23195, "req1")])
+            .await
+            .unwrap();
+        registry
+            .subscribe(1, "sub-b".into(), vec![e_tag_filter(23195, "req1")])
+            .await
+            .unwrap();
+
+        registry.unsubscribe(1, "sub-a".into()).await.unwrap();
+
+        let responses = registry.match_event(&response_event("resp1", "req1")).await;
+        assert_eq!(send_targets(&responses), vec![(1, "sub-b".into())]);
+    });
+}
+
+#[test]
+fn test_delete_info_keeps_alias_owned_by_other_author() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .cache_info(info_with_p_tags("info1", "wallet-a", &["shared", "only-a"]))
+            .await;
+        registry
+            .cache_info(info_with_p_tags("info2", "wallet-b", &["shared", "only-b"]))
+            .await;
+
+        registry.delete_info("wallet-a").await;
+
+        // In memory: the author's own alias is dropped, the shared one is
+        // still owned by the surviving author.
+        assert!(!registry.index.info_p_index.contains_key("only-a"));
+        assert_eq!(
+            registry
+                .index
+                .info_p_index
+                .get("shared")
+                .map(String::as_str),
+            Some("wallet-b")
+        );
+
+        let info = registry
+            .get_info("shared")
+            .await
+            .expect("the surviving author's alias must still resolve");
+        assert_eq!(info.id, "info2");
+        assert_eq!(info.pubkey, "wallet-b");
+
+        let data = registry.storage.data.lock().unwrap();
+        assert_eq!(
+            data.get("info-p:shared").and_then(Value::as_str),
+            Some("wallet-b"),
+            "deleting one author must not delete another author's alias"
+        );
+        assert!(data.get("info-p:only-a").is_none());
+        assert!(data.get("info:wallet-a").is_none());
+        assert!(data.get("info:wallet-b").is_some());
+    });
+}
+
+#[test]
+fn test_delete_info_after_hibernation_removes_event_and_alias() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
+            .await;
+
+        // Fresh process: the in-memory index is empty, only storage remains.
+        let mut restarted = simulate_hibernation(&registry.storage).await;
+        restarted.delete_info("wallet").await;
+
+        assert!(restarted.get_info("wallet").await.is_none());
+        assert!(restarted.get_info("app").await.is_none());
+        let data = restarted.storage.data.lock().unwrap();
+        assert!(data.get("info:wallet").is_none());
+        assert!(data.get("info-p:app").is_none());
+    });
+}
+
+#[test]
+fn test_delete_info_after_hibernation_keeps_other_authors_alias() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .cache_info(info_with_p_tags("info1", "wallet-a", &["app"]))
+            .await;
+        registry
+            .cache_info(info_with_p_tags("info2", "wallet-b", &["app"]))
+            .await;
+
+        let mut restarted = simulate_hibernation(&registry.storage).await;
+        restarted.delete_info("wallet-a").await;
+
+        let info = restarted
+            .get_info("app")
+            .await
+            .expect("the surviving author's alias must still resolve");
+        assert_eq!(info.id, "info2");
+        let data = restarted.storage.data.lock().unwrap();
+        assert_eq!(
+            data.get("info-p:app").and_then(Value::as_str),
+            Some("wallet-b")
+        );
+        assert!(data.get("info:wallet-a").is_none());
+    });
+}
+
+#[test]
+fn test_unsubscribe_prunes_secondary_index_keys() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .subscribe(1, "sub-e".into(), vec![e_tag_filter(23195, "req1")])
+            .await
+            .unwrap();
+        registry
+            .subscribe(1, "sub-id".into(), vec![ids_filter("resp1")])
+            .await
+            .unwrap();
+
+        assert!(registry.index.e_index.contains_key("req1"));
+        assert!(registry.index.id_index.contains_key("resp1"));
+
+        registry.unsubscribe(1, "sub-e".into()).await.unwrap();
+        assert!(
+            registry.index.e_index.is_empty(),
+            "an index key with no subscribers must be pruned"
+        );
+        assert!(registry.index.id_index.contains_key("resp1"));
+
+        registry.unsubscribe(1, "sub-id".into()).await.unwrap();
+        assert!(
+            registry.index.id_index.is_empty(),
+            "an index key with no subscribers must be pruned"
+        );
+    });
+}
+
+#[test]
+fn test_index_delete_info_returns_removed_event() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
+            .await;
+
+        let removed = registry.index.delete_info("wallet");
+        assert_eq!(removed.map(|e| e.id), Some("info1".into()));
+        // A second delete finds nothing left to remove.
+        assert!(registry.index.delete_info("wallet").is_none());
+    });
+}

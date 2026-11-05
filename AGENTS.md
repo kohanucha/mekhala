@@ -32,7 +32,7 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 - `MAX_SUBSCRIPTIONS_PER_CONNECTION` - optional, default: 100
 - `MAX_FILTER_ITEMS` - default: 10
 - `MAX_EVENT_TAGS` - default: 10
-- `MAX_CONTENT_LENGTH` - default: 16384 (16 KB)
+- `MAX_CONTENT_LENGTH` - default: 98304 (96 KB, covers the 87,472-character NIP-44 ceiling)
 
 ## Wrangler Config
 - Output: `build/worker/shim.mjs`
@@ -44,6 +44,7 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 2. **WebSocket tags**: Use `utils::HibernationState` trait
 3. **Panic = Abort**: The project uses `panic = "abort"`. **NEVER** use `unwrap()` or `expect()`. Use `?`, `.get()` for indexing, and checked math to prevent isolate crashes.
 4. **`sync()` required for persistence**: Every `subscribe()`/`unsubscribe()` must call `sync()`. The in-memory index is lost on DO hibernation — only `state.storage()` survives. Removing `sync()` breaks event routing after wake. Regression test: `test_hibernation_contract`.
+5. **Routing index families**: A subscription can be indexed under `pk:` (`authors`/`#p`), `eid:` (`ids`) or `etag:` (`#e`); `sync()`, `load_indexed()` and `on_terminate()` must treat all three the same or routing silently degrades to "accepted, EOSE, no event". Cached info events also persist an `info-p:<p tag>` alias so `#p`-only subscribers reach the author's `info:<author>` event.
 
 ## Agent skills
 
@@ -96,19 +97,30 @@ Single-context layout. See `docs/agents/domain.md`.
 
 ## Mutation Testing
 - Coverage says the code was *executed*; mutation testing proves the tests
-  *fail* when behaviour changes. Run it on demand before a release, not in CI
-  (a full run takes ~15 minutes):
+  *fail* when behaviour changes. Run it on demand before a release, not in CI.
+- Use the wrapper — it picks the right flags for each phase:
   ```
   cargo install cargo-mutants --locked   # once
-  cargo mutants --in-place -t 60
+  ./scripts/mutants.sh            # mutants in lines changed vs main (~2-3 min)
+  ./scripts/mutants.sh --iterate  # ... skipping mutants caught last run (~0s)
+  ./scripts/mutants.sh --full     # whole configured scope, parallel (release)
   ```
-  `--in-place` keeps the runtime sane (without it every mutant copies the tree
-  and rebuilds all dependencies) and cannot be combined with `-j`/`--jobs`.
+  Two flag facts drive the script: `--in-diff` takes a *diff file*, not a git
+  ref, and `-j`/`--jobs` cannot be combined with `--in-place`. Without
+  `--in-place` cargo-mutants works on its own copy of the tree — safe for
+  parallel jobs and interrupted runs — and the baseline build is ~20s because
+  dependency artifacts are cached. Measured here: 411 mutants single-threaded
+  with `--in-place` took ~25 min; full scope with `-j 8` took 6 min, and the
+  60 diff-only mutants took ~2 min.
 - Scope and documented equivalent mutants live in `.cargo/mutants.toml`.
   `exclude_re` patterns are matched against `file:line:col: description`, so
   prefer matching the description over line numbers, which shift.
+- `--iterate` matches mutants by `file:line:col: description`; clear
+  `mutants.out/` before a release run so a stale result cannot hide a line
+  whose behaviour changed.
 - The run must end with `0 missed` and no timeouts. Survivors are listed in
   `mutants.out/missed.txt`; fix the test (assert the exact error/edge) rather
   than widening the exclusion.
-- If a run is interrupted, `git status` may show a mutated source file; restore
-  it with `git checkout -- <file>` before doing anything else.
+- If a run is interrupted, `git status` may show a mutated source file (only
+  possible when `--in-place` was used); restore it with
+  `git checkout -- <file>` before doing anything else.

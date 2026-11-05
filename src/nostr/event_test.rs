@@ -97,20 +97,44 @@ fn test_verify_invalid_kind() {
 
 #[test]
 fn test_verify_content_too_large() {
+    let limits = Limits::default();
     let event = Event {
         id: "id1".into(),
         pubkey: "pk1".into(),
         created_at: 1700000000,
         kind: 13194,
         tags: vec![],
-        content: "a".repeat(65537),
+        content: "a".repeat(limits.max_content_length + 1),
         sig: "sig".into(),
     };
-    let result = event.verify(1700000000, &Limits::default());
+    let result = event.verify(1700000000, &limits);
     match result {
         Err(RelayError::LimitExceeded(msg)) => assert!(msg.contains("content too large")),
         _ => panic!("expected LimitExceeded, got {result:?}"),
     }
+}
+
+/// The largest NIP-44 v2 payload a wallet can produce must not be rejected
+/// by the default content ceiling.
+#[test]
+fn test_verify_default_limit_accepts_max_nip44_payload() {
+    let limits = Limits::default();
+    let event = Event {
+        id: "id1".into(),
+        pubkey: "pk1".into(),
+        created_at: 1700000000,
+        kind: 13194,
+        tags: vec![],
+        content: "a".repeat(87_472),
+        sig: "sig".into(),
+    };
+    assert!(
+        !matches!(
+            event.verify(1700000000, &limits),
+            Err(RelayError::LimitExceeded(_))
+        ),
+        "the default limit must accept the largest NIP-44 payload"
+    );
 }
 
 #[test]

@@ -15,6 +15,7 @@
 Mekhala is a specialized, ephemeral Nostr relay built in Rust and compiled to WebAssembly. It acts as a private communication bridge between Lightning wallet applications (e.g. Alby, Amethyst) and your wallet node:
 
 - **No event history:** Events are validated, routed, and dropped. The only persisted state is subscription metadata plus cached wallet-service info events, kept so hibernated connections can resume.
+- **Standard NIP-01 routing:** Events reach subscriptions addressed by `authors`/`#p`, by `ids`, or by `#e`, with every index persisted so routing still works after hibernation. Cached `13194` info events are also replayed to `#p`-only subscriptions (the NWA discovery pattern).
 - **WebSocket Hibernation:** Uses Cloudflare Durable Objects to hibernate idle connections, waking up seamlessly when new events arrive to save resources.
 - **Strictly Specialized:** Only handles NWC-related event kinds (`5` for deleting cached wallet info, `13194`, `23194-23197`). Social and generic Nostr events are rejected.
 
@@ -45,7 +46,7 @@ Configurable via `wrangler.toml` or environment variables:
 | `RELAY_SECRET` | *None* | Optional secret path parameter for private routing. |
 | `WALLET_REGION` | `apac` | Physical DO location (`apac`, `weur`, `wnam`). |
 | `MAX_CONNECTIONS` | `100` | Max concurrent WebSocket connections per DO. |
-| `MAX_CONTENT_LENGTH` | `65536` | Max Nostr event size in bytes (16KB to 64KB recommended). |
+| `MAX_CONTENT_LENGTH` | `98304` | Max event `content` size in bytes. Covers the largest NIP-44 payload (87,472 base64 chars) plus the JSON envelope. |
 
 ---
 

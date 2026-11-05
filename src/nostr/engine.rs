@@ -2,7 +2,7 @@ use super::wallet_registry::{RegistryResponse, Storage, WalletRegistry};
 use super::{ClientMessage, Event, Filter, Limits, RelayMessage};
 use crate::util::short;
 use crate::{log_debug, log_info, log_warn};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// An action the transport must perform after the engine handles a message.
 #[derive(Debug, PartialEq, Eq)]
@@ -291,11 +291,14 @@ impl<S: Storage> NostrEngine<S> {
         }
 
         let global_limit = filters.iter().filter_map(|f| f.limit).min();
+        let mut replayed: HashSet<String> = HashSet::new();
 
         for filters_set in filters.iter() {
             for pk in filters_set.pubkeys() {
                 if let Some(info_event) = self.registry.get_info(&pk).await {
-                    if filters.iter().any(|f| f.matches(&info_event)) {
+                    if filters.iter().any(|f| f.matches(&info_event))
+                        && replayed.insert(info_event.id.clone())
+                    {
                         log_debug!("info hit: pk={} sub={}", short(&pk, 8), sub_id);
                         responses.push(EngineResponse::send(
                             id,

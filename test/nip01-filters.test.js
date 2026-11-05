@@ -138,7 +138,8 @@ export async function testFilterMatching() {
         content: "event with e-tag"
       }, sk);
 
-      ws.send(JSON.stringify(["REQ", "sub-e", { kinds: [23194], "#e": ["test-event-id-123"], "#p": [pk] }]));
+      // `#e`-only: no authors / `#p`, so the relay must route by e-tag index.
+      ws.send(JSON.stringify(["REQ", "sub-e", { kinds: [23194], "#e": ["test-event-id-123"] }]));
     });
 
     ws.on("message", (data) => {
@@ -232,7 +233,8 @@ export async function testFilterMatchingAdvanced() {
     };
 
     const phase3Ids = (knownEvent) => {
-      ws.send(JSON.stringify(["REQ", "sub-ids", { ids: [knownEvent.id], "#p": [pk] }]));
+      // `ids`-only: no authors / `#p`, so the relay must route by id index.
+      ws.send(JSON.stringify(["REQ", "sub-ids", { ids: [knownEvent.id] }]));
       setTimeout(() => {
         ws.send(JSON.stringify(["EVENT", knownEvent]));
       }, 200);

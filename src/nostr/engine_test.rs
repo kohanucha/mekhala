@@ -1259,3 +1259,145 @@ fn test_engine_load_unknown_connection_is_false() {
         );
     });
 }
+
+// ── Filter reach: `#p` info replay, `#e` / `ids`-only subscriptions ──
+
+fn info_event_for(id: &str, p_tags: Vec<Tag>) -> Event {
+    Event {
+        id: id.into(),
+        pubkey: "wallet".into(),
+        created_at: test_now(),
+        kind: 13194,
+        tags: p_tags,
+        content: "get_info".into(),
+        sig: "sig".into(),
+    }
+}
+
+fn replay_events(responses: &[EngineResponse]) -> Vec<(String, String)> {
+    responses
+        .iter()
+        .filter_map(|r| match r {
+            EngineResponse::Send {
+                message: RelayMessage::Event(sub_id, event),
+                ..
+            } => Some((sub_id.clone(), event.id.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn test_req_replays_info_for_p_tag_filter() {
+    futures::executor::block_on(async {
+        let mut engine = new_test_engine();
+        engine.on_connect(1).await;
+        engine
+            .process_info_event(info_event_for("info1", vec![Tag::p("app")]))
+            .await;
+
+        // NWA apps address the wallet through the info event's `p` tag.
+        let msg =
+            ClientMessage::from_json(r##"["REQ","nwa",{"kinds":[13194],"#p":["app"]}]"##).unwrap();
+        let responses = engine.handle_typed(1, msg).await;
+
+        assert_eq!(
+            replay_events(&responses),
+            vec![("nwa".to_string(), "info1".to_string())]
+        );
+        assert!(responses.iter().any(|r| matches!(
+            r,
+            EngineResponse::Send {
+                message: RelayMessage::Eose(_),
+                ..
+            }
+        )));
+    });
+}
+
+#[test]
+fn test_req_replays_info_once_when_author_and_p_tag_match() {
+    futures::executor::block_on(async {
+        let mut engine = new_test_engine();
+        engine.on_connect(1).await;
+        engine
+            .process_info_event(info_event_for("info1", vec![Tag::p("app")]))
+            .await;
+
+        let msg = ClientMessage::from_json(
+            r##"["REQ","both",{"kinds":[13194],"authors":["wallet"],"#p":["app"]}]"##,
+        )
+        .unwrap();
+        let responses = engine.handle_typed(1, msg).await;
+
+        assert_eq!(
+            replay_events(&responses).len(),
+            1,
+            "the same cached info event must not be replayed twice"
+        );
+    });
+}
+
+#[test]
+fn test_e_tag_only_subscription_receives_event() {
+    futures::executor::block_on(async {
+        set_test_time(crate::util::now());
+        let mut engine = new_test_engine();
+        engine.on_connect(1).await;
+
+        let msg = ClientMessage::from_json(r##"["REQ","sub-e",{"kinds":[23195],"#e":["req1"]}]"##)
+            .unwrap();
+        let _ = engine.handle_typed(1, msg).await;
+
+        let event = signed_event(
+            &wallet_sk(),
+            23195,
+            vec![
+                Tag::p(crate::common::test_helpers::TEST_WALLET_PK),
+                Tag::E("req1".into(), vec![]),
+            ],
+            "ciphertext",
+        );
+        let responses = engine
+            .handle_typed(1, ClientMessage::Event(event.clone()))
+            .await;
+
+        assert!(ok_response(&responses).0, "event must be accepted");
+        assert_eq!(
+            replay_events(&responses),
+            vec![("sub-e".to_string(), event.id)]
+        );
+    });
+}
+
+#[test]
+fn test_ids_only_subscription_receives_event() {
+    futures::executor::block_on(async {
+        set_test_time(crate::util::now());
+        let mut engine = new_test_engine();
+        engine.on_connect(1).await;
+
+        let event = signed_event(
+            &wallet_sk(),
+            23195,
+            vec![
+                Tag::p(crate::common::test_helpers::TEST_WALLET_PK),
+                Tag::E("req1".into(), vec![]),
+            ],
+            "ciphertext",
+        );
+        let msg =
+            ClientMessage::from_json(&format!(r#"["REQ","sub-id",{{"ids":["{}"]}}]"#, event.id))
+                .unwrap();
+        let _ = engine.handle_typed(1, msg).await;
+
+        let responses = engine
+            .handle_typed(1, ClientMessage::Event(event.clone()))
+            .await;
+
+        assert_eq!(
+            replay_events(&responses),
+            vec![("sub-id".to_string(), event.id)]
+        );
+    });
+}
