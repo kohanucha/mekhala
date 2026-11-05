@@ -388,10 +388,10 @@ fn test_info_id_index() {
         };
         registry.cache_info(event.clone()).await;
 
-        let pk = registry.find_info_pubkey_by_id("id1");
+        let pk = registry.find_info_pubkey_by_id("id1").await;
         assert_eq!(pk, Some("alice".into()));
 
-        let pk_missing = registry.find_info_pubkey_by_id("nonexistent");
+        let pk_missing = registry.find_info_pubkey_by_id("nonexistent").await;
         assert_eq!(pk_missing, None);
     });
 }
@@ -414,12 +414,15 @@ fn test_delete_info() {
         registry.cache_info(event.clone()).await;
 
         assert!(registry.get_info("alice").await.is_some());
-        assert_eq!(registry.find_info_pubkey_by_id("id1"), Some("alice".into()));
+        assert_eq!(
+            registry.find_info_pubkey_by_id("id1").await,
+            Some("alice".into())
+        );
 
         registry.delete_info("alice").await;
 
         assert!(registry.get_info("alice").await.is_none());
-        assert_eq!(registry.find_info_pubkey_by_id("id1"), None);
+        assert_eq!(registry.find_info_pubkey_by_id("id1").await, None);
 
         let data = registry.storage.data.lock().unwrap();
         assert!(!data.contains_key("info:alice"));
@@ -858,12 +861,12 @@ fn test_delete_info_removes_id_index_entry() {
 
         registry.cache_info(info).await;
         assert_eq!(
-            registry.find_info_pubkey_by_id("info1"),
+            registry.find_info_pubkey_by_id("info1").await,
             Some("wallet".to_string())
         );
 
         registry.delete_info("wallet").await;
-        assert_eq!(registry.find_info_pubkey_by_id("info1"), None);
+        assert_eq!(registry.find_info_pubkey_by_id("info1").await, None);
     });
 }
 
@@ -1645,5 +1648,298 @@ fn test_index_delete_info_returns_removed_event() {
         assert_eq!(removed.map(|e| e.id), Some("info1".into()));
         // A second delete finds nothing left to remove.
         assert!(registry.index.delete_info("wallet").is_none());
+    });
+}
+
+// ── subscription limit vs. NIP-01 replace semantics ──
+
+#[test]
+fn test_subscribe_replaces_existing_subscription_at_limit() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::new(65536, 1));
+        registry
+            .subscribe(1, "s1".into(), vec![authors_filter("alice")])
+            .await
+            .unwrap();
+
+        // At the limit, reusing the same sub_id replaces the subscription
+        // instead of being rejected (NIP-01).
+        registry
+            .subscribe(1, "s1".into(), vec![authors_filter("bob")])
+            .await
+            .expect("re-REQ of an existing sub_id must replace it at the limit");
+
+        assert_eq!(registry.index.sub_count(1), 1, "replace must not add a sub");
+        assert!(has_subscription(&registry, 1, "s1"));
+
+        let alice = crate::common::test_helpers::test_event("e1", "alice", 23194, vec![], 0);
+        assert!(
+            send_targets(&registry.match_event(&alice).await).is_empty(),
+            "the replaced filter must no longer route"
+        );
+        let bob = crate::common::test_helpers::test_event("e2", "bob", 23194, vec![], 0);
+        assert_eq!(
+            send_targets(&registry.match_event(&bob).await),
+            vec![(1, "s1".to_string())],
+            "the new filter must route"
+        );
+    });
+}
+
+#[test]
+fn test_subscribe_new_subscription_at_limit_is_rejected() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::new(65536, 1));
+        registry
+            .subscribe(1, "s1".into(), vec![authors_filter("alice")])
+            .await
+            .unwrap();
+
+        let err = registry
+            .subscribe(1, "s2".into(), vec![authors_filter("bob")])
+            .await
+            .expect_err("a new sub_id must still respect the limit");
+        assert!(err.to_string().contains("too many subscriptions"), "{err}");
+    });
+}
+
+// ── persisted `infoid:` reverse index ──
+
+#[test]
+fn test_cache_info_persists_infoid_index() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
+            .await;
+
+        assert_eq!(
+            registry.index.find_info_pubkey_by_id("info1").as_deref(),
+            Some("wallet")
+        );
+        let data = registry.storage.data.lock().unwrap();
+        assert_eq!(
+            data.get("infoid:info1").and_then(Value::as_str),
+            Some("wallet"),
+            "the id reverse index must be persisted for post-hibernation deletion"
+        );
+    });
+}
+
+#[test]
+fn test_find_info_pubkey_by_id_falls_back_to_storage() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
+            .await;
+
+        let restarted = simulate_hibernation(&registry.storage).await;
+        assert!(restarted.index.info_id_index.is_empty());
+        assert_eq!(
+            restarted.find_info_pubkey_by_id("info1").await.as_deref(),
+            Some("wallet"),
+            "the lookup must fall back to the persisted infoid key"
+        );
+        assert!(restarted.find_info_pubkey_by_id("missing").await.is_none());
+    });
+}
+
+#[test]
+fn test_republish_moves_infoid_index() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
+            .await;
+        registry
+            .cache_info(info_with_p_tags("info2", "wallet", &["app"]))
+            .await;
+
+        assert!(
+            registry.index.find_info_pubkey_by_id("info1").is_none(),
+            "the superseded event id must leave the in-memory index"
+        );
+        assert_eq!(
+            registry.find_info_pubkey_by_id("info1").await,
+            None,
+            "the superseded event id must leave storage too"
+        );
+        assert_eq!(
+            registry.find_info_pubkey_by_id("info2").await.as_deref(),
+            Some("wallet")
+        );
+        let data = registry.storage.data.lock().unwrap();
+        assert!(data.get("infoid:info1").is_none());
+        assert_eq!(
+            data.get("infoid:info2").and_then(Value::as_str),
+            Some("wallet")
+        );
+    });
+}
+
+#[test]
+fn test_republish_after_hibernation_cleans_infoid_and_stale_alias() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .cache_info(info_with_p_tags("info1", "wallet", &["app1", "shared"]))
+            .await;
+
+        // Fresh index: the republish can only learn the old event from storage.
+        let mut restarted = simulate_hibernation(&registry.storage).await;
+        restarted
+            .cache_info(info_with_p_tags("info2", "wallet", &["app2", "shared"]))
+            .await;
+
+        assert_eq!(
+            restarted.find_info_pubkey_by_id("info1").await,
+            None,
+            "the stale reverse index must be deleted from storage"
+        );
+        assert_eq!(
+            restarted.find_info_pubkey_by_id("info2").await.as_deref(),
+            Some("wallet")
+        );
+        assert!(
+            restarted.get_info("app1").await.is_none(),
+            "a p tag the new event no longer carries must not resolve"
+        );
+        assert_eq!(
+            restarted.get_info("app2").await.map(|e| e.id),
+            Some("info2".into())
+        );
+        let data = restarted.storage.data.lock().unwrap();
+        assert!(data.get("info-p:app1").is_none());
+        assert!(data.get("infoid:info1").is_none());
+    });
+}
+
+#[test]
+fn test_delete_info_removes_infoid_index() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
+            .await;
+
+        registry.delete_info("wallet").await;
+
+        assert!(registry.index.find_info_pubkey_by_id("info1").is_none());
+        assert!(registry.find_info_pubkey_by_id("info1").await.is_none());
+        let data = registry.storage.data.lock().unwrap();
+        assert!(data.get("infoid:info1").is_none());
+    });
+}
+
+#[test]
+fn test_delete_info_by_event_after_hibernation() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
+            .await;
+
+        let mut restarted = simulate_hibernation(&registry.storage).await;
+        assert!(restarted.delete_info_by_event("info1", "wallet").await);
+
+        assert!(restarted.get_info("wallet").await.is_none());
+        assert!(restarted.get_info("app").await.is_none());
+        assert!(restarted.find_info_pubkey_by_id("info1").await.is_none());
+        let data = restarted.storage.data.lock().unwrap();
+        assert!(data.get("info:wallet").is_none());
+        assert!(data.get("info-p:app").is_none());
+        assert!(data.get("infoid:info1").is_none());
+    });
+}
+
+#[test]
+fn test_delete_info_by_event_rejects_other_author() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
+            .await;
+
+        assert!(!registry.delete_info_by_event("info1", "attacker").await);
+        assert_eq!(
+            registry.get_info("wallet").await.map(|e| e.id),
+            Some("info1".into())
+        );
+    });
+}
+
+#[test]
+fn test_delete_info_by_event_ignores_superseded_id() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
+            .await;
+        registry
+            .cache_info(info_with_p_tags("info2", "wallet", &["app"]))
+            .await;
+
+        assert!(
+            !registry.delete_info_by_event("info1", "wallet").await,
+            "an old event id must not delete the republished event"
+        );
+        assert_eq!(
+            registry.get_info("wallet").await.map(|e| e.id),
+            Some("info2".into())
+        );
+    });
+}
+
+#[test]
+fn test_delete_info_by_event_after_hibernation_ignores_superseded_id() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
+            .await;
+
+        let mut restarted = simulate_hibernation(&registry.storage).await;
+        restarted
+            .cache_info(info_with_p_tags("info2", "wallet", &["app"]))
+            .await;
+
+        assert!(!restarted.delete_info_by_event("info1", "wallet").await);
+        assert_eq!(
+            restarted.get_info("wallet").await.map(|e| e.id),
+            Some("info2".into())
+        );
+    });
+}
+
+#[test]
+fn test_delete_info_by_event_unknown_id() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        assert!(!registry.delete_info_by_event("missing", "wallet").await);
+    });
+}
+
+#[test]
+fn test_delete_info_by_event_ignores_stale_reverse_index() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        registry
+            .cache_info(info_with_p_tags("info2", "wallet", &["app"]))
+            .await;
+
+        // Simulate a leftover reverse mapping for a superseded event id (e.g.
+        // legacy state written before republishing cleaned it up). The mapping
+        // resolves, but the current event is `info2`, so the delete must be
+        // refused instead of removing the newer event.
+        let mut leftover = std::collections::HashMap::new();
+        leftover.insert("infoid:info1".to_string(), serde_json::json!("wallet"));
+        registry.storage.put_batch(leftover).await.unwrap();
+
+        assert!(!registry.delete_info_by_event("info1", "wallet").await);
+        assert_eq!(
+            registry.get_info("wallet").await.map(|e| e.id),
+            Some("info2".into())
+        );
     });
 }

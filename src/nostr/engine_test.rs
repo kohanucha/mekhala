@@ -485,6 +485,128 @@ fn test_kind_5_deletion_unauthorized() {
 }
 
 #[test]
+fn test_kind_5_deletion_with_e_tag_after_hibernation() {
+    futures::executor::block_on(async {
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+
+        let data = Arc::new(Mutex::new(HashMap::new()));
+        let storage = MockStorage {
+            data: data.clone(),
+            fail_put_batch: false,
+        };
+        let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
+        engine.on_connect(1).await;
+
+        let sk = wallet_sk();
+        let pk = crate::common::test_helpers::TEST_WALLET_PK;
+        let info = signed_event(&sk, 13194, vec![Tag::p("app")], "{}");
+        engine.process_info_event(info.clone()).await;
+        assert!(engine.get_wallet_info(pk).await.is_some());
+
+        // Simulate hibernation: only the persisted keys survive.
+        let snapshot = data.lock().unwrap().clone();
+        let restarted_storage = MockStorage::new();
+        *restarted_storage.data.lock().unwrap() = snapshot;
+        let mut restarted =
+            NostrEngine::new_with_storage(restarted_storage, Limits::default(), test_now);
+        restarted.on_connect(1).await;
+
+        let deletion = signed_event(&sk, 5, vec![Tag::E(info.id.clone(), vec![])], "");
+        restarted.process_deletion_event(&deletion).await;
+
+        assert!(restarted.get_wallet_info(pk).await.is_none());
+        assert!(
+            restarted.get_wallet_info("app").await.is_none(),
+            "the p tag alias must be gone as well"
+        );
+    });
+}
+
+#[test]
+fn test_kind_5_deletion_with_e_tag_after_hibernation_unauthorized() {
+    futures::executor::block_on(async {
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+
+        let data = Arc::new(Mutex::new(HashMap::new()));
+        let storage = MockStorage {
+            data: data.clone(),
+            fail_put_batch: false,
+        };
+        let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
+        engine.on_connect(1).await;
+
+        let sk = wallet_sk();
+        let pk = crate::common::test_helpers::TEST_WALLET_PK;
+        let info = signed_event(&sk, 13194, vec![], "{}");
+        engine.process_info_event(info.clone()).await;
+
+        let snapshot = data.lock().unwrap().clone();
+        let restarted_storage = MockStorage::new();
+        *restarted_storage.data.lock().unwrap() = snapshot;
+        let mut restarted =
+            NostrEngine::new_with_storage(restarted_storage, Limits::default(), test_now);
+        restarted.on_connect(1).await;
+
+        // Another author cannot delete an event it did not sign.
+        let attacker = Event {
+            id: "del1".into(),
+            pubkey: "attacker".into(),
+            created_at: test_now(),
+            kind: 5,
+            tags: vec![Tag::E(info.id.clone(), vec![])],
+            content: String::new(),
+            sig: "sig".into(),
+        };
+        restarted.process_deletion_event(&attacker).await;
+
+        assert!(restarted.get_wallet_info(pk).await.is_some());
+    });
+}
+
+#[test]
+fn test_kind_5_deletion_by_old_e_tag_keeps_republished_info() {
+    futures::executor::block_on(async {
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+
+        let data = Arc::new(Mutex::new(HashMap::new()));
+        let storage = MockStorage {
+            data: data.clone(),
+            fail_put_batch: false,
+        };
+        let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
+        engine.on_connect(1).await;
+
+        let sk = wallet_sk();
+        let pk = crate::common::test_helpers::TEST_WALLET_PK;
+        let old = signed_event(&sk, 13194, vec![], "{}");
+        engine.process_info_event(old.clone()).await;
+
+        let snapshot = data.lock().unwrap().clone();
+        let restarted_storage = MockStorage::new();
+        *restarted_storage.data.lock().unwrap() = snapshot;
+        let mut restarted =
+            NostrEngine::new_with_storage(restarted_storage, Limits::default(), test_now);
+        restarted.on_connect(1).await;
+
+        // Republish, then delete using the superseded event id.
+        set_test_time(test_now() + 1);
+        let new = signed_event(&sk, 13194, vec![], "{}");
+        restarted.process_info_event(new).await;
+
+        let deletion = signed_event(&sk, 5, vec![Tag::E(old.id, vec![])], "");
+        restarted.process_deletion_event(&deletion).await;
+
+        assert!(
+            restarted.get_wallet_info(pk).await.is_some(),
+            "the newer info event must survive deletion of the old id"
+        );
+    });
+}
+
+#[test]
 fn test_kind_5_deletion_with_k_tag() {
     futures::executor::block_on(async {
         let mut engine = new_test_engine();
