@@ -9,6 +9,7 @@
     "pretest": "npm run setup-test"
   },
   "dependencies": {
+    "@getalby/sdk": "9.0.0",
     "nostr-tools": "^2.10.3",
     "ws": "^8.18.0"
   }

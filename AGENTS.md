@@ -81,6 +81,20 @@ Single-context layout. See `docs/agents/domain.md`.
 - `TEST_TIME` thread_local, `test_now()`, and `set_test_time()` live in `engine_test.rs`.
 - Available to all tests in that file via direct module scope.
 
+### Integration suite (`test/`)
+- `test/run-all.js` orchestrates everything; remote runs (`node run-all.js host`)
+  skip local-only tests via `isLocal`.
+- `test/conformance.test.js` drives the **real `@getalby/sdk`**
+  (`NWCClient` / `NWCWalletService` / `NWAClient`) end-to-end with canned
+  wallet handlers — no Lightning node. Keep it aligned with the exact version
+  pinned in `test/package.json`; its filters/tags are what Alby Go/Hub send.
+  It runs against local and remote relays.
+- `test/restart-persistence.test.js` spawns its own `wrangler dev` on port
+  8790 with a temp `--persist-to` directory, kills it, restarts on the same
+  directory, and asserts the DO storage keys survive (`info:`, `info-p:`,
+  `infoid:`, delete-by-e-tag). Local only; uses a separate state dir so it
+  never clobbers `.wrangler/state`.
+
 ## Coverage Gate
 - Measure **production code only**: test files (`*_test.rs`) and `cloudflare/`
   are excluded. Test files would otherwise count their own ~99% coverage into

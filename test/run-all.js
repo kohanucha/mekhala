@@ -10,6 +10,8 @@ import { testMalformedEventProducesOK, testOversizedEventProducesOK, testTimesta
 import { testNip44AndFallback, testInfoEventCaching, testKind13194OK } from "./nip44.test.js";
 import { testLnAddressFlow, testLnAddressOffline, testLnAddressErrors } from "./lnaddress.test.js";
 import { testCloseNonExistentSub, testReplaceSubscription, testDuplicateEventPublish } from "./subscription-edge-cases.test.js";
+import { runSdkConformance } from "./conformance.test.js";
+import { testRestartPersistence } from "./restart-persistence.test.js";
 
 async function runAll() {
   try {
@@ -36,6 +38,7 @@ async function runAll() {
     await testEdgeCases();
     await testDuplicateEventPublish();
     await testRealisticPaymentFlow();
+    await runSdkConformance();
     if (isLocal) {
       await testLnAddressFlow();
       await testLnAddressOffline();
@@ -61,8 +64,10 @@ async function runAll() {
     await testCorsAndHeaders();
     if (isLocal) {
       await testMaxConnections();
+      await testRestartPersistence();
     } else {
       console.log("Skipping Max Connections test (remote — spawns local wrangler)...");
+      console.log("Skipping Restart Persistence test (remote — spawns local wrangler)...");
     }
     console.log("\nAll tests passed successfully! 🚀");
     process.exit(0);

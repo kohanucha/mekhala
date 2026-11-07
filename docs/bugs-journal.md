@@ -283,6 +283,34 @@ Also expanded tracking to `authors` — when a connection subscribes with an
 
 ---
 
+### Hibernation Bug 8: restoring a connection resurrects a stale info event
+
+**Found by:** `test/restart-persistence.test.js`  
+**Severity:** High (serves outdated wallet capabilities)
+
+#### Symptom
+After a restart (or hibernation wake), a wallet republished its kind 13194
+info event with new capabilities, but every `REQ` kept returning the previous
+event. Storage held the new event; the replay served the old one.
+
+#### Root Cause
+`WalletIndex::save` embedded a copy of the wallet's info event in the
+connection snapshot (`conn:<id>` → `info_event`), and `restore` re-cached that
+copy into the live index. A connection persisted *before* the republish
+therefore re-inserted the old event on the next `load`, and `get_info` prefers
+the in-memory index over `info:<pubkey>` — so the stale copy won. A connection
+persisted before a kind 5 deletion could resurrect deleted info the same way.
+
+#### Fix
+The connection snapshot now contains only subscriptions. `info:<pubkey>` is
+the single source of truth, read lazily on replay; snapshots written by older
+versions still contain `info_event` and it is ignored on restore.
+
+**Lesson:** when the same fact is persisted twice (per-connection copy and
+global key), restoring the copy can overwrite newer state. Persist it once.
+
+---
+
 ## Domain 2: Client & Protocol Compatibility
 
 Bugs that caused client timeouts, silent failures, or protocol mismatches.
