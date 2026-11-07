@@ -29,8 +29,11 @@ Mekhala is a specialized, ephemeral Nostr relay built in Rust and compiled to We
 2. **Configure Private Path:**
    - Under your Worker's **Settings** -> **Variables and Secrets**, add a Secret named `RELAY_SECRET`.
    - Set it to a long, secure, unique path identifier.
-3. **Connect Your Wallet:**
-   - **Your Relay URL:** `wss://your-worker.workers.dev/<your-secret-path>`
+3. **Attach a Custom Domain:**
+   - In **Workers & Pages** → your Worker → **Settings** → **Domains & Routes**, add a Custom Domain (e.g. `relay.example.com`).
+   - `wrangler.toml` deploys with `workers_dev = false` and `preview_urls = false`, so the Worker is **not** reachable on `<worker>.<account>.workers.dev`. Set `workers_dev = true` if you cannot attach a domain yet.
+4. **Connect Your Wallet:**
+   - **Your Relay URL:** `wss://relay.example.com/<your-secret-path>`
 
 > [!WARNING]
 > **Lightning Address Bridge (Experimental):** The feature to bridge Lightning Addresses (e.g., `you@domain.com`) to NWC is highly experimental, under development, and not yet ready for production or general use.

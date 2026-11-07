@@ -2,6 +2,13 @@ name = "mekhala"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-04-30"
 
+# Serve only on the custom domain bound to this Worker. `workers.dev` is a
+# second public entrypoint nobody asks for, and version preview URLs would
+# expose unreleased code on the same domain family. Set `workers_dev = true`
+# only when a deployment has no custom domain attached yet.
+workers_dev = false
+preview_urls = false
+
 [vars]
 WALLET_REGION = "apac"
 MAX_CONNECTIONS = "100"

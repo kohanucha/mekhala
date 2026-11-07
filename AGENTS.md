@@ -38,6 +38,9 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 - Output: `build/worker/shim.mjs`
 - Durable Object binding: `MEKHALA_NWC_DO` → class `CloudflareTransport`
 - Compatibility date: 2026-04-30
+- `workers_dev = false` and `preview_urls = false`: the Worker is public only
+  through the custom domain bound in the dashboard. Do not flip these on to
+  "test" a deploy — preview URLs would expose unreleased code publicly.
 
 ## Common Gotchas
 1. **DO state**: Use `self.state.storage()`
