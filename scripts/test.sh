@@ -23,6 +23,8 @@ cleanup() {
     pkill -9 -f "workerd" 2>/dev/null || true
     # Port 8788 cleanup (from testMaxConnections in JS)
     lsof -ti :8788 2>/dev/null | xargs kill -9 2>/dev/null || true
+    # Port 8790 cleanup (from testRestartPersistence in JS)
+    lsof -ti :8790 2>/dev/null | xargs kill -9 2>/dev/null || true
     echo "Cleanup complete."
     echo "Wrangler logs saved to: $LOG_FILE"
 }

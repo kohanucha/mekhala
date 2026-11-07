@@ -24,9 +24,13 @@ pub trait Storage {
 }
 
 /// Snapshot of one connection's state, produced by the internal index and
-/// persisted under the `conn:<id>` key: the JSON to store (subscriptions
-/// plus the cached wallet-service info event) and the routing keys referenced
-/// by that connection's filters.
+/// persisted under the `conn:<id>` key: the JSON to store (subscriptions)
+/// and the routing keys referenced by that connection's filters.
+///
+/// The cached wallet info event is deliberately *not* part of this snapshot:
+/// `info:<pubkey>` is the single source of truth, so a hibernated connection
+/// waking up can never resurrect an info event that the wallet has since
+/// replaced or deleted.
 pub struct SavedState {
     /// JSON to persist for this connection.
     pub json: Value,
@@ -352,7 +356,6 @@ impl WalletIndex {
             return None;
         }
 
-        let mut info_event = None;
         let mut pubkeys = HashSet::new();
         let mut event_ids = HashSet::new();
         let mut e_tags = HashSet::new();
@@ -360,11 +363,6 @@ impl WalletIndex {
             for filter in filters {
                 for pk in filter.pubkeys() {
                     pubkeys.insert(pk.clone());
-                    if info_event.is_none() {
-                        if let Some(event) = self.get_info(&pk) {
-                            info_event = Some(event);
-                        }
-                    }
                 }
                 if let Some(ids) = &filter.ids {
                     event_ids.extend(ids.iter().cloned());
@@ -378,7 +376,6 @@ impl WalletIndex {
         Some(SavedState {
             json: serde_json::json!({
                 "subscriptions": subscriptions,
-                "info_event": info_event,
             }),
             pubkeys,
             event_ids,
@@ -396,11 +393,8 @@ impl WalletIndex {
                 }
             }
         }
-        if let Some(info_val) = data.get("info_event") {
-            if let Ok(event) = serde_json::from_value::<Event>(info_val.clone()) {
-                self.cache_info(event);
-            }
-        }
+        // Older snapshots may still contain an `info_event` copy; it is
+        // ignored on purpose. Storage (`info:<pubkey>`) is authoritative.
     }
 }
 
@@ -522,8 +516,9 @@ impl<S: Storage> WalletRegistry<S> {
     }
 
     /// Restores the connection's subscriptions from storage into the live
-    /// index; returns whether it has subscriptions afterwards (storage hits
-    /// also re-cache the stored info event).
+    /// index; returns whether it has subscriptions afterwards. The cached
+    /// info event is read lazily from `info:<pubkey>`, never from the
+    /// connection snapshot.
     pub async fn load(&mut self, conn_id: u32) -> bool {
         if !self.index.get_subscriptions(conn_id).is_empty() {
             return true;

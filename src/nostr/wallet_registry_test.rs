@@ -922,7 +922,7 @@ fn test_load_by_pubkey_falls_back_to_live_connection() {
 }
 
 #[test]
-fn test_save_persists_cached_info_event() {
+fn test_saved_connection_state_has_no_info_event_copy() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
         let data = storage.data.clone();
@@ -937,32 +937,44 @@ fn test_save_persists_cached_info_event() {
 
         let data = data.lock().unwrap();
         let saved = &data["conn:1"];
-        assert_eq!(saved["info_event"]["id"], "info1");
+        assert!(
+            saved.get("info_event").is_none(),
+            "conn state must not duplicate the authoritative info: key"
+        );
     });
 }
 
+// Regression: a hibernated connection snapshot used to carry a copy of the
+// info event. After the wallet republished, restoring that connection
+// re-cached the stale copy and every replay served the old event.
 #[test]
-fn test_restore_recaches_persisted_info_event() {
+fn test_hibernation_does_not_resurrect_stale_info_event() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let shared = storage.data.clone();
-        let info = crate::common::test_helpers::test_event("info1", "pk", 13194, vec![], 0);
         let mut registry = WalletRegistry::new(storage, Limits::default());
-        registry.cache_info(info).await;
         registry
-            .subscribe(1, "s1".into(), vec![authors_filter("pk")])
+            .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
+            .await;
+        registry
+            .subscribe(1, "s1".into(), vec![authors_filter("wallet")])
             .await
             .unwrap();
 
-        let cold = MockStorage {
-            data: shared,
-            fail_put_batch: false,
-        };
-        let mut hibernated = simulate_hibernation(&cold).await;
-        assert!(hibernated.load(1).await);
-        assert!(
-            hibernated.index.get_info("pk").is_some(),
-            "restore must re-cache the info event in the live index"
+        let mut restarted = simulate_hibernation(&registry.storage).await;
+        restarted
+            .cache_info(info_with_p_tags("info2", "wallet", &["app"]))
+            .await;
+
+        // Restoring the old connection must not clobber the newer event.
+        assert!(restarted.load(1).await);
+        assert_eq!(
+            restarted.index.get_info("wallet").map(|e| e.id),
+            Some("info2".into()),
+            "stale connection snapshot overwrote the republished info event"
+        );
+        assert_eq!(
+            restarted.get_info("wallet").await.map(|e| e.id),
+            Some("info2".into())
         );
     });
 }
