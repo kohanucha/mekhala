@@ -343,23 +343,20 @@ impl crate::common::NwcTransport for CloudflareTransport {
         let id = self.allocate_id().await;
         let mut machine = NwcRpcMachine::new(request);
 
-        // Phase 1: subscribe + publish
-        {
-            let mut engine = self.engine.lock().await;
-            for action in machine.start() {
-                self.execute_rpc_action_inner(id, action, &mut engine)
-                    .await?;
-            }
-        }
-
-        // Phase 2: wait for matching response
+        // Phases 1-2: subscribe + publish, then wait for the matching response.
+        // Errors from either phase propagate, so Phase 3 below must run
+        // unconditionally rather than through `?`.
         let result = self
-            .receive_rpc_response(id, &mut machine, RPC_TIMEOUT_SECS)
+            .run_rpc_round_trip(id, &mut machine, RPC_TIMEOUT_SECS)
             .await;
 
-        // Phase 3: cleanup — always disconnect, removing all subscriptions
+        // Phase 3: cleanup — always terminate the internal session. Terminating
+        // (not just dropping the in-memory index) removes `conn:<id>` and the
+        // `pk:`/`eid:`/`etag:` memberships it created; otherwise a later
+        // `load_indexed` resurrects the dead subscription and storage grows
+        // without bound (regression: internal RPC session leak, H-2).
         let mut engine = self.engine.lock().await;
-        let _ = engine.on_disconnect(id).await;
+        let _ = engine.on_terminate(id).await;
         self.connections.borrow_mut().remove(id);
 
         result
@@ -401,6 +398,26 @@ impl CloudflareTransport {
             log_warn!("✗ send failed: conn={} not found", id);
             false
         }
+    }
+
+    /// Phase 1 and 2 of an internal NWC round trip: subscribe to the response
+    /// filter, publish the request, then await the wallet's reply. The caller
+    /// always runs Phase 3 cleanup afterwards, even when this returns `Err`.
+    async fn run_rpc_round_trip(
+        &self,
+        id: u32,
+        machine: &mut NwcRpcMachine,
+        timeout_secs: u64,
+    ) -> Result<crate::nostr::Event, crate::common::NwcError> {
+        {
+            let mut engine = self.engine.lock().await;
+            for action in machine.start() {
+                self.execute_rpc_action_inner(id, action, &mut engine)
+                    .await?;
+            }
+        }
+
+        self.receive_rpc_response(id, machine, timeout_secs).await
     }
 
     async fn receive_rpc_response(

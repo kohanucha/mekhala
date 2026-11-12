@@ -326,15 +326,8 @@ impl<S: Storage> NostrEngine<S> {
         Vec::new()
     }
 
-    /// Drops the connection's live index entries while keeping persisted
-    /// state (internal RPC session cleanup); returns no responses.
-    pub async fn on_disconnect(&mut self, id: u32) -> Vec<EngineResponse> {
-        self.registry.on_disconnect(id).await;
-        Vec::new()
-    }
-
-    /// Final teardown when a WebSocket closes: removes the connection's
-    /// persisted state; returns no responses.
+    /// Final teardown when a connection ends for good: removes the connection's
+    /// live index entries and persisted state; returns no responses.
     pub async fn on_terminate(&mut self, id: u32) -> Vec<EngineResponse> {
         log_debug!("terminate conn={}", id);
         self.registry.on_terminate(id).await;
