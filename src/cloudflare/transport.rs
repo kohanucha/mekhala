@@ -343,18 +343,14 @@ impl crate::common::NwcTransport for CloudflareTransport {
         let id = self.allocate_id().await;
         let mut machine = NwcRpcMachine::new(request);
 
-        // Phases 1-2: subscribe + publish, then wait for the matching response.
-        // Errors from either phase propagate, so Phase 3 below must run
-        // unconditionally rather than through `?`.
+        // Phases 1-2. Errors propagate, so Phase 3 must not sit behind `?`.
         let result = self
             .run_rpc_round_trip(id, &mut machine, RPC_TIMEOUT_SECS)
             .await;
 
-        // Phase 3: cleanup — always terminate the internal session. Terminating
-        // (not just dropping the in-memory index) removes `conn:<id>` and the
-        // `pk:`/`eid:`/`etag:` memberships it created; otherwise a later
-        // `load_indexed` resurrects the dead subscription and storage grows
-        // without bound (regression: internal RPC session leak, H-2).
+        // Phase 3: always tear the session down completely. Memory-only
+        // cleanup leaves `conn:` and index keys behind, and `load_indexed`
+        // would then resurrect the dead subscription on the next request.
         let mut engine = self.engine.lock().await;
         let _ = engine.on_terminate(id).await;
         self.connections.borrow_mut().remove(id);
@@ -400,9 +396,8 @@ impl CloudflareTransport {
         }
     }
 
-    /// Phase 1 and 2 of an internal NWC round trip: subscribe to the response
-    /// filter, publish the request, then await the wallet's reply. The caller
-    /// always runs Phase 3 cleanup afterwards, even when this returns `Err`.
+    /// Phase 1-2 of an internal NWC round trip: subscribe, publish, and wait
+    /// for the wallet's reply. The caller always runs Phase 3 cleanup.
     async fn run_rpc_round_trip(
         &self,
         id: u32,

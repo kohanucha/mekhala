@@ -65,13 +65,9 @@ fn p_tag_pubkeys(event: &Event) -> Vec<String> {
         .collect()
 }
 
-/// Persisted routing keys (`pk:`, `eid:`, `etag:`) referenced by a
-/// connection's subscription set.
-///
-/// `sync()` appends the connection to every key a subscription references;
-/// removing a subscription must therefore drop the connection from the keys
-/// that no remaining subscription references, or the persisted index keeps a
-/// membership the live connection no longer has.
+/// Persisted routing keys (`pk:`, `eid:`, `etag:`) a connection's
+/// subscriptions reference. `sync()` adds the connection to these keys, so
+/// removing subscriptions has to take it out again.
 fn referenced_keys(subs: &HashMap<String, Vec<Filter>>) -> HashSet<String> {
     let mut keys = HashSet::new();
     for filters in subs.values() {
@@ -488,13 +484,11 @@ impl<S: Storage> WalletRegistry<S> {
         Ok(())
     }
 
-    /// Removes a subscription from the index and re-persists the connection
-    /// state; never fails (persistence problems are logged).
+    /// Removes a subscription and re-persists the connection state; never
+    /// fails (persistence problems are logged).
     ///
-    /// The connection is also dropped from every `pk:`/`eid:`/`etag:` index
-    /// key that only this subscription referenced, so closing the last
-    /// subscription (e.g. an internal RPC session that unsubscribes after a
-    /// response) leaves no persisted routing entry behind.
+    /// Also drops the connection from any `pk:`/`eid:`/`etag:` key that no
+    /// remaining subscription references.
     pub async fn unsubscribe(&mut self, conn_id: u32, sub_id: String) -> crate::nostr::Result<()> {
         let before = referenced_keys(&self.index.get_subscriptions(conn_id));
         self.index.unsubscribe(conn_id, sub_id.clone());
@@ -606,10 +600,8 @@ impl<S: Storage> WalletRegistry<S> {
         Some(loaded)
     }
 
-    /// Final teardown when a connection ends for good: drops the live index
-    /// entries and deletes the persisted state (`conn:<id>` plus the
-    /// connection's membership in every `pk:`/`eid:`/`etag:` key it
-    /// referenced).
+    /// Final teardown: drops live index entries and deletes persisted state
+    /// (`conn:<id>` plus its `pk:`/`eid:`/`etag:` memberships).
     pub async fn on_terminate(&mut self, id: u32) {
         let keys = referenced_keys(&self.index.get_subscriptions(id));
 

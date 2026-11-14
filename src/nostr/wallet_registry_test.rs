@@ -516,9 +516,8 @@ fn test_registry_terminate() {
     });
 }
 
-/// Regression (H-2): closing the last subscription of a connection must drop
-/// its `pk:`/`eid:`/`etag:` index membership and its `conn:` snapshot, so an
-/// ended internal RPC session is never resurrected by `load_indexed`.
+/// Regression (H-2): closing the last subscription must remove `conn:` and
+/// its `pk:`/`eid:`/`etag:` entries.
 #[test]
 fn test_unsubscribe_prunes_persisted_routing_indexes() {
     futures::executor::block_on(async {
@@ -560,8 +559,7 @@ fn test_unsubscribe_prunes_persisted_routing_indexes() {
     });
 }
 
-/// Unsubscribing one of two subscriptions must not drop the connection from a
-/// routing key that the remaining subscription still references.
+/// Unsubscribing one of two subscriptions keeps keys the other one uses.
 #[test]
 fn test_unsubscribe_keeps_shared_index_membership() {
     futures::executor::block_on(async {

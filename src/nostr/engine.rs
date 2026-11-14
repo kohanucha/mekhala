@@ -326,8 +326,7 @@ impl<S: Storage> NostrEngine<S> {
         Vec::new()
     }
 
-    /// Final teardown when a connection ends for good: removes the connection's
-    /// live index entries and persisted state; returns no responses.
+    /// Final teardown: removes live index entries and persisted state.
     pub async fn on_terminate(&mut self, id: u32) -> Vec<EngineResponse> {
         log_debug!("terminate conn={}", id);
         self.registry.on_terminate(id).await;

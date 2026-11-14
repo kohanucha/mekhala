@@ -752,10 +752,8 @@ fn test_on_terminate_removes_state() {
     });
 }
 
-/// Regression (H-2): the internal RPC session used by the LN address bridge
-/// must leave nothing behind after Phase 3 cleanup. A memory-only cleanup let
-/// `load_indexed` resurrect the dead subscription on the next round trip and
-/// grew DO storage without bound.
+/// Regression (H-2): the internal RPC session must leave no persisted state,
+/// or `load_indexed` resurrects it on the next round trip.
 #[test]
 fn test_internal_rpc_session_terminate_leaves_no_state() {
     futures::executor::block_on(async {
@@ -794,9 +792,7 @@ fn test_internal_rpc_session_terminate_leaves_no_state() {
     });
 }
 
-/// Regression (H-2), success path: the RPC machine closes its subscription
-/// after receiving the response, so `CLOSE` alone must prune the persisted
-/// `etag:` index entry (previously only `on_terminate` did).
+/// Regression (H-2), success path: `CLOSE` alone must prune `etag:`.
 #[test]
 fn test_close_prunes_internal_rpc_indexes() {
     futures::executor::block_on(async {
