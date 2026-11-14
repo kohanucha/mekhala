@@ -13,7 +13,9 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 | Integration tests | `./scripts/test.sh` | Full pipeline: test → build → wrangler → node |
 
 ## Build Requirements
-- `rustup target add wasm32-unknown-unknown`
+- Toolchain is pinned in `rust-toolchain.toml` (1.100.0, includes the
+  `wasm32-unknown-unknown` target); `rustup` installs it on first use. CI uses
+  the same version, so local clippy matches the gate.
 - `cargo install worker-build`
 - Node.js + npm
 
@@ -47,7 +49,7 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 2. **WebSocket tags**: Use `utils::HibernationState` trait
 3. **Panic = Abort**: The project uses `panic = "abort"`. **NEVER** use `unwrap()` or `expect()`. Use `?`, `.get()` for indexing, and checked math to prevent isolate crashes.
 4. **`sync()` required for persistence**: Every `subscribe()`/`unsubscribe()` must call `sync()`. The in-memory index is lost on DO hibernation — only `state.storage()` survives. Removing `sync()` breaks event routing after wake. Regression test: `test_hibernation_contract`.
-5. **Routing index families**: A subscription can be indexed under `pk:` (`authors`/`#p`), `eid:` (`ids`) or `etag:` (`#e`); `sync()`, `load_indexed()` and `on_terminate()` must treat all three the same or routing silently degrades to "accepted, EOSE, no event". Cached info events also persist an `info-p:<p tag>` alias so `#p`-only subscribers reach the author's `info:<author>` event; when two wallets address the same app the last publisher owns the alias, and `delete_info()` must check alias ownership before deleting it.
+5. **Routing index families**: A subscription can be indexed under `pk:` (`authors`/`#p`), `eid:` (`ids`) or `etag:` (`#e`); `sync()`, `load_indexed()`, `unsubscribe()` and `on_terminate()` must treat all three the same or routing silently degrades to "accepted, EOSE, no event", or the persisted index keeps a membership the live connection no longer has (leaks storage and resurrects dead subscriptions). Cached info events also persist an `info-p:<p tag>` alias so `#p`-only subscribers reach the author's `info:<author>` event; when two wallets address the same app the last publisher owns the alias, and `delete_info()` must check alias ownership before deleting it.
 
 ## Agent skills
 

@@ -65,6 +65,27 @@ fn p_tag_pubkeys(event: &Event) -> Vec<String> {
         .collect()
 }
 
+/// Persisted routing keys (`pk:`, `eid:`, `etag:`) a connection's
+/// subscriptions reference. `sync()` adds the connection to these keys, so
+/// removing subscriptions has to take it out again.
+fn referenced_keys(subs: &HashMap<String, Vec<Filter>>) -> HashSet<String> {
+    let mut keys = HashSet::new();
+    for filters in subs.values() {
+        for filter in filters {
+            for pk in filter.pubkeys() {
+                keys.insert(format!("pk:{pk}"));
+            }
+            for event_id in filter.ids.iter().flatten() {
+                keys.insert(format!("eid:{event_id}"));
+            }
+            for event_id in filter.e_tags.iter().flatten() {
+                keys.insert(format!("etag:{event_id}"));
+            }
+        }
+    }
+    keys
+}
+
 /// Removes a subscription from one of the secondary indexes, dropping the
 /// key entirely once no subscription references it.
 fn remove_from_index(index: &mut HashMap<String, HashSet<SubKey>>, key: &str, sub_key: &SubKey) {
@@ -362,7 +383,7 @@ impl WalletIndex {
         for filters in subscriptions.values() {
             for filter in filters {
                 for pk in filter.pubkeys() {
-                    pubkeys.insert(pk.clone());
+                    pubkeys.insert(pk);
                 }
                 if let Some(ids) = &filter.ids {
                     event_ids.extend(ids.iter().cloned());
@@ -463,10 +484,18 @@ impl<S: Storage> WalletRegistry<S> {
         Ok(())
     }
 
-    /// Removes a subscription from the index and re-persists the connection
-    /// state; never fails (persistence problems are logged).
+    /// Removes a subscription and re-persists the connection state; never
+    /// fails (persistence problems are logged).
+    ///
+    /// Also drops the connection from any `pk:`/`eid:`/`etag:` key that no
+    /// remaining subscription references.
     pub async fn unsubscribe(&mut self, conn_id: u32, sub_id: String) -> crate::nostr::Result<()> {
+        let before = referenced_keys(&self.index.get_subscriptions(conn_id));
         self.index.unsubscribe(conn_id, sub_id.clone());
+        let after = referenced_keys(&self.index.get_subscriptions(conn_id));
+        for key in before.difference(&after) {
+            self.remove_conn_from_index(key.clone(), conn_id).await;
+        }
         if let Err(e) = self.sync(conn_id).await {
             log_error!(
                 "unsubscribe sync failed: conn={} sub={} err={}",
@@ -571,45 +600,15 @@ impl<S: Storage> WalletRegistry<S> {
         Some(loaded)
     }
 
-    /// Drops the connection's in-memory index entries only; persisted state
-    /// survives so the connection can still be woken by later matching
-    /// events (used for internal RPC session cleanup).
-    pub async fn on_disconnect(&mut self, id: u32) {
-        self.index.disconnect(id);
-    }
-
-    /// Final teardown when a WebSocket closes: drops the index entries and
-    /// deletes the persisted state (`conn:<id>` plus the connection's
-    /// membership in every `pk:` index it referenced).
+    /// Final teardown: drops live index entries and deletes persisted state
+    /// (`conn:<id>` plus its `pk:`/`eid:`/`etag:` memberships).
     pub async fn on_terminate(&mut self, id: u32) {
-        let subs = self.index.get_subscriptions(id);
-        let mut pubkeys: HashSet<String> = HashSet::new();
-        let mut event_ids: HashSet<String> = HashSet::new();
-        let mut e_tags: HashSet<String> = HashSet::new();
-        for filters in subs.values() {
-            for filter in filters {
-                pubkeys.extend(filter.pubkeys());
-                if let Some(ids) = &filter.ids {
-                    event_ids.extend(ids.iter().cloned());
-                }
-                if let Some(ids) = &filter.e_tags {
-                    e_tags.extend(ids.iter().cloned());
-                }
-            }
-        }
+        let keys = referenced_keys(&self.index.get_subscriptions(id));
 
         self.index.disconnect(id);
 
-        for pk in &pubkeys {
-            self.remove_conn_from_index(format!("pk:{pk}"), id).await;
-        }
-        for event_id in &event_ids {
-            self.remove_conn_from_index(format!("eid:{event_id}"), id)
-                .await;
-        }
-        for event_id in &e_tags {
-            self.remove_conn_from_index(format!("etag:{event_id}"), id)
-                .await;
+        for key in keys {
+            self.remove_conn_from_index(key, id).await;
         }
 
         log_debug!("deleted conn state: conn={}", id);

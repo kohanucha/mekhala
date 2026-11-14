@@ -752,6 +752,79 @@ fn test_on_terminate_removes_state() {
     });
 }
 
+/// The internal RPC session must leave no persisted state,
+/// or `load_indexed` resurrects it on the next round trip.
+#[test]
+fn test_internal_rpc_session_terminate_leaves_no_state() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
+
+        engine.on_connect(42).await;
+        let _ = engine
+            .handle_req_internal(
+                42,
+                "rpc_sub".to_string(),
+                vec![Filter {
+                    e_tags: Some(vec!["req-1".into()]),
+                    p_tags: Some(vec!["app-pk".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await;
+
+        engine.on_terminate(42).await;
+
+        let keys: Vec<String> = data.lock().unwrap().keys().cloned().collect();
+        assert!(
+            keys.is_empty(),
+            "internal RPC session leaked persisted state: {keys:?}"
+        );
+        assert!(
+            !engine.load(42).await,
+            "terminated session must not restore"
+        );
+        assert!(
+            engine.load_by_pubkey("app-pk").await.is_empty(),
+            "terminated session must not be resurrected"
+        );
+    });
+}
+
+/// Success path: `CLOSE` alone must prune `etag:`.
+#[test]
+fn test_close_prunes_internal_rpc_indexes() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
+
+        engine.on_connect(7).await;
+        let _ = engine
+            .handle_req_internal(
+                7,
+                "rpc_sub".to_string(),
+                vec![Filter {
+                    e_tags: Some(vec!["req-9".into()]),
+                    p_tags: Some(vec!["app-pk".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await;
+
+        let _ = engine.process_close(7, "rpc_sub".to_string()).await;
+
+        let keys: Vec<String> = data.lock().unwrap().keys().cloned().collect();
+        assert!(
+            keys.is_empty(),
+            "CLOSE left persisted state behind: {keys:?}"
+        );
+        assert!(!engine.load(7).await);
+        assert!(engine.load_by_pubkey("app-pk").await.is_empty());
+    });
+}
+
 #[test]
 fn test_req_filter_too_broad() {
     futures::executor::block_on(async {
@@ -1223,30 +1296,6 @@ fn test_process_req_limit_stops_after_cached_info() {
                 ..
             })
         ));
-    });
-}
-
-#[test]
-fn test_engine_on_disconnect_keeps_persisted_state() {
-    futures::executor::block_on(async {
-        let mut engine = new_test_engine();
-        engine.on_connect(7).await;
-        let _ = engine
-            .process_req(
-                7,
-                "sub1".into(),
-                vec![Filter {
-                    authors: Some(vec!["alice".into()]),
-                    ..Default::default()
-                }],
-            )
-            .await;
-
-        let responses = engine.on_disconnect(7).await;
-        assert!(responses.is_empty());
-
-        // The live index is gone, but the subscription is still in storage.
-        assert!(engine.load(7).await);
     });
 }
 

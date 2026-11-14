@@ -516,6 +516,84 @@ fn test_registry_terminate() {
     });
 }
 
+/// Closing the last subscription must remove `conn:` and
+/// its `pk:`/`eid:`/`etag:` entries.
+#[test]
+fn test_unsubscribe_prunes_persisted_routing_indexes() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        let mut registry = WalletRegistry::new(storage, Limits::default());
+
+        registry
+            .subscribe(
+                1,
+                "rpc_sub".into(),
+                vec![Filter {
+                    authors: Some(vec!["app-pk".into()]),
+                    ids: Some(vec!["req-id".into()]),
+                    e_tags: Some(vec!["req-id".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await
+            .unwrap();
+
+        {
+            let stored = data.lock().unwrap();
+            assert!(stored.contains_key("conn:1"));
+            assert!(stored.contains_key("pk:app-pk"));
+            assert!(stored.contains_key("eid:req-id"));
+            assert!(stored.contains_key("etag:req-id"));
+        }
+
+        registry.unsubscribe(1, "rpc_sub".into()).await.unwrap();
+
+        let keys: Vec<String> = data.lock().unwrap().keys().cloned().collect();
+        assert!(
+            keys.is_empty(),
+            "unsubscribe left persisted state behind: {keys:?}"
+        );
+        assert!(!registry.load(1).await);
+        assert!(registry.load_by_pubkey("app-pk").await.is_empty());
+    });
+}
+
+/// Unsubscribing one of two subscriptions keeps keys the other one uses.
+#[test]
+fn test_unsubscribe_keeps_shared_index_membership() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        let mut registry = WalletRegistry::new(storage, Limits::default());
+
+        registry
+            .subscribe(1, "a".into(), vec![authors_filter("shared")])
+            .await
+            .unwrap();
+        registry
+            .subscribe(1, "b".into(), vec![authors_filter("shared")])
+            .await
+            .unwrap();
+
+        registry.unsubscribe(1, "a".into()).await.unwrap();
+
+        {
+            let stored = data.lock().unwrap();
+            assert_eq!(stored["pk:shared"], serde_json::json!([1]));
+            assert!(stored.contains_key("conn:1"));
+        }
+
+        registry.unsubscribe(1, "b".into()).await.unwrap();
+
+        let keys: Vec<String> = data.lock().unwrap().keys().cloned().collect();
+        assert!(
+            keys.is_empty(),
+            "last unsubscribe left state behind: {keys:?}"
+        );
+    });
+}
+
 #[test]
 fn test_registry_lazy_deletion() {
     futures::executor::block_on(async {
@@ -993,24 +1071,6 @@ fn test_load_by_pubkey_prunes_stale_ids() {
         let mut registry = WalletRegistry::new(storage, Limits::default());
         assert_eq!(registry.load_by_pubkey("pk").await, vec![7]);
         assert_eq!(data.lock().unwrap()["pk:pk"], serde_json::json!([7]));
-    });
-}
-
-#[test]
-fn test_on_disconnect_keeps_persisted_state() {
-    futures::executor::block_on(async {
-        let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
-        registry
-            .subscribe(1, "s1".into(), vec![authors_filter("pk")])
-            .await
-            .unwrap();
-
-        registry.on_disconnect(1).await;
-
-        assert!(!has_subscription(&registry, 1, "s1"));
-        assert!(registry.load(1).await, "storage must still hold the state");
-        assert!(has_subscription(&registry, 1, "s1"));
     });
 }
 
