@@ -304,30 +304,32 @@ impl WalletIndex {
         self.info_id_index.get(event_id).cloned()
     }
 
-    /// Records the subscriptions matching `event`, keeping only the newest
-    /// connection per subscription (reconnects leave older ids behind).
+    /// Adds every connection registered for a matching subscription to `out`,
+    /// keyed by subscription id.
+    ///
+    /// A reconnecting client leaves its previous id behind until its old
+    /// socket reports the close, and each recorded id belongs to a real
+    /// subscription — so all of them receive the event. Delivering to the
+    /// newest id only (as this used to) let any later connection, including
+    /// an attacker's, silence every other subscriber of the same wallet.
     fn collect_matches(
         &self,
         subs: &HashSet<SubKey>,
         event: &Event,
         out: &mut HashMap<String, Vec<u32>>,
     ) {
-        let matching: Vec<(&SubKey, u32)> = subs
-            .iter()
-            .filter(|sub_key| sub_key.1.iter().any(|f| f.matches(event)))
-            .filter_map(|sub_key| {
-                self.subscription_index
-                    .get(sub_key)
-                    .and_then(|conns| conns.last().map(|id| (sub_key, *id)))
-            })
-            .collect();
-
-        let Some(latest) = matching.iter().map(|(_, id)| *id).max() else {
-            return;
-        };
-        for (sub_key, id) in matching {
-            if id == latest {
-                out.insert(sub_key.0.clone(), vec![id]);
+        for sub_key in subs {
+            if !sub_key.1.iter().any(|f| f.matches(event)) {
+                continue;
+            }
+            let Some(conns) = self.subscription_index.get(sub_key) else {
+                continue;
+            };
+            for id in conns {
+                let recipients = out.entry(sub_key.0.clone()).or_default();
+                if !recipients.contains(id) {
+                    recipients.push(*id);
+                }
             }
         }
     }
@@ -460,7 +462,8 @@ impl<S: Storage> WalletRegistry<S> {
     ///
     /// Returns [`RelayError::Generic`](crate::nostr::RelayError::Generic)
     /// when a *new* subscription would exceed
-    /// `limits.max_subscriptions_per_connection` or persistence fails. A
+    /// `limits.max_subscriptions_per_connection` or
+    /// `limits.max_routing_keys_per_connection`, or when persistence fails. A
     /// `REQ` that reuses an existing `sub_id` replaces that subscription
     /// (NIP-01), so it is allowed at the limit.
     pub async fn subscribe(
@@ -477,6 +480,19 @@ impl<S: Storage> WalletRegistry<S> {
                 count, self.limits.max_subscriptions_per_connection
             )));
         }
+
+        // `sync()` reads and rewrites every routing key of the connection, so
+        // the budget is checked against the whole connection, not this filter.
+        let mut prospective = self.index.get_subscriptions(conn_id);
+        prospective.insert(sub_id.clone(), filters.clone());
+        let keys = referenced_keys(&prospective).len();
+        if keys > self.limits.max_routing_keys_per_connection {
+            return Err(crate::nostr::RelayError::Generic(format!(
+                "too many routing keys: {keys} (max {})",
+                self.limits.max_routing_keys_per_connection
+            )));
+        }
+
         self.index.subscribe(conn_id, sub_id, filters);
         self.sync(conn_id)
             .await

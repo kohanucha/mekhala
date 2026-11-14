@@ -332,7 +332,7 @@ fn test_index_matching_grouped() {
         };
         let responses = registry.match_event(&event_alice).await;
 
-        let grouped: Vec<_> = responses
+        let mut grouped: Vec<_> = responses
             .iter()
             .filter_map(|r| match r {
                 RegistryResponse::Send {
@@ -342,9 +342,12 @@ fn test_index_matching_grouped() {
                 _ => None,
             })
             .collect();
-        assert_eq!(grouped.len(), 1);
-        assert!(grouped.contains(&2));
-        assert!(!grouped.contains(&1));
+        grouped.sort_unstable();
+        assert_eq!(
+            grouped,
+            vec![1, 2],
+            "each connection holding the subscription gets one Send"
+        );
     });
 }
 
@@ -949,11 +952,13 @@ fn test_delete_info_removes_id_index_entry() {
 }
 
 #[test]
-fn test_match_event_delivers_only_to_latest_connection() {
+fn test_match_event_delivers_to_every_connection_of_a_subscription() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
         let mut registry = WalletRegistry::new(storage, Limits::default());
 
+        // Two clients holding the same subscription (e.g. an app that
+        // reconnected before its old socket reported the close).
         registry
             .subscribe(1, "s1".into(), vec![authors_filter("pk")])
             .await
@@ -964,10 +969,116 @@ fn test_match_event_delivers_only_to_latest_connection() {
             .unwrap();
 
         let event = crate::common::test_helpers::test_event("e1", "pk", 23194, vec![], 0);
+        let mut targets = send_targets(&registry.match_event(&event).await);
+        targets.sort();
+        assert_eq!(
+            targets,
+            vec![(1, "s1".to_string()), (2, "s1".to_string())],
+            "a later connection must not silence the earlier one"
+        );
+    });
+}
+
+#[test]
+fn test_match_event_delivers_to_connections_with_different_sub_ids() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let mut registry = WalletRegistry::new(storage, Limits::default());
+
+        // A wallet shared by two apps: each app subscribes with its own id.
+        registry
+            .subscribe(1, "app_a".into(), vec![authors_filter("wallet")])
+            .await
+            .unwrap();
+        registry
+            .subscribe(2, "app_b".into(), vec![authors_filter("wallet")])
+            .await
+            .unwrap();
+
+        let event = crate::common::test_helpers::test_event("r1", "wallet", 23195, vec![], 0);
+        let mut targets = send_targets(&registry.match_event(&event).await);
+        targets.sort();
+        assert_eq!(
+            targets,
+            vec![(1, "app_a".to_string()), (2, "app_b".to_string())],
+            "every matching subscription must receive the event"
+        );
+    });
+}
+
+#[test]
+fn test_match_event_delivers_once_per_connection_per_sub_id() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let mut registry = WalletRegistry::new(storage, Limits::default());
+
+        // Both filters match the same event and belong to the same connection
+        // and subscription: the connection must still get one message.
+        registry
+            .subscribe(
+                1,
+                "s1".into(),
+                vec![
+                    authors_filter("pk"),
+                    Filter {
+                        kinds: Some(vec![23194]),
+                        ..Default::default()
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+
+        let event = crate::common::test_helpers::test_event("e1", "pk", 23194, vec![], 0);
         assert_eq!(
             send_targets(&registry.match_event(&event).await),
-            vec![(2, "s1".to_string())],
-            "the most recent connection for a subscription wins"
+            vec![(1, "s1".to_string())]
+        );
+    });
+}
+
+#[test]
+fn test_subscribe_rejects_routing_key_budget_overrun() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        let limits = Limits {
+            max_routing_keys_per_connection: 5,
+            ..Limits::default()
+        };
+        let mut registry = WalletRegistry::new(storage, limits);
+
+        let filter = |suffix: &str| Filter {
+            authors: Some((0..4).map(|i| format!("{suffix}-{i}")).collect()),
+            kinds: Some(vec![23194]),
+            ..Default::default()
+        };
+
+        // 4 routing keys (one per author) against a budget of 5.
+        registry
+            .subscribe(1, "s1".into(), vec![filter("a")])
+            .await
+            .unwrap();
+
+        let keys_before = data.lock().unwrap().len();
+        let err = registry
+            .subscribe(1, "s2".into(), vec![filter("b")])
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("too many routing keys"),
+            "unexpected error: {err}"
+        );
+
+        assert_eq!(
+            data.lock().unwrap().len(),
+            keys_before,
+            "a rejected subscription must not write anything"
+        );
+        assert!(registry.index.has_subscription(1, "s1"));
+        assert!(
+            !registry.index.has_subscription(1, "s2"),
+            "a rejected subscription must not stay in the index"
         );
     });
 }

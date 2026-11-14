@@ -407,6 +407,40 @@ fn test_verify_content_length_boundary() {
 }
 
 #[test]
+fn test_verify_tag_count_boundary() {
+    let limits = Limits {
+        max_event_tags: 2,
+        ..Limits::default()
+    };
+    let event = Event {
+        id: "id".into(),
+        pubkey: "pk".into(),
+        created_at: 1_700_000_000,
+        kind: 13194,
+        tags: vec![Tag::p("a"), Tag::p("b")],
+        content: String::new(),
+        sig: "sig".into(),
+    };
+    // Exactly at the limit passes the tag check (and fails later on the id).
+    assert!(
+        !matches!(
+            event.verify(1_700_000_000, &limits),
+            Err(RelayError::LimitExceeded(_))
+        ),
+        "an event with exactly max_event_tags must be accepted"
+    );
+
+    let over = Event {
+        tags: vec![Tag::p("a"), Tag::p("b"), Tag::p("c")],
+        ..event
+    };
+    match over.verify(1_700_000_000, &limits) {
+        Err(RelayError::LimitExceeded(msg)) => assert!(msg.contains("too many tags")),
+        other => panic!("expected LimitExceeded, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_verify_timestamp_window_boundaries() {
     let limits = Limits::default();
     let now = 1_700_000_000;

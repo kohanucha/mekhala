@@ -1,4 +1,4 @@
-use crate::nostr::Event;
+use crate::nostr::{Event, Limits};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, Hash)]
@@ -67,10 +67,29 @@ impl Filter {
         true
     }
 
+    /// Whether a field carries more values than `limits.max_filter_items`.
+    ///
+    /// Each value becomes a persisted routing key, so an unbounded list turns
+    /// one `REQ` into thousands of storage reads and writes.
+    pub fn exceeds_item_limit(&self, limits: &Limits) -> bool {
+        let max = limits.max_filter_items;
+        let over = |n: usize| n > max;
+        over(self.ids.as_ref().map_or(0, Vec::len))
+            || over(self.authors.as_ref().map_or(0, Vec::len))
+            || over(self.kinds.as_ref().map_or(0, Vec::len))
+            || over(self.p_tags.as_ref().map_or(0, Vec::len))
+            || over(self.e_tags.as_ref().map_or(0, Vec::len))
+    }
+
     /// Guard for incoming `REQ`s: rejects filters that would scan the whole
-    /// event space. Filters with `#p`, `#e`, or `ids` only need allowed
-    /// kinds; otherwise the filter must carry allowed kinds *and* `authors`.
-    pub fn is_valid(&self) -> bool {
+    /// event space, or that carry more values than `limits` allows. Filters
+    /// with `#p`, `#e`, or `ids` only need allowed kinds; otherwise the filter
+    /// must carry allowed kinds *and* `authors`.
+    pub fn is_valid(&self, limits: &Limits) -> bool {
+        if self.exceeds_item_limit(limits) {
+            return false;
+        }
+
         let has_specific_narrowing =
             self.p_tags.is_some() || self.e_tags.is_some() || self.ids.is_some();
 
