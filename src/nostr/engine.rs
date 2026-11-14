@@ -1,3 +1,4 @@
+use super::limits::MAX_SUB_ID_LENGTH;
 use super::wallet_registry::{RegistryResponse, Storage, WalletRegistry};
 use super::{ClientMessage, Event, Filter, Limits, RelayMessage};
 use crate::util::short;
@@ -138,16 +139,35 @@ impl<S: Storage> NostrEngine<S> {
         }
     }
 
-    /// Handles a `REQ`: rejects overly broad filters with `CLOSED`, then
-    /// subscribes and replays matching cached wallet info events followed by
-    /// `EOSE`.
+    /// Handles a `REQ`: rejects oversized subscriptions and overly broad
+    /// filters with `CLOSED`, then subscribes and replays matching cached
+    /// wallet info events followed by `EOSE`.
     pub async fn handle_req(
         &mut self,
         id: u32,
         sub_id: String,
         filters: Vec<Filter>,
     ) -> Vec<EngineResponse> {
-        if filters.iter().any(|f| !f.is_valid()) {
+        if sub_id.len() > MAX_SUB_ID_LENGTH {
+            let message = RelayMessage::Closed(
+                sub_id,
+                format!("subscription id too long (max {MAX_SUB_ID_LENGTH} bytes)"),
+            );
+            return vec![EngineResponse::send(id, message)];
+        }
+
+        if filters.iter().any(|f| f.exceeds_item_limit(&self.limits)) {
+            let message = RelayMessage::Closed(
+                sub_id,
+                format!(
+                    "filter too large (max {} values per field)",
+                    self.limits.max_filter_items
+                ),
+            );
+            return vec![EngineResponse::send(id, message)];
+        }
+
+        if filters.iter().any(|f| !f.is_valid(&self.limits)) {
             let message = RelayMessage::Closed(sub_id, "filter too broad".to_string());
             return vec![EngineResponse::send(id, message)];
         }
