@@ -752,7 +752,7 @@ fn test_on_terminate_removes_state() {
     });
 }
 
-/// Regression (H-2): the internal RPC session must leave no persisted state,
+/// The internal RPC session must leave no persisted state,
 /// or `load_indexed` resurrects it on the next round trip.
 #[test]
 fn test_internal_rpc_session_terminate_leaves_no_state() {
@@ -792,7 +792,7 @@ fn test_internal_rpc_session_terminate_leaves_no_state() {
     });
 }
 
-/// Regression (H-2), success path: `CLOSE` alone must prune `etag:`.
+/// Success path: `CLOSE` alone must prune `etag:`.
 #[test]
 fn test_close_prunes_internal_rpc_indexes() {
     futures::executor::block_on(async {

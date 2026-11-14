@@ -516,7 +516,7 @@ fn test_registry_terminate() {
     });
 }
 
-/// Regression (H-2): closing the last subscription must remove `conn:` and
+/// Closing the last subscription must remove `conn:` and
 /// its `pk:`/`eid:`/`etag:` entries.
 #[test]
 fn test_unsubscribe_prunes_persisted_routing_indexes() {
