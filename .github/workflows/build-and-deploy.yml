@@ -18,6 +18,9 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          # Keep in sync with `rust-toolchain.toml` so the deployed wasm is
+          # built by the same compiler the PR checks ran with.
+          toolchain: '1.100.0'
           targets: wasm32-unknown-unknown
 
       - name: Cache Cargo

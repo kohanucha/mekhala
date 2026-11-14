@@ -10,6 +10,10 @@ jobs:
   msrv:
     name: MSRV
     runs-on: ubuntu-latest
+    # `RUSTUP_TOOLCHAIN` outranks `rust-toolchain.toml`, so this job really
+    # compiles with the MSRV instead of the pinned toolchain.
+    env:
+      RUSTUP_TOOLCHAIN: '1.91.0'
     steps:
       - uses: actions/checkout@v6
 
@@ -34,6 +38,8 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          # Keep in sync with `rust-toolchain.toml`.
+          toolchain: '1.100.0'
           targets: wasm32-unknown-unknown
 
       - name: Cache Cargo

@@ -13,7 +13,9 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 | Integration tests | `./scripts/test.sh` | Full pipeline: test → build → wrangler → node |
 
 ## Build Requirements
-- `rustup target add wasm32-unknown-unknown`
+- Toolchain is pinned in `rust-toolchain.toml` (1.100.0, includes the
+  `wasm32-unknown-unknown` target); `rustup` installs it on first use. CI uses
+  the same version, so local clippy matches the gate.
 - `cargo install worker-build`
 - Node.js + npm
 
