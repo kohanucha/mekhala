@@ -424,7 +424,7 @@ export async function testSdkRequestShape() {
     walletPubkey: walletPk,
   });
   // The raw socket plays the wallet so the test can inspect the request
-  // without competing with NWCWalletService for last-in-wins delivery.
+  // without a competing NWCWalletService answering it first.
   const walletSocket = await openSocket();
 
   try {
