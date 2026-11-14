@@ -299,7 +299,7 @@ impl<S: Storage> NostrEngine<S> {
                         log_debug!("info hit: pk={} sub={}", short(&pk, 8), sub_id);
                         responses.push(EngineResponse::send(
                             id,
-                            RelayMessage::Event(sub_id.clone(), info_event.clone()),
+                            RelayMessage::Event(sub_id.clone(), info_event),
                         ));
                     }
                 } else {

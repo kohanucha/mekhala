@@ -383,7 +383,7 @@ impl WalletIndex {
         for filters in subscriptions.values() {
             for filter in filters {
                 for pk in filter.pubkeys() {
-                    pubkeys.insert(pk.clone());
+                    pubkeys.insert(pk);
                 }
                 if let Some(ids) = &filter.ids {
                     event_ids.extend(ids.iter().cloned());
