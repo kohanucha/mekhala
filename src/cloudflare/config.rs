@@ -12,6 +12,8 @@ pub struct CloudflareConfig {
     pub idle_timeout_seconds: usize,
     pub connection_sweep_seconds: usize,
     pub evict_min_idle_seconds: usize,
+    pub max_info_events: usize,
+    pub info_ttl_seconds: u64,
     pub wallet_region: Option<String>,
     pub relay_secret: Option<String>,
 }
@@ -75,6 +77,14 @@ impl CloudflareConfig {
                     .map(|v| v.to_string()),
                 10,
             ),
+            max_info_events: Self::parse_opt(
+                env.var("MAX_INFO_EVENTS").ok().map(|v| v.to_string()),
+                1_000,
+            ),
+            info_ttl_seconds: Self::parse_opt_u64(
+                env.var("INFO_TTL_SECONDS").ok().map(|v| v.to_string()),
+                2_592_000,
+            ),
             wallet_region: env
                 .var("WALLET_REGION")
                 .ok()
@@ -88,6 +98,10 @@ impl CloudflareConfig {
         value
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(default)
+    }
+
+    fn parse_opt_u64(value: Option<String>, default: u64) -> u64 {
+        value.and_then(|s| s.parse::<u64>().ok()).unwrap_or(default)
     }
 }
 

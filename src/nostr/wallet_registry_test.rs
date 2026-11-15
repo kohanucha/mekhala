@@ -1,5 +1,7 @@
 use super::*;
-use crate::common::test_helpers::{seed_subscription, simulate_hibernation, MockStorage};
+use crate::common::test_helpers::{
+    seed_subscription, set_test_time, simulate_hibernation, test_limits, test_now, MockStorage,
+};
 use crate::nostr::Tag;
 
 fn has_subscription(registry: &WalletRegistry<MockStorage>, conn_id: u32, sub_id: &str) -> bool {
@@ -13,7 +15,7 @@ fn has_subscription(registry: &WalletRegistry<MockStorage>, conn_id: u32, sub_id
 fn test_registry_sub_persistence() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         let filters = vec![Filter {
             authors: Some(vec!["alice".into()]),
@@ -38,7 +40,7 @@ fn test_registry_sub_persistence() {
 fn test_hibernation_contract() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         registry
             .subscribe(
@@ -82,7 +84,7 @@ fn test_hibernation_contract() {
 fn test_hibernation_info_survival() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         registry
             .subscribe(
@@ -141,7 +143,7 @@ fn test_hibernation_info_survival() {
 fn test_hibernation_subscribe_cycles() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         registry
             .subscribe(
@@ -217,7 +219,7 @@ fn test_hibernation_subscribe_cycles() {
 fn test_registry_match_routing() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         let wallet_pk = "wallet_pk";
         registry
@@ -270,7 +272,7 @@ fn test_registry_lazy_load() {
         )
         .await;
 
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         let event = Event {
             id: "event1".into(),
@@ -296,7 +298,7 @@ fn test_registry_lazy_load() {
 fn test_index_matching_grouped() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         registry
             .subscribe(
@@ -355,7 +357,7 @@ fn test_index_matching_grouped() {
 fn test_info_event_caching() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         let event = Event {
             id: "id1".into(),
@@ -378,7 +380,7 @@ fn test_info_event_caching() {
 fn test_info_id_index() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         let event = Event {
             id: "id1".into(),
@@ -403,7 +405,7 @@ fn test_info_id_index() {
 fn test_delete_info() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         let event = Event {
             id: "id1".into(),
@@ -436,7 +438,7 @@ fn test_delete_info() {
 fn test_delete_info_preserves_subscriptions() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         registry
             .subscribe(
@@ -472,7 +474,7 @@ fn test_delete_info_preserves_subscriptions() {
 fn test_registry_sync() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         registry
             .subscribe(
@@ -496,7 +498,7 @@ fn test_registry_sync() {
 fn test_registry_terminate() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         registry
             .subscribe(
@@ -526,7 +528,7 @@ fn test_unsubscribe_prunes_persisted_routing_indexes() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
         let data = storage.data.clone();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         registry
             .subscribe(
@@ -568,7 +570,7 @@ fn test_unsubscribe_keeps_shared_index_membership() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
         let data = storage.data.clone();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         registry
             .subscribe(1, "a".into(), vec![authors_filter("shared")])
@@ -605,7 +607,7 @@ fn test_registry_lazy_deletion() {
         entries.insert("pk:stale".to_string(), serde_json::json!(vec![99]));
         storage.put_batch(entries).await.unwrap();
 
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         let result = registry.load_by_pubkey("stale").await;
         assert!(result.is_empty());
@@ -620,7 +622,7 @@ fn test_subscription_limit_exceeded() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
         let limits = Limits::new(65536, 0);
-        let mut registry = WalletRegistry::new(storage, limits);
+        let mut registry = WalletRegistry::new(storage, limits, test_now);
 
         let result = registry
             .subscribe(
@@ -644,7 +646,7 @@ fn test_subscription_limit_exceeded() {
 fn test_subscribe_rejected_on_storage_failure() {
     futures::executor::block_on(async {
         let storage = MockStorage::with_fail();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         let result = registry
             .subscribe(
@@ -674,7 +676,7 @@ fn test_subscribe_rejected_on_storage_failure() {
 fn test_unsubscribe_graceful_on_storage_failure() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         registry
             .subscribe(
@@ -722,7 +724,7 @@ fn test_unsubscribe_graceful_on_storage_failure() {
 fn test_delete_info_for_nonexistent_pubkey() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
         registry.delete_info("nobody").await;
         assert!(registry.get_info("nobody").await.is_none());
     });
@@ -745,7 +747,7 @@ fn test_load_by_pubkey_with_number_value() {
         );
         storage.put_batch(entries).await.unwrap();
 
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
         let ids = registry.load_by_pubkey("single").await;
         assert!(ids.contains(&42));
     });
@@ -759,7 +761,7 @@ fn test_load_by_pubkey_with_unknown_value_type() {
         entries.insert("pk:weird".to_string(), serde_json::json!("string_value"));
         storage.put_batch(entries).await.unwrap();
 
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
         let ids = registry.load_by_pubkey("weird").await;
         assert!(ids.is_empty());
     });
@@ -769,7 +771,7 @@ fn test_load_by_pubkey_with_unknown_value_type() {
 fn test_two_connections_same_pubkey_different_filters() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         let shared_pk = "shared_pk";
 
@@ -813,7 +815,7 @@ fn test_two_connections_same_pubkey_different_filters() {
         {
             let storage2 = MockStorage::new();
             storage2.put_batch(snapshot.clone()).await.unwrap();
-            let mut registry2 = WalletRegistry::new(storage2, Limits::default());
+            let mut registry2 = WalletRegistry::new(storage2, test_limits(), test_now);
 
             let req_event = Event {
                 id: "req1".into(),
@@ -839,7 +841,7 @@ fn test_two_connections_same_pubkey_different_filters() {
         {
             let storage3 = MockStorage::new();
             storage3.put_batch(snapshot).await.unwrap();
-            let mut registry3 = WalletRegistry::new(storage3, Limits::default());
+            let mut registry3 = WalletRegistry::new(storage3, test_limits(), test_now);
 
             let resp_event = Event {
                 id: "resp1".into(),
@@ -888,7 +890,7 @@ fn send_targets(responses: &[RegistryResponse]) -> Vec<(u32, String)> {
 fn test_subscribe_same_subscription_twice_is_idempotent() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         registry
             .subscribe(1, "s1".into(), vec![authors_filter("pk")])
@@ -912,7 +914,7 @@ fn test_unsubscribe_clears_live_index_and_conn_state() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
         let data = storage.data.clone();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         registry
             .subscribe(1, "s1".into(), vec![authors_filter("pk")])
@@ -937,7 +939,7 @@ fn test_unsubscribe_clears_live_index_and_conn_state() {
 fn test_delete_info_removes_id_index_entry() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
         let info = crate::common::test_helpers::test_event("info1", "wallet", 13194, vec![], 0);
 
         registry.cache_info(info).await;
@@ -955,7 +957,7 @@ fn test_delete_info_removes_id_index_entry() {
 fn test_match_event_delivers_to_every_connection_of_a_subscription() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         // Two clients holding the same subscription (e.g. an app that
         // reconnected before its old socket reported the close).
@@ -983,7 +985,7 @@ fn test_match_event_delivers_to_every_connection_of_a_subscription() {
 fn test_match_event_delivers_to_connections_with_different_sub_ids() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         // A wallet shared by two apps: each app subscribes with its own id.
         registry
@@ -1010,7 +1012,7 @@ fn test_match_event_delivers_to_connections_with_different_sub_ids() {
 fn test_match_event_delivers_once_per_connection_per_sub_id() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         // Both filters match the same event and belong to the same connection
         // and subscription: the connection must still get one message.
@@ -1044,9 +1046,9 @@ fn test_subscribe_rejects_routing_key_budget_overrun() {
         let data = storage.data.clone();
         let limits = Limits {
             max_routing_keys_per_connection: 5,
-            ..Limits::default()
+            ..test_limits()
         };
-        let mut registry = WalletRegistry::new(storage, limits);
+        let mut registry = WalletRegistry::new(storage, limits, test_now);
 
         let filter = |suffix: &str| Filter {
             authors: Some((0..4).map(|i| format!("{suffix}-{i}")).collect()),
@@ -1088,7 +1090,7 @@ fn test_load_by_pubkey_falls_back_to_live_connection() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
         let data = storage.data.clone();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         registry
             .subscribe(3, "s1".into(), vec![authors_filter("pk")])
@@ -1115,7 +1117,7 @@ fn test_saved_connection_state_has_no_info_event_copy() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
         let data = storage.data.clone();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
         let info = crate::common::test_helpers::test_event("info1", "pk", 13194, vec![], 0);
 
         registry.cache_info(info).await;
@@ -1140,7 +1142,7 @@ fn test_saved_connection_state_has_no_info_event_copy() {
 fn test_hibernation_does_not_resurrect_stale_info_event() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
         registry
             .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
             .await;
@@ -1179,7 +1181,7 @@ fn test_load_by_pubkey_prunes_stale_ids() {
             .unwrap()
             .insert("pk:pk".into(), serde_json::json!([7, 99]));
 
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
         assert_eq!(registry.load_by_pubkey("pk").await, vec![7]);
         assert_eq!(data.lock().unwrap()["pk:pk"], serde_json::json!([7]));
     });
@@ -1195,7 +1197,7 @@ fn test_on_terminate_handles_numeric_pk_index() {
             .unwrap()
             .insert("pk:pk".into(), serde_json::json!(42));
 
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
         assert!(registry.load(42).await);
         registry.on_terminate(42).await;
 
@@ -1214,7 +1216,7 @@ fn test_on_terminate_rewrites_shared_pk_index() {
             .unwrap()
             .insert("pk:pk".into(), serde_json::json!([1, 2]));
 
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
         assert!(registry.load(2).await);
         registry.on_terminate(2).await;
 
@@ -1231,7 +1233,7 @@ fn test_on_terminate_ignores_missing_pk_index() {
         // The pk index entry is gone even though the connection state remains.
         data.lock().unwrap().remove("pk:ghost");
 
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
         assert!(registry.load(3).await);
         registry.on_terminate(3).await;
 
@@ -1251,7 +1253,7 @@ fn test_get_info_ignores_corrupt_stored_event() {
             .await
             .unwrap();
 
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
         assert!(registry.get_info("pk").await.is_none());
     });
 }
@@ -1265,7 +1267,7 @@ fn test_sync_merges_numeric_existing_pk_index() {
             .unwrap()
             .insert("pk:pk".into(), serde_json::json!(42));
 
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
         registry
             .subscribe(9, "s1".into(), vec![authors_filter("pk")])
             .await
@@ -1284,7 +1286,7 @@ fn test_sync_ignores_unparseable_pk_index() {
             .unwrap()
             .insert("pk:pk".into(), serde_json::json!("garbage"));
 
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
         registry
             .subscribe(9, "s1".into(), vec![authors_filter("pk")])
             .await
@@ -1297,7 +1299,7 @@ fn test_sync_ignores_unparseable_pk_index() {
 #[test]
 fn test_unsubscribe_keeps_pk_index_while_info_is_cached() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         let info = crate::common::test_helpers::test_event("info1", "pk", 13194, vec![], 0);
         registry.cache_info(info).await;
         registry
@@ -1319,7 +1321,7 @@ fn test_unsubscribe_keeps_pk_index_while_info_is_cached() {
 #[test]
 fn test_subscribe_enforces_max_subscriptions() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::new(65536, 2));
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::new(65536, 2), test_now);
         registry
             .subscribe(1, "s1".into(), vec![authors_filter("pk")])
             .await
@@ -1340,7 +1342,7 @@ fn test_subscribe_enforces_max_subscriptions() {
 #[test]
 fn test_delete_info_keeps_pk_index_while_subscriptions_remain() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .subscribe(1, "s1".into(), vec![authors_filter("pk")])
             .await
@@ -1365,7 +1367,7 @@ fn test_get_connection_id_picks_highest_connection() {
         // Two distinct subscriptions give the entry multiple candidates, so a
         // max-reduction that just takes the last iterated id is exposed.
         for _ in 0..32 {
-            let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+            let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
             registry
                 .subscribe(1, "s1".into(), vec![authors_filter("pk")])
                 .await
@@ -1395,7 +1397,7 @@ fn test_on_terminate_keeps_numeric_pk_index_for_other_connections() {
             .unwrap()
             .insert("pk:pk".into(), serde_json::json!(99));
 
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
         assert!(registry.load(42).await);
         registry.on_terminate(42).await;
 
@@ -1422,7 +1424,7 @@ fn info_with_p_tags(id: &str, author: &str, p_tags: &[&str]) -> Event {
 #[test]
 fn test_get_info_resolves_p_tag_alias() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
             .await;
@@ -1444,7 +1446,7 @@ fn test_get_info_resolves_p_tag_alias() {
 #[test]
 fn test_p_tag_alias_survives_hibernation() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
             .await;
@@ -1467,7 +1469,7 @@ fn test_p_tag_alias_survives_hibernation() {
 #[test]
 fn test_republish_drops_stale_p_tag_alias() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .cache_info(info_with_p_tags("info1", "wallet", &["app1"]))
             .await;
@@ -1499,7 +1501,7 @@ fn test_republish_drops_stale_p_tag_alias() {
 #[test]
 fn test_delete_info_removes_p_tag_alias() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
             .await;
@@ -1544,7 +1546,7 @@ fn response_event(id: &str, e_tag: &str) -> Event {
 #[test]
 fn test_e_tag_only_filter_routes_live() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .subscribe(1, "sub-e".into(), vec![e_tag_filter(23195, "req1")])
             .await
@@ -1567,7 +1569,7 @@ fn test_e_tag_only_filter_routes_live() {
 #[test]
 fn test_e_tag_only_filter_requires_matching_kind() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .subscribe(1, "sub-e".into(), vec![e_tag_filter(23195, "req1")])
             .await
@@ -1588,7 +1590,7 @@ fn test_e_tag_only_filter_requires_matching_kind() {
 #[test]
 fn test_e_tag_only_filter_survives_hibernation() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .subscribe(1, "sub-e".into(), vec![e_tag_filter(23195, "req1")])
             .await
@@ -1610,7 +1612,7 @@ fn test_e_tag_only_filter_survives_hibernation() {
 #[test]
 fn test_ids_only_filter_routes_live() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .subscribe(1, "sub-id".into(), vec![ids_filter("resp1")])
             .await
@@ -1633,7 +1635,7 @@ fn test_ids_only_filter_routes_live() {
 #[test]
 fn test_ids_only_filter_survives_hibernation() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .subscribe(1, "sub-id".into(), vec![ids_filter("resp1")])
             .await
@@ -1655,7 +1657,7 @@ fn test_ids_only_filter_survives_hibernation() {
 #[test]
 fn test_unsubscribe_stops_secondary_index_routing() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .subscribe(1, "sub-e".into(), vec![e_tag_filter(23195, "req1")])
             .await
@@ -1679,7 +1681,7 @@ fn test_unsubscribe_stops_secondary_index_routing() {
 #[test]
 fn test_unsubscribe_keeps_other_subscription_in_same_index() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .subscribe(1, "sub-a".into(), vec![e_tag_filter(23195, "req1")])
             .await
@@ -1699,7 +1701,7 @@ fn test_unsubscribe_keeps_other_subscription_in_same_index() {
 #[test]
 fn test_delete_info_keeps_alias_owned_by_other_author() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .cache_info(info_with_p_tags("info1", "wallet-a", &["shared", "only-a"]))
             .await;
@@ -1743,7 +1745,7 @@ fn test_delete_info_keeps_alias_owned_by_other_author() {
 #[test]
 fn test_delete_info_after_hibernation_removes_event_and_alias() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
             .await;
@@ -1763,7 +1765,7 @@ fn test_delete_info_after_hibernation_removes_event_and_alias() {
 #[test]
 fn test_delete_info_after_hibernation_keeps_other_authors_alias() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .cache_info(info_with_p_tags("info1", "wallet-a", &["app"]))
             .await;
@@ -1791,7 +1793,7 @@ fn test_delete_info_after_hibernation_keeps_other_authors_alias() {
 #[test]
 fn test_unsubscribe_prunes_secondary_index_keys() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .subscribe(1, "sub-e".into(), vec![e_tag_filter(23195, "req1")])
             .await
@@ -1822,7 +1824,7 @@ fn test_unsubscribe_prunes_secondary_index_keys() {
 #[test]
 fn test_index_delete_info_returns_removed_event() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
             .await;
@@ -1839,7 +1841,7 @@ fn test_index_delete_info_returns_removed_event() {
 #[test]
 fn test_subscribe_replaces_existing_subscription_at_limit() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::new(65536, 1));
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::new(65536, 1), test_now);
         registry
             .subscribe(1, "s1".into(), vec![authors_filter("alice")])
             .await
@@ -1872,7 +1874,7 @@ fn test_subscribe_replaces_existing_subscription_at_limit() {
 #[test]
 fn test_subscribe_new_subscription_at_limit_is_rejected() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::new(65536, 1));
+        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::new(65536, 1), test_now);
         registry
             .subscribe(1, "s1".into(), vec![authors_filter("alice")])
             .await
@@ -1891,7 +1893,7 @@ fn test_subscribe_new_subscription_at_limit_is_rejected() {
 #[test]
 fn test_cache_info_persists_infoid_index() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
             .await;
@@ -1912,7 +1914,7 @@ fn test_cache_info_persists_infoid_index() {
 #[test]
 fn test_find_info_pubkey_by_id_falls_back_to_storage() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
             .await;
@@ -1931,7 +1933,7 @@ fn test_find_info_pubkey_by_id_falls_back_to_storage() {
 #[test]
 fn test_republish_moves_infoid_index() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
             .await;
@@ -1964,7 +1966,7 @@ fn test_republish_moves_infoid_index() {
 #[test]
 fn test_republish_after_hibernation_cleans_infoid_and_stale_alias() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .cache_info(info_with_p_tags("info1", "wallet", &["app1", "shared"]))
             .await;
@@ -2001,7 +2003,7 @@ fn test_republish_after_hibernation_cleans_infoid_and_stale_alias() {
 #[test]
 fn test_delete_info_removes_infoid_index() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
             .await;
@@ -2018,7 +2020,7 @@ fn test_delete_info_removes_infoid_index() {
 #[test]
 fn test_delete_info_by_event_after_hibernation() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
             .await;
@@ -2039,7 +2041,7 @@ fn test_delete_info_by_event_after_hibernation() {
 #[test]
 fn test_delete_info_by_event_rejects_other_author() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
             .await;
@@ -2055,7 +2057,7 @@ fn test_delete_info_by_event_rejects_other_author() {
 #[test]
 fn test_delete_info_by_event_ignores_superseded_id() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
             .await;
@@ -2077,7 +2079,7 @@ fn test_delete_info_by_event_ignores_superseded_id() {
 #[test]
 fn test_delete_info_by_event_after_hibernation_ignores_superseded_id() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
             .await;
@@ -2098,7 +2100,7 @@ fn test_delete_info_by_event_after_hibernation_ignores_superseded_id() {
 #[test]
 fn test_delete_info_by_event_unknown_id() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         assert!(!registry.delete_info_by_event("missing", "wallet").await);
     });
 }
@@ -2106,7 +2108,7 @@ fn test_delete_info_by_event_unknown_id() {
 #[test]
 fn test_delete_info_by_event_ignores_stale_reverse_index() {
     futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), Limits::default());
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .cache_info(info_with_p_tags("info2", "wallet", &["app"]))
             .await;
@@ -2131,7 +2133,7 @@ fn test_delete_info_by_event_ignores_stale_reverse_index() {
 fn test_has_subscriptions_reports_live_state() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
-        let mut registry = WalletRegistry::new(storage, Limits::default());
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
         assert!(
             !registry.has_subscriptions(1).await,
@@ -2180,5 +2182,440 @@ fn test_has_subscriptions_reads_persisted_state() {
             registry.has_subscriptions(7).await,
             "a hibernated wallet still holds its subscription"
         );
+    });
+}
+
+// ── Info-cache bounds: size cap and time to live ──
+
+/// Info event with a chosen `created_at`, so cache age is explicit.
+fn info_at(id: &str, author: &str, created_at: u64) -> Event {
+    crate::common::test_helpers::test_event(id, author, 13194, vec![], created_at)
+}
+
+/// Info event addressed to one app (`p` tag) at a chosen `created_at`.
+fn info_for_app_at(id: &str, author: &str, app: &str, created_at: u64) -> Event {
+    crate::common::test_helpers::test_event(id, author, 13194, vec![Tag::p(app)], created_at)
+}
+
+/// Cap only: expiry off, so eviction is the only way an event can disappear.
+fn capped(max_info_events: usize) -> Limits {
+    Limits {
+        max_info_events,
+        info_ttl_seconds: 0,
+        ..Limits::default()
+    }
+}
+
+/// Expiry only: no cap, so time is the only way an event can disappear.
+fn expiring(info_ttl_seconds: u64) -> Limits {
+    Limits {
+        max_info_events: 0,
+        info_ttl_seconds,
+        ..Limits::default()
+    }
+}
+
+fn stored_keys(registry: &WalletRegistry<MockStorage>) -> Vec<String> {
+    registry
+        .storage
+        .data
+        .lock()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn test_info_cache_evicts_the_oldest_event_beyond_the_cap() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), capped(2), test_now);
+
+        for i in 1..=3 {
+            registry
+                .cache_info(info_at(&format!("id{i}"), &format!("wallet{i}"), 1_000 + i))
+                .await;
+        }
+
+        assert!(
+            registry.get_info("wallet1").await.is_none(),
+            "the oldest event is the one evicted"
+        );
+        assert_eq!(
+            registry.get_info("wallet2").await.map(|e| e.id),
+            Some("id2".into())
+        );
+        assert_eq!(
+            registry.get_info("wallet3").await.map(|e| e.id),
+            Some("id3".into())
+        );
+
+        let keys = stored_keys(&registry);
+        assert!(!keys.contains(&"info:wallet1".to_string()));
+        assert!(
+            !keys.contains(&"infoid:id1".to_string()),
+            "the evicted event must not leave its reverse mapping behind"
+        );
+        assert!(keys.contains(&"info:wallet2".to_string()));
+        assert!(keys.contains(&"info:wallet3".to_string()));
+    });
+}
+
+#[test]
+fn test_info_cache_eviction_frees_a_batch_below_the_cap() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), capped(10), test_now);
+
+        for i in 1..=11 {
+            registry
+                .cache_info(info_at(&format!("id{i}"), &format!("wallet{i}"), 1_000 + i))
+                .await;
+        }
+
+        // One publish over the cap trims back to 90% of it, so the next nine
+        // publishes do not have to enumerate the cache again.
+        let info_keys = stored_keys(&registry)
+            .into_iter()
+            .filter(|key| key.starts_with("info:"))
+            .count();
+        assert_eq!(info_keys, 9);
+        assert!(registry.get_info("wallet1").await.is_none());
+        assert!(registry.get_info("wallet2").await.is_none());
+        assert!(registry.get_info("wallet3").await.is_some());
+        assert!(registry.get_info("wallet11").await.is_some());
+    });
+}
+
+#[test]
+fn test_info_cache_cap_zero_keeps_every_event() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), capped(0), test_now);
+
+        for i in 1..=5 {
+            registry
+                .cache_info(info_at(&format!("id{i}"), &format!("wallet{i}"), 1_000 + i))
+                .await;
+        }
+
+        for i in 1..=5 {
+            assert!(registry.get_info(&format!("wallet{i}")).await.is_some());
+        }
+    });
+}
+
+#[test]
+fn test_info_cache_expiry_hides_and_deletes_an_old_event() {
+    futures::executor::block_on(async {
+        set_test_time(1_000_000);
+        let mut registry = WalletRegistry::new(MockStorage::new(), expiring(60), test_now);
+        registry.cache_info(info_at("id1", "wallet", 999_980)).await;
+
+        assert!(
+            registry.get_info("wallet").await.is_some(),
+            "20s old, inside the 60s lifetime"
+        );
+
+        set_test_time(1_000_061);
+        assert!(
+            registry.get_info("wallet").await.is_none(),
+            "81s old, past the 60s lifetime"
+        );
+
+        let keys = stored_keys(&registry);
+        assert!(!keys.contains(&"info:wallet".to_string()));
+        assert!(!keys.contains(&"infoid:id1".to_string()));
+
+        set_test_time(1_700_000_000);
+    });
+}
+
+#[test]
+fn test_info_cache_expiry_applies_through_the_app_alias() {
+    futures::executor::block_on(async {
+        set_test_time(1_000_000);
+        let mut registry = WalletRegistry::new(MockStorage::new(), expiring(60), test_now);
+        registry
+            .cache_info(info_for_app_at("id1", "wallet", "app", 999_000))
+            .await;
+
+        assert!(
+            registry.get_info("app").await.is_none(),
+            "an expired event must not resolve through its alias"
+        );
+        let keys = stored_keys(&registry);
+        assert!(!keys.contains(&"info:wallet".to_string()));
+        assert!(
+            !keys.contains(&"info-p:app".to_string()),
+            "the alias of an expired event is dead weight"
+        );
+
+        set_test_time(1_700_000_000);
+    });
+}
+
+#[test]
+fn test_info_cache_ttl_zero_serves_old_events() {
+    futures::executor::block_on(async {
+        // The pinned clock is far past the fixture's `created_at`; with expiry
+        // off the event must still be served.
+        let mut registry = WalletRegistry::new(MockStorage::new(), expiring(0), test_now);
+        registry.cache_info(info_at("id1", "wallet", 1_000)).await;
+
+        assert_eq!(
+            registry.get_info("wallet").await.map(|e| e.id),
+            Some("id1".into())
+        );
+    });
+}
+
+#[test]
+fn test_prune_info_cache_removes_expired_events_and_reports_them() {
+    futures::executor::block_on(async {
+        set_test_time(2_000_000);
+        let mut registry = WalletRegistry::new(MockStorage::new(), expiring(100), test_now);
+
+        registry
+            .cache_info(info_at("old", "old-wallet", 1_000_000))
+            .await;
+        registry
+            .cache_info(info_at("fresh", "fresh-wallet", 1_999_950))
+            .await;
+
+        assert_eq!(registry.prune_info_cache().await, 1);
+
+        let keys = stored_keys(&registry);
+        assert!(!keys.contains(&"info:old-wallet".to_string()));
+        assert!(keys.contains(&"info:fresh-wallet".to_string()));
+        assert!(registry.get_info("old-wallet").await.is_none());
+        assert!(registry.get_info("fresh-wallet").await.is_some());
+
+        set_test_time(1_700_000_000);
+    });
+}
+
+#[test]
+fn test_prune_info_cache_keeps_an_alias_owned_by_another_author() {
+    futures::executor::block_on(async {
+        set_test_time(2_000_000);
+        let mut registry = WalletRegistry::new(MockStorage::new(), expiring(100), test_now);
+
+        // Two wallets address the same app; the newer one owns the alias.
+        registry
+            .cache_info(info_for_app_at("old", "old-wallet", "app", 1_000_000))
+            .await;
+        registry
+            .cache_info(info_for_app_at("fresh", "fresh-wallet", "app", 1_999_950))
+            .await;
+
+        assert_eq!(registry.prune_info_cache().await, 1);
+
+        let keys = stored_keys(&registry);
+        assert!(!keys.contains(&"info:old-wallet".to_string()));
+        assert!(keys.contains(&"info-p:app".to_string()));
+        assert_eq!(
+            registry.get_info("app").await.map(|e| e.pubkey),
+            Some("fresh-wallet".into()),
+            "the surviving author keeps the alias"
+        );
+
+        set_test_time(1_700_000_000);
+    });
+}
+
+#[test]
+fn test_prune_info_cache_drops_unreadable_entries() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let mut registry = WalletRegistry::new(storage, expiring(100), test_now);
+
+        let mut entries = std::collections::HashMap::new();
+        entries.insert("info:junk".to_string(), serde_json::json!("not an event"));
+        registry.storage.put_batch(entries).await.unwrap();
+
+        assert_eq!(registry.prune_info_cache().await, 0);
+        assert!(!stored_keys(&registry).contains(&"info:junk".to_string()));
+    });
+}
+
+#[test]
+fn test_prune_info_cache_is_a_noop_when_both_bounds_are_off() {
+    futures::executor::block_on(async {
+        let limits = Limits {
+            max_info_events: 0,
+            info_ttl_seconds: 0,
+            ..Limits::default()
+        };
+        let mut registry = WalletRegistry::new(MockStorage::new(), limits, test_now);
+        registry.cache_info(info_at("id1", "wallet", 1_000)).await;
+
+        assert_eq!(registry.prune_info_cache().await, 0);
+        assert!(registry.get_info("wallet").await.is_some());
+    });
+}
+
+// ── Info-cache bound: enforcement without a listing per publish ──
+
+/// `MockStorage` plus a count of `list_prefix("info:")` calls, so a test can
+/// assert that a publish path did *not* enumerate the cache. Every publish is
+/// attacker-controlled, so an enumeration per publish would be an
+/// amplification vector; the in-memory hint exists to avoid it.
+struct CountingStorage {
+    inner: MockStorage,
+    list_calls: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl CountingStorage {
+    fn new() -> Self {
+        Self {
+            inner: MockStorage::new(),
+            list_calls: std::rc::Rc::new(std::cell::Cell::new(0)),
+        }
+    }
+
+    fn info_list_calls(&self) -> usize {
+        self.list_calls.get()
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl Storage for CountingStorage {
+    async fn get(&self, key: &str) -> Option<Value> {
+        self.inner.get(key).await
+    }
+    async fn put_batch(
+        &self,
+        entries: std::collections::HashMap<String, Value>,
+    ) -> Result<(), StorageError> {
+        self.inner.put_batch(entries).await
+    }
+    async fn delete_batch(&self, keys: Vec<String>) {
+        self.inner.delete_batch(keys).await;
+    }
+    async fn list_prefix(&self, prefix: &str) -> Vec<(String, Value)> {
+        if prefix == "info:" {
+            self.list_calls.set(self.list_calls.get() + 1);
+        }
+        self.inner.list_prefix(prefix).await
+    }
+}
+
+#[test]
+fn test_info_cache_publish_below_the_cap_enumerates_once() {
+    futures::executor::block_on(async {
+        let storage = CountingStorage::new();
+        let mut registry = WalletRegistry::new(storage, capped(10), test_now);
+
+        for i in 1..=10 {
+            registry
+                .cache_info(info_at(&format!("id{i}"), &format!("wallet{i}"), 1_000 + i))
+                .await;
+        }
+
+        assert_eq!(
+            registry.storage.info_list_calls(),
+            1,
+            "only the first publish has to discover how full the cache is"
+        );
+        assert!(registry.get_info("wallet10").await.is_some());
+    });
+}
+
+#[test]
+fn test_info_cache_publish_above_the_cap_evicts_and_reseeds_the_hint() {
+    futures::executor::block_on(async {
+        let storage = CountingStorage::new();
+        let mut registry = WalletRegistry::new(storage, capped(10), test_now);
+
+        for i in 1..=11 {
+            registry
+                .cache_info(info_at(&format!("id{i}"), &format!("wallet{i}"), 1_000 + i))
+                .await;
+        }
+
+        assert_eq!(
+            registry.storage.info_list_calls(),
+            2,
+            "the publish that crosses the cap enumerates once, not once per publish"
+        );
+
+        let info_keys = registry
+            .storage
+            .inner
+            .data
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|key| key.starts_with("info:"))
+            .count();
+        assert_eq!(info_keys, 9, "a trim frees a tenth of the cap at a time");
+        assert!(registry.get_info("wallet1").await.is_none());
+        assert!(registry.get_info("wallet11").await.is_some());
+    });
+}
+
+#[test]
+fn test_info_cache_delete_frees_a_slot_for_the_next_publish() {
+    futures::executor::block_on(async {
+        let storage = CountingStorage::new();
+        let mut registry = WalletRegistry::new(storage, capped(3), test_now);
+
+        for i in 1..=3 {
+            registry
+                .cache_info(info_at(&format!("id{i}"), &format!("wallet{i}"), 1_000 + i))
+                .await;
+        }
+        assert_eq!(registry.storage.info_list_calls(), 1);
+
+        // `wallet1` was evicted-free only if the hint follows the delete; a
+        // stale hint would treat the cache as full and enumerate again.
+        registry.delete_info("wallet3").await;
+        registry.cache_info(info_at("id4", "wallet4", 1_004)).await;
+
+        assert_eq!(
+            registry.storage.info_list_calls(),
+            1,
+            "a delete should free a slot without forcing an enumeration"
+        );
+        assert!(registry.get_info("wallet4").await.is_some());
+        assert!(registry.get_info("wallet3").await.is_none());
+    });
+}
+
+#[test]
+fn test_info_cache_hint_matches_the_stored_keys() {
+    futures::executor::block_on(async {
+        let storage = CountingStorage::new();
+        let mut registry = WalletRegistry::new(storage, capped(4), test_now);
+
+        let count_stored = |registry: &WalletRegistry<CountingStorage>| {
+            registry
+                .storage
+                .inner
+                .data
+                .lock()
+                .unwrap()
+                .keys()
+                .filter(|key| key.starts_with("info:"))
+                .count()
+        };
+
+        // Growth, eviction, delete and republish in one sequence: the hint
+        // must track all four, or the cap silently stops being enforced.
+        for i in 1..=6 {
+            registry
+                .cache_info(info_at(&format!("id{i}"), &format!("wallet{i}"), 1_000 + i))
+                .await;
+            assert_eq!(registry.info_count, Some(count_stored(&registry)));
+        }
+
+        registry.delete_info("wallet5").await;
+        assert_eq!(registry.info_count, Some(count_stored(&registry)));
+
+        // Republishing replaces the author's entry, so it adds no key.
+        registry
+            .cache_info(info_at("id6-v2", "wallet6", 1_100))
+            .await;
+        assert_eq!(registry.info_count, Some(count_stored(&registry)));
+        assert_eq!(registry.info_count, Some(3));
     });
 }

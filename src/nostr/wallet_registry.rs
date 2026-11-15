@@ -1,6 +1,7 @@
 use crate::log_debug;
 use crate::log_error;
 use crate::log_info;
+use crate::log_warn;
 use crate::nostr::{Event, Filter, Limits, StorageError};
 use crate::util::short;
 use async_trait::async_trait;
@@ -21,6 +22,13 @@ pub trait Storage {
     async fn put_batch(&self, entries: HashMap<String, Value>) -> Result<(), StorageError>;
     /// Removes the given keys; deletions are best-effort (no error path).
     async fn delete_batch(&self, keys: Vec<String>);
+    /// Every entry whose key starts with `prefix`, as `(key, value)` pairs.
+    ///
+    /// Only used to bound the info cache, which cannot be sized without an
+    /// enumeration: the number of cached wallets is not tracked anywhere that
+    /// survives hibernation. Backends read the values as well as the keys, so
+    /// a caller that only needs ages does not pay for a second read.
+    async fn list_prefix(&self, prefix: &str) -> Vec<(String, Value)>;
 }
 
 /// Snapshot of one connection's state, produced by the internal index and
@@ -429,6 +437,16 @@ pub struct WalletRegistry<S: Storage> {
     storage: S,
     index: WalletIndex,
     limits: Limits,
+    /// Current Unix time, injected so info-cache expiry is testable.
+    clock: fn() -> u64,
+    /// How many info events the cache holds, as of the last enumeration.
+    /// `None` means "unknown": the next publish enumerates before trusting it.
+    ///
+    /// Only an in-memory hint — it exists so a publish does not have to list
+    /// the whole cache to find out whether the cap is reached. Losing it (to
+    /// hibernation) costs one enumeration; the sweep reseeds it every
+    /// `CONNECTION_SWEEP_SECONDS`.
+    info_count: Option<usize>,
 }
 
 /// An action the transport must take after [`WalletRegistry::match_event`].
@@ -445,12 +463,16 @@ pub enum RegistryResponse {
 
 impl<S: Storage> WalletRegistry<S> {
     /// Creates a registry over the given storage with relay limits applied
-    /// (max subscriptions per connection).
-    pub fn new(storage: S, limits: Limits) -> Self {
+    /// (max subscriptions per connection). `clock` returns Unix time and is
+    /// used for info-cache expiry; production passes
+    /// [`crate::util::now`](crate::util::now), tests pass `test_now`.
+    pub fn new(storage: S, limits: Limits, clock: fn() -> u64) -> Self {
         Self {
             storage,
             index: WalletIndex::new(),
             limits,
+            clock,
+            info_count: None,
         }
     }
 
@@ -704,13 +726,179 @@ impl<S: Storage> WalletRegistry<S> {
         if !entries.is_empty() {
             let _ = self.storage.put_batch(entries).await;
         }
+
+        // A republish replaces this author's entry; only a first publish adds
+        // one. Counting it now keeps the hint honest without a second read.
+        if previous.is_none() {
+            self.add_info_event();
+        }
         self.index.cache_info(event);
+
+        // Bounded cache: whoever publishes decides how many keys exist, so the
+        // cap is enforced here rather than only on the sweep. The hint keeps
+        // the common case (cache not yet full) free of enumeration; an unknown
+        // hint enumerates once.
+        let max = self.limits.max_info_events;
+        if max > 0 && self.info_count.is_none_or(|count| count > max) {
+            self.trim_info_cache().await;
+        }
+    }
+
+    /// Records that one more info event is cached, when the count is known.
+    fn add_info_event(&mut self) {
+        if let Some(count) = self.info_count.as_mut() {
+            *count = count.saturating_add(1);
+        }
+    }
+
+    /// Records that `removed` info events are no longer cached. A hint that is
+    /// too high only forces an extra enumeration; one that is too low would
+    /// stop enforcing the cap, so an unknown count stays unknown.
+    fn forget_info_events(&mut self, removed: usize) {
+        if let Some(count) = self.info_count.as_mut() {
+            *count = count.saturating_sub(removed);
+        }
     }
 
     /// Latest wallet-service info event addressed to `pubkey`: either the
     /// event's author or one of its `p` tag targets. Reads the in-memory
     /// index first, then `info:<pubkey>`, then the `info-p:<pubkey>` alias.
+    ///
+    /// An expired event is treated as absent and removed: serving it would
+    /// keep advertising a wallet that may no longer exist.
     pub async fn get_info(&mut self, pubkey: &str) -> Option<Event> {
+        let event = self.load_info(pubkey).await?;
+        if self.is_expired(&event) {
+            log_debug!(
+                "info expired: pk={} age={}s",
+                short(pubkey, 8),
+                (self.clock)().saturating_sub(event.created_at)
+            );
+            self.prune_info_entries(vec![event]).await;
+            return None;
+        }
+        Some(event)
+    }
+
+    /// Drops cached info events that are too old or that no longer fit under
+    /// `max_info_events`; returns how many events were removed.
+    ///
+    /// The idle sweep calls this so the cache self-cleans while the object is
+    /// awake, instead of depending on someone reading a stale key.
+    pub async fn prune_info_cache(&mut self) -> usize {
+        self.trim_info_cache().await
+    }
+
+    /// One pass over the cached info events: drop unreadable values, drop
+    /// expired events, then evict the oldest events beyond the cap.
+    ///
+    /// Eviction frees a tenth of the cap at a time, so a burst of publishes
+    /// pays for one enumeration per eviction rather than one per publish.
+    async fn trim_info_cache(&mut self) -> usize {
+        let ttl = self.limits.info_ttl_seconds;
+        let max = self.limits.max_info_events;
+        if ttl == 0 && max == 0 {
+            return 0;
+        }
+
+        let (cached, malformed) = self.collect_cached_info().await;
+        if !malformed.is_empty() {
+            log_warn!(
+                "info cache: dropping {} unreadable entries",
+                malformed.len()
+            );
+            self.storage.delete_batch(malformed).await;
+        }
+
+        let now = (self.clock)();
+        let mut keep: Vec<Event> = Vec::new();
+        let mut drop: Vec<Event> = Vec::new();
+        for event in cached {
+            if ttl > 0 && now.saturating_sub(event.created_at) > ttl {
+                drop.push(event);
+            } else {
+                keep.push(event);
+            }
+        }
+
+        if max > 0 && keep.len() > max {
+            let target = max.saturating_sub(max / 10).max(1);
+            // Newest first: everything after `target` is the oldest surplus.
+            keep.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
+            let older = keep.split_off(target.min(keep.len()));
+            drop.extend(older);
+        }
+
+        let removed = drop.len();
+        if removed > 0 {
+            log_info!(
+                "info cache trimmed: {} removed (max={}, ttl={}s)",
+                removed,
+                max,
+                ttl
+            );
+            self.prune_info_entries(drop).await;
+        }
+
+        // The enumeration above is the ground truth: reseed the hint from it
+        // *after* pruning, so the evictions are not subtracted twice.
+        self.info_count = Some(keep.len());
+        removed
+    }
+
+    /// Whether a cached event is past its time to live. `0` disables expiry.
+    fn is_expired(&self, event: &Event) -> bool {
+        let ttl = self.limits.info_ttl_seconds;
+        ttl > 0 && (self.clock)().saturating_sub(event.created_at) > ttl
+    }
+
+    /// Every readable cached info event, plus the keys whose value no longer
+    /// parses.
+    async fn collect_cached_info(&self) -> (Vec<Event>, Vec<String>) {
+        let mut events = Vec::new();
+        let mut malformed = Vec::new();
+        for (key, value) in self.storage.list_prefix("info:").await {
+            match serde_json::from_value::<Event>(value) {
+                Ok(event) => events.push(event),
+                Err(_) => malformed.push(key),
+            }
+        }
+        (events, malformed)
+    }
+
+    /// Removes the given info events from memory and storage, together with
+    /// their `infoid:` reverse mappings and every `info-p:` alias that points
+    /// at one of them. Aliases owned by another author (two wallets can
+    /// address the same app) are left alone.
+    async fn prune_info_entries(&mut self, events: Vec<Event>) {
+        if events.is_empty() {
+            return;
+        }
+
+        let authors: HashSet<&str> = events.iter().map(|event| event.pubkey.as_str()).collect();
+        let mut keys = Vec::with_capacity(events.len().saturating_mul(2));
+        for event in &events {
+            keys.push(format!("info:{}", event.pubkey));
+            keys.push(format!("infoid:{}", event.id));
+        }
+
+        // One enumeration beats a read per `p` tag, and the owner is the
+        // stored value, so the check is the same one `delete_info` makes.
+        for (key, owner) in self.storage.list_prefix("info-p:").await {
+            if owner.as_str().is_some_and(|owner| authors.contains(owner)) {
+                keys.push(key);
+            }
+        }
+
+        self.storage.delete_batch(keys).await;
+        self.forget_info_events(events.len());
+        for event in &events {
+            self.index.delete_info(&event.pubkey);
+        }
+    }
+
+    /// Loads the cached event for `pubkey` without applying the time to live.
+    async fn load_info(&mut self, pubkey: &str) -> Option<Event> {
         if let Some(event) = self.index.get_info(pubkey) {
             return Some(event);
         }
@@ -759,6 +947,7 @@ impl<S: Storage> WalletRegistry<S> {
         let mut keys = vec![format!("info:{pubkey}")];
         match stored_event {
             Some(event) => {
+                self.forget_info_events(1);
                 log_debug!("info deleted: pk={}", short(pubkey, 8));
                 keys.push(format!("infoid:{}", event.id));
                 for pk in p_tag_pubkeys(&event) {

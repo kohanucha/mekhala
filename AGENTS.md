@@ -43,6 +43,10 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 - `MAX_FILTER_ITEMS` - optional, default: 10 (max values per filter field)
 - `MAX_EVENT_TAGS` - optional, default: 10
 - `MAX_ROUTING_KEYS_PER_CONNECTION` - optional, default: 1000
+- `MAX_INFO_EVENTS` - optional, default: 1000, `0` disables the cap (see
+  "Info cache" below)
+- `INFO_TTL_SECONDS` - optional, default: 2592000 (30 days), `0` disables
+  expiry
 - `MAX_CONTENT_LENGTH` - default: 98304 (96 KB, covers the 87,472-character NIP-44 ceiling)
 
 ## Wrangler Config
@@ -84,6 +88,43 @@ Trade-offs: per-address caps put CGNAT and corporate NAT users in one bucket,
 so keep them generous (or disable them) where that matters; a wallet that is
 merely idle keeps its subscription and is never swept.
 
+## Info cache
+
+`kind` 13194 events are cached so a hibernated or freshly connected client can
+still answer a wallet-discovery `REQ`. Each cached event occupies an
+`info:<author>` key, an `infoid:<event id>` reverse mapping, and one
+`info-p:<app>` alias per `p` tag — so the cache costs several keys per wallet
+and is bounded by two independent settings:
+
+- `MAX_INFO_EVENTS` caps how many events are kept. Enforced on publish
+  (`cache_info`) because the publisher decides how many keys exist; one publish
+  over the cap trims back to 90% of it so a burst pays for one enumeration
+  rather than one per publish. Eviction drops the oldest `created_at` first,
+  and takes the `infoid:` mapping and any alias the evicted author owns with
+  it — aliases that now belong to another author are left alone.
+
+  Because the publisher also controls how often that check runs, it may not
+  cost a listing per publish: `WalletRegistry` keeps an in-memory `info_count`
+  hint, and only an unknown hint (first publish after a wake) or a hint at the
+  cap triggers the enumeration. The hint is reseeded by every enumeration and
+  moved by every write and delete. A hint that drifts high only forces a
+  redundant listing; one that drifts low would weaken the cap — which is why
+  the alarm reseeds it instead of trusting it forever.
+- `INFO_TTL_SECONDS` expires events, measured from the event's own
+  `created_at`. Enforced on read (`get_info` treats an expired event as absent
+  and deletes it) and on the Durable Object alarm, so a cache nobody reads
+  still shrinks.
+
+Both bounds run through `WalletRegistry::trim_info_cache`, which needs an
+enumeration — `Storage::list_prefix("info:")` — because the number of cached
+wallets is not tracked anywhere that survives hibernation. `0` disables either
+bound; setting both to `0` removes the enumeration entirely.
+
+Trade-off: TTL is measured against `created_at`, which the publisher controls.
+A wallet that republishes keeps its entry; one that never republishes
+disappears after 30 days and its discovery `REQ` simply returns nothing, which
+is the same answer the relay gave before the event was ever published.
+
 ## Common Gotchas
 
 1. **Bounded REQs**: every value in a filter (`ids`, `authors`, `kinds`, `#p`, `#e`) becomes a persisted routing key, and `sync()` re-reads and rewrites all of a connection's keys on every subscribe. That is why `Limits::max_filter_items` / `max_routing_keys_per_connection` and the `MAX_SUB_ID_LENGTH` check in `NostrEngine::handle_req` exist; removing them turns one `REQ` into tens of thousands of storage operations.
@@ -94,6 +135,7 @@ merely idle keeps its subscription and is never swept.
 6. **`sync()` required for persistence**: Every `subscribe()`/`unsubscribe()` must call `sync()`. The in-memory index is lost on DO hibernation — only `state.storage()` survives. Removing `sync()` breaks event routing after wake. Regression test: `test_hibernation_contract`.
 7. **Routing index families**: A subscription can be indexed under `pk:` (`authors`/`#p`), `eid:` (`ids`) or `etag:` (`#e`); `sync()`, `load_indexed()`, `unsubscribe()` and `on_terminate()` must treat all three the same or routing silently degrades to "accepted, EOSE, no event", or the persisted index keeps a membership the live connection no longer has (leaks storage and resurrects dead subscriptions). Cached info events also persist an `info-p:<p tag>` alias so `#p`-only subscribers reach the author's `info:<author>` event; when two wallets address the same app the last publisher owns the alias, and `delete_info()` must check alias ownership before deleting it.
 8. **Alarms are one-shot**: the idle sweep re-arms itself inside `alarm()` and the accept path arms it when none is pending. Dropping either half leaves connections that are accepted once and never swept — the case this sweep exists to close. `IDLE_TIMEOUT_SECONDS=0` / `CONNECTION_SWEEP_SECONDS=0` switch it off, which is what the functional test suite does so its own sockets are not swept mid-test.
+9. **Info cache is bounded on purpose**: `MAX_INFO_EVENTS` / `INFO_TTL_SECONDS` are the only thing keeping the `info:` family from growing forever, since anyone may publish a `kind` 13194 event. Both are enforced through one `list_prefix("info:")` enumeration, so a new bound must go there rather than into a separate pass. Unit tests set `info_ttl_seconds: 0` (`test_limits()`) because fixtures publish `created_at: 1000` against a pinned clock of 1_700_000_000 — leaving the default TTL on would expire every fixture. Tests that mean to test expiry set the TTL and `set_test_time` explicitly.
 
 ## Agent skills
 

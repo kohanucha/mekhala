@@ -13,6 +13,7 @@ import { testCloseNonExistentSub, testReplaceSubscription, testDuplicateEventPub
 import { testPerAddressLimits, testIdleConnectionSweep, testConnectionEviction } from "./connection-limits.test.js";
 import { runSdkConformance } from "./conformance.test.js";
 import { testRestartPersistence } from "./restart-persistence.test.js";
+import { testInfoCacheCap, testInfoCacheExpiry } from "./info-cache.test.js";
 
 async function runAll() {
   try {
@@ -69,10 +70,13 @@ async function runAll() {
       await testIdleConnectionSweep();
       await testConnectionEviction();
       await testRestartPersistence();
+      await testInfoCacheCap();
+      await testInfoCacheExpiry();
     } else {
       console.log("Skipping Max Connections test (remote — spawns local wrangler)...");
       console.log("Skipping connection limit tests (remote — spawn local wrangler)...");
       console.log("Skipping Restart Persistence test (remote — spawns local wrangler)...");
+      console.log("Skipping Info Cache tests (remote — spawn local wrangler)...");
     }
     console.log("\nAll tests passed successfully! 🚀");
     process.exit(0);

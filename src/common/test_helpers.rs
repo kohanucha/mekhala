@@ -32,11 +32,21 @@ pub fn set_test_time(t: u64) {
 // ── Engine factory ──
 
 pub fn new_test_engine() -> crate::nostr::engine::NostrEngine<MockStorage> {
-    crate::nostr::engine::NostrEngine::new_with_storage(
-        MockStorage::new(),
-        Limits::default(),
-        test_now,
-    )
+    crate::nostr::engine::NostrEngine::new_with_storage(MockStorage::new(), test_limits(), test_now)
+}
+
+/// Relay limits for tests: the production defaults, except that info-cache
+/// expiry is off.
+///
+/// Fixtures publish info events with tiny `created_at` values (1000) against a
+/// pinned clock of `1_700_000_000`, so any real time-to-live would treat every
+/// one of them as expired and bury the behaviour under test. Tests about
+/// expiry spell out `info_ttl_seconds` themselves.
+pub fn test_limits() -> Limits {
+    Limits {
+        info_ttl_seconds: 0,
+        ..Limits::default()
+    }
 }
 
 // ── MockStorage ──
@@ -86,6 +96,17 @@ impl Storage for MockStorage {
             data.remove(&k);
         }
     }
+    async fn list_prefix(&self, prefix: &str) -> Vec<(String, Value)> {
+        let data = self.data.lock().unwrap();
+        let mut entries: Vec<(String, Value)> = data
+            .iter()
+            .filter(|(k, _)| k.starts_with(prefix))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        // Sorted so a test's eviction order cannot depend on hash order.
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries
+    }
 }
 
 // ── Event factory ──
@@ -108,7 +129,9 @@ pub async fn simulate_hibernation(original: &MockStorage) -> WalletRegistry<Mock
     let snapshot = original.data.lock().unwrap().clone();
     let new_storage = MockStorage::new();
     new_storage.put_batch(snapshot).await.unwrap();
-    WalletRegistry::new(new_storage, Limits::default())
+    // Same limits and clock as the engine under test: the point of the
+    // simulation is that only the in-memory index is lost.
+    WalletRegistry::new(new_storage, test_limits(), test_now)
 }
 
 // ── Storage seed helpers ──

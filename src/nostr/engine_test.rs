@@ -1,6 +1,8 @@
 use super::super::Tag;
 use super::*;
-use crate::common::test_helpers::{new_test_engine, set_test_time, test_now, MockStorage};
+use crate::common::test_helpers::{
+    new_test_engine, set_test_time, test_limits, test_now, MockStorage,
+};
 
 #[test]
 fn test_engine_req_storage() {
@@ -302,7 +304,7 @@ fn test_engine_wakeup_logic() {
         )
         .await;
 
-        let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
+        let mut engine = NostrEngine::new_with_storage(storage, test_limits(), test_now);
 
         // 2. Handle an event that targets the hibernated pubkey
         let event = Event {
@@ -495,7 +497,7 @@ fn test_kind_5_deletion_with_e_tag_after_hibernation() {
             data: data.clone(),
             fail_put_batch: false,
         };
-        let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
+        let mut engine = NostrEngine::new_with_storage(storage, test_limits(), test_now);
         engine.on_connect(1).await;
 
         let sk = wallet_sk();
@@ -509,7 +511,7 @@ fn test_kind_5_deletion_with_e_tag_after_hibernation() {
         let restarted_storage = MockStorage::new();
         *restarted_storage.data.lock().unwrap() = snapshot;
         let mut restarted =
-            NostrEngine::new_with_storage(restarted_storage, Limits::default(), test_now);
+            NostrEngine::new_with_storage(restarted_storage, test_limits(), test_now);
         restarted.on_connect(1).await;
 
         let deletion = signed_event(&sk, 5, vec![Tag::E(info.id.clone(), vec![])], "");
@@ -534,7 +536,7 @@ fn test_kind_5_deletion_with_e_tag_after_hibernation_unauthorized() {
             data: data.clone(),
             fail_put_batch: false,
         };
-        let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
+        let mut engine = NostrEngine::new_with_storage(storage, test_limits(), test_now);
         engine.on_connect(1).await;
 
         let sk = wallet_sk();
@@ -546,7 +548,7 @@ fn test_kind_5_deletion_with_e_tag_after_hibernation_unauthorized() {
         let restarted_storage = MockStorage::new();
         *restarted_storage.data.lock().unwrap() = snapshot;
         let mut restarted =
-            NostrEngine::new_with_storage(restarted_storage, Limits::default(), test_now);
+            NostrEngine::new_with_storage(restarted_storage, test_limits(), test_now);
         restarted.on_connect(1).await;
 
         // Another author cannot delete an event it did not sign.
@@ -576,7 +578,7 @@ fn test_kind_5_deletion_by_old_e_tag_keeps_republished_info() {
             data: data.clone(),
             fail_put_batch: false,
         };
-        let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
+        let mut engine = NostrEngine::new_with_storage(storage, test_limits(), test_now);
         engine.on_connect(1).await;
 
         let sk = wallet_sk();
@@ -588,7 +590,7 @@ fn test_kind_5_deletion_by_old_e_tag_keeps_republished_info() {
         let restarted_storage = MockStorage::new();
         *restarted_storage.data.lock().unwrap() = snapshot;
         let mut restarted =
-            NostrEngine::new_with_storage(restarted_storage, Limits::default(), test_now);
+            NostrEngine::new_with_storage(restarted_storage, test_limits(), test_now);
         restarted.on_connect(1).await;
 
         // Republish, then delete using the superseded event id.
@@ -759,7 +761,7 @@ fn test_internal_rpc_session_terminate_leaves_no_state() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
         let data = storage.data.clone();
-        let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
+        let mut engine = NostrEngine::new_with_storage(storage, test_limits(), test_now);
 
         engine.on_connect(42).await;
         let _ = engine
@@ -798,7 +800,7 @@ fn test_close_prunes_internal_rpc_indexes() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
         let data = storage.data.clone();
-        let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
+        let mut engine = NostrEngine::new_with_storage(storage, test_limits(), test_now);
 
         engine.on_connect(7).await;
         let _ = engine
@@ -852,7 +854,7 @@ fn test_handle_req_returns_closed_on_storage_failure() {
             data: Arc::new(Mutex::new(HashMap::new())),
             fail_put_batch: true,
         };
-        let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
+        let mut engine = NostrEngine::new_with_storage(storage, test_limits(), test_now);
         engine.on_connect(1).await;
 
         let responses = engine
@@ -899,7 +901,7 @@ fn test_handle_req_internal_returns_closed_on_storage_failure() {
             data: Arc::new(Mutex::new(HashMap::new())),
             fail_put_batch: true,
         };
-        let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
+        let mut engine = NostrEngine::new_with_storage(storage, test_limits(), test_now);
         engine.on_connect(1).await;
 
         let responses = engine
@@ -1183,7 +1185,7 @@ fn test_route_verified_event_wakes_hibernated_subscriber() {
             }],
         )
         .await;
-        let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
+        let mut engine = NostrEngine::new_with_storage(storage, test_limits(), test_now);
 
         let event = signed_event(&wallet_sk(), 23194, vec![], "payload");
         let responses = engine.route_verified_event(1, event).await;
@@ -1663,7 +1665,7 @@ fn test_handle_req_rejects_filter_with_too_many_values() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
         let data = storage.data.clone();
-        let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
+        let mut engine = NostrEngine::new_with_storage(storage, test_limits(), test_now);
         engine.on_connect(1).await;
 
         let authors: Vec<String> = (0..11).map(|i| format!("author{i}")).collect();
@@ -1702,7 +1704,7 @@ fn test_handle_req_rejects_oversized_sub_id() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
         let data = storage.data.clone();
-        let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
+        let mut engine = NostrEngine::new_with_storage(storage, test_limits(), test_now);
         engine.on_connect(1).await;
 
         let sub_id = "s".repeat(crate::nostr::limits::MAX_SUB_ID_LENGTH + 1);
@@ -1746,7 +1748,7 @@ fn test_handle_req_rejects_routing_key_budget_overrun() {
         let data = storage.data.clone();
         let limits = Limits {
             max_routing_keys_per_connection: 5,
-            ..Limits::default()
+            ..test_limits()
         };
         let mut engine = NostrEngine::new_with_storage(storage, limits, test_now);
         engine.on_connect(1).await;
@@ -1803,5 +1805,37 @@ fn test_engine_has_subscriptions_tracks_req_and_close() {
         let msg = ClientMessage::from_json(close).unwrap();
         engine.handle_typed(1, msg).await;
         assert!(!engine.has_subscriptions(1).await);
+    });
+}
+
+#[test]
+fn test_engine_prune_info_cache_removes_expired_events() {
+    futures::executor::block_on(async {
+        set_test_time(1_000_000);
+        let limits = Limits {
+            info_ttl_seconds: 60,
+            ..test_limits()
+        };
+        let mut engine = NostrEngine::new_with_storage(MockStorage::new(), limits, test_now);
+        engine.on_connect(1).await;
+
+        engine
+            .process_info_event(Event {
+                id: "info1".into(),
+                pubkey: "wallet".into(),
+                created_at: 999_980,
+                kind: 13194,
+                tags: vec![],
+                content: String::new(),
+                sig: "sig".into(),
+            })
+            .await;
+        assert!(engine.get_wallet_info("wallet").await.is_some());
+
+        set_test_time(1_000_100);
+        assert_eq!(engine.prune_info_cache().await, 1);
+        assert!(engine.get_wallet_info("wallet").await.is_none());
+
+        set_test_time(1_700_000_000);
     });
 }

@@ -22,8 +22,17 @@ export function wait(ms) {
 /**
  * Starts a private `wrangler dev` on `port` with the given vars, runs `fn`
  * against it, and always stops it again.
+ *
+ * `persistTo` points the relay at its own state directory; without it wrangler
+ * reuses the project's `.wrangler/state`, which other tests and earlier runs
+ * also write to. `fn` receives `log`, which returns everything the server has
+ * printed so far — the only way to observe work the relay does without a
+ * client-visible response.
  */
-export async function withRelay({ port, vars, secret = "limited-test-secret" }, fn) {
+export async function withRelay(
+  { port, vars, secret = "limited-test-secret", persistTo },
+  fn,
+) {
   const httpURL = `http://127.0.0.1:${port}/${secret}`;
   const wsURL = `ws://127.0.0.1:${port}/${secret}`;
 
@@ -36,6 +45,9 @@ export async function withRelay({ port, vars, secret = "limited-test-secret" }, 
     args.push("--var", `${key}:${value}`);
   }
   args.push("--var", `RELAY_SECRET:${secret}`);
+  if (persistTo) {
+    args.push("--persist-to", persistTo);
+  }
 
   console.log(`Starting relay on port ${port} (${JSON.stringify(vars)})...`);
   const server = spawn("npx", args, {
@@ -75,7 +87,7 @@ export async function withRelay({ port, vars, secret = "limited-test-secret" }, 
     }
     console.log("Relay is up.");
 
-    await fn({ httpURL, wsURL });
+    await fn({ httpURL, wsURL, log: () => output });
   } finally {
     stop();
   }

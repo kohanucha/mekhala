@@ -34,6 +34,9 @@ cleanup() {
     lsof -ti :8792 2>/dev/null | xargs kill -9 2>/dev/null || true
     # Port 8790 cleanup (from testRestartPersistence in JS)
     lsof -ti :8790 2>/dev/null | xargs kill -9 2>/dev/null || true
+    # Port 8793/8794 cleanup (from info-cache tests in JS)
+    lsof -ti :8793 2>/dev/null | xargs kill -9 2>/dev/null || true
+    lsof -ti :8794 2>/dev/null | xargs kill -9 2>/dev/null || true
     echo "Cleanup complete."
     echo "Wrangler logs saved to: $LOG_FILE"
 }
