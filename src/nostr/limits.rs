@@ -23,6 +23,18 @@ pub struct Limits {
     /// Every key costs a storage read and a write on every `subscribe()`, so
     /// without this bound a single `REQ` could ask for tens of thousands.
     pub max_routing_keys_per_connection: usize,
+    /// Maximum number of wallet-service info events kept in the cache
+    /// (`info:` family). Each one also carries an `infoid:` reverse mapping
+    /// and one `info-p:` alias per addressed app, so the number of keys is a
+    /// multiple of this. `0` disables the cap.
+    ///
+    /// The cache exists so hibernated connections can still answer a
+    /// discovery `REQ`; it is not meant to be an archive of every wallet that
+    /// ever published.
+    pub max_info_events: usize,
+    /// How long a cached info event is served before it is treated as absent
+    /// and deleted. `0` disables expiry.
+    pub info_ttl_seconds: u64,
 }
 
 impl Limits {
@@ -40,10 +52,10 @@ impl Limits {
 impl Default for Limits {
     /// Conservative defaults used when no configuration is provided (96 KiB
     /// content, 100 subscriptions per connection, 10 values per filter field,
-    /// 10 tags per event, 1000 routing keys per connection). The content
-    /// ceiling covers the largest NIP-44 payload (87,472 base64 characters)
-    /// with room for the JSON envelope while staying inside the 128 KiB
-    /// WebSocket message cap.
+    /// 10 tags per event, 1000 routing keys per connection, 1000 cached info
+    /// events kept for 30 days). The content ceiling covers the largest
+    /// NIP-44 payload (87,472 base64 characters) with room for the JSON
+    /// envelope while staying inside the 128 KiB WebSocket message cap.
     fn default() -> Self {
         Self {
             max_content_length: 98_304,
@@ -51,6 +63,8 @@ impl Default for Limits {
             max_filter_items: 10,
             max_event_tags: 10,
             max_routing_keys_per_connection: 1_000,
+            max_info_events: 1_000,
+            info_ttl_seconds: 2_592_000,
         }
     }
 }

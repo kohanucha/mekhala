@@ -47,7 +47,7 @@ impl<S: Storage> NostrEngine<S> {
     /// Unix time (injectable so tests can pin it).
     pub fn new_with_storage(storage: S, limits: Limits, clock: fn() -> u64) -> Self {
         Self {
-            registry: WalletRegistry::new(storage, limits),
+            registry: WalletRegistry::new(storage, limits, clock),
             limits,
             clock,
         }
@@ -351,6 +351,13 @@ impl<S: Storage> NostrEngine<S> {
         log_debug!("terminate conn={}", id);
         self.registry.on_terminate(id).await;
         Vec::new()
+    }
+
+    /// Drops cached wallet info events that are too old or beyond the cache
+    /// cap; returns how many were removed. The idle sweep calls this so the
+    /// cache cleans itself up while the object is awake.
+    pub async fn prune_info_cache(&mut self) -> usize {
+        self.registry.prune_info_cache().await
     }
 
     /// Parses the cached wallet info event (`kind` 13194) for `pubkey` into

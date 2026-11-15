@@ -65,3 +65,18 @@ fn test_limits_serde_roundtrip_preserves_key_and_tag_ceilings() {
     assert_eq!(deserialized.max_event_tags, 4);
     assert_eq!(deserialized.max_routing_keys_per_connection, 5);
 }
+
+#[test]
+fn test_limits_default_info_cache_bounds() {
+    let limits = Limits::default();
+    assert_eq!(limits.max_info_events, 1_000);
+    assert_eq!(limits.info_ttl_seconds, 2_592_000, "30 days");
+}
+
+#[test]
+fn test_limits_new_keeps_info_cache_bounds() {
+    let limits = Limits::new(16384, 50);
+    let defaults = Limits::default();
+    assert_eq!(limits.max_info_events, defaults.max_info_events);
+    assert_eq!(limits.info_ttl_seconds, defaults.info_ttl_seconds);
+}

@@ -25,8 +25,8 @@ use std::cell::RefCell;
 use std::time::Duration;
 use wasm_bindgen::JsValue;
 use worker::{
-    durable_object, Delay, DurableObject, Env, Error, Request, Response, Result, ScheduledTime,
-    State, WebSocket, WebSocketIncomingMessage, WebSocketPair,
+    durable_object, Delay, DurableObject, Env, Error, ListOptions, Request, Response, Result,
+    ScheduledTime, State, WebSocket, WebSocketIncomingMessage, WebSocketPair,
 };
 
 /// How often a socket's attachment is refreshed with its last-seen time.
@@ -73,6 +73,37 @@ impl Storage for CloudflareStorage {
             }
         }
     }
+    async fn list_prefix(&self, prefix: &str) -> Vec<(String, serde_json::Value)> {
+        let map = match self
+            .storage
+            .list_with_options(ListOptions::new().prefix(prefix))
+            .await
+        {
+            Ok(map) => map,
+            Err(e) => {
+                log_warn!("list_prefix('{}') failed: {}", prefix, e);
+                return Vec::new();
+            }
+        };
+
+        let mut entries = Vec::new();
+        let iterator = map.entries();
+        while let Ok(step) = iterator.next() {
+            if step.done() {
+                break;
+            }
+            let pair: js_sys::Array = step.value().into();
+            let Some(key) = pair.get(0).as_string() else {
+                continue;
+            };
+            let Ok(value) = serde_wasm_bindgen::from_value::<serde_json::Value>(pair.get(1)) else {
+                log_warn!("list_prefix('{}'): skipping unreadable '{}'", prefix, key);
+                continue;
+            };
+            entries.push((key, value));
+        }
+        entries
+    }
 }
 
 struct IdCounterState {
@@ -107,6 +138,8 @@ impl DurableObject for CloudflareTransport {
             max_filter_items: config.max_filter_items,
             max_event_tags: config.max_event_tags,
             max_routing_keys_per_connection: config.max_routing_keys_per_connection,
+            max_info_events: config.max_info_events,
+            info_ttl_seconds: config.info_ttl_seconds,
             ..Limits::new(
                 config.max_content_length,
                 config.max_subscriptions_per_connection,
@@ -167,6 +200,7 @@ impl DurableObject for CloudflareTransport {
     async fn alarm(&self) -> Result<Response> {
         log_debug!("→ alarm handler invoked");
         self.sweep_idle_connections().await;
+        self.sweep_info_cache().await;
         self.rearm_sweep().await;
         Response::empty()
     }
@@ -388,6 +422,21 @@ impl crate::common::NwcTransport for CloudflareTransport {
 }
 
 impl CloudflareTransport {
+    /// Drops cached wallet info events that have expired or overflowed the
+    /// cache cap. Runs on the same alarm as the idle sweep: both keep storage
+    /// bounded by time, and the cache is only read while sockets exist.
+    async fn sweep_info_cache(&self) {
+        let config = &self.config;
+        if config.info_ttl_seconds == 0 && config.max_info_events == 0 {
+            return;
+        }
+        let mut engine = self.engine.lock().await;
+        let removed = engine.prune_info_cache().await;
+        if removed > 0 {
+            log_info!("info cache: {} entries swept", removed);
+        }
+    }
+
     async fn allocate_id(&self) -> u32 {
         let mut counter = self.id_counter.lock().await;
         let current = counter.current_id;

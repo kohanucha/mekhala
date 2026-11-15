@@ -54,6 +54,8 @@ Configurable via `wrangler.toml` or environment variables:
 | `IDLE_TIMEOUT_SECONDS` | `120` | Close connections idle longer than this that hold no subscription; `0` disables. |
 | `CONNECTION_SWEEP_SECONDS` | `60` | How often the idle sweep runs; `0` disables. |
 | `EVICT_MIN_IDLE_SECONDS` | `10` | Minimum idle time before a subscription-less connection may be closed to free a slot. |
+| `MAX_INFO_EVENTS` | `1000` | Max cached wallet info events (each also costs an `infoid:` key and one alias per `p` tag); `0` disables. |
+| `INFO_TTL_SECONDS` | `2592000` | How long a cached wallet info event is served, measured from its `created_at`; `0` disables. |
 | `MAX_CONTENT_LENGTH` | `98304` | Max event `content` size in bytes. Covers the largest NIP-44 payload (87,472 base64 chars) plus the JSON envelope. |
 
 ---
