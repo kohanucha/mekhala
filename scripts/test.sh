@@ -5,6 +5,10 @@ PORT=8787
 LOG_FILE="test/wrangler.log"
 
 # --- Pre-flight: kill stale processes from prior runs ---
+# `wrangler dev` runs as `node .../wrangler-dist/cli.js dev ...`, so match that
+# cmdline too: a server left behind on another port keeps the shared build
+# output busy and the suite then hangs at "Starting local relay".
+pkill -9 -f "wrangler-dist/cli.js dev" 2>/dev/null || true
 pkill -9 -f "wrangler dev" 2>/dev/null || true
 pkill -9 -f "workerd" 2>/dev/null || true
 
@@ -19,6 +23,7 @@ cleanup() {
         kill -9 $WRANGLER_PID 2>/dev/null
     fi
     # Safety net: match any level of the wrangler dev process tree
+    pkill -9 -f "wrangler-dist/cli.js dev" 2>/dev/null || true
     pkill -9 -f "wrangler dev" 2>/dev/null || true
     pkill -9 -f "workerd" 2>/dev/null || true
     # Port 8788 cleanup (from testMaxConnections in JS)
