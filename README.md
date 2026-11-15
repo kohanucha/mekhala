@@ -48,7 +48,12 @@ Configurable via `wrangler.toml` or environment variables:
 |---|---|---|
 | `RELAY_SECRET` | *None* | Optional secret path parameter for private routing. |
 | `WALLET_REGION` | `apac` | Physical DO location (`apac`, `weur`, `wnam`). |
-| `MAX_CONNECTIONS` | `100` | Max concurrent WebSocket connections per DO. |
+| `MAX_CONNECTIONS` | `100` | Max concurrent WebSocket connections per DO. When full, the longest-idle connection holding no subscription is closed to free a slot. |
+| `MAX_CONNECTIONS_PER_IP` | `5` | Max concurrent connections from one client address; `0` disables. |
+| `MAX_CONNECTIONS_PER_ASN` | `20` | Max concurrent connections from one autonomous system; `0` disables. |
+| `IDLE_TIMEOUT_SECONDS` | `120` | Close connections idle longer than this that hold no subscription; `0` disables. |
+| `CONNECTION_SWEEP_SECONDS` | `60` | How often the idle sweep runs; `0` disables. |
+| `EVICT_MIN_IDLE_SECONDS` | `10` | Minimum idle time before a subscription-less connection may be closed to free a slot. |
 | `MAX_CONTENT_LENGTH` | `98304` | Max event `content` size in bytes. Covers the largest NIP-44 payload (87,472 base64 chars) plus the JSON envelope. |
 
 ---
