@@ -5,6 +5,10 @@ PORT=8787
 LOG_FILE="test/wrangler.log"
 
 # --- Pre-flight: kill stale processes from prior runs ---
+# `wrangler dev` runs as `node .../wrangler-dist/cli.js dev ...`, so match that
+# cmdline too: a server left behind on another port keeps the shared build
+# output busy and the suite then hangs at "Starting local relay".
+pkill -9 -f "wrangler-dist/cli.js dev" 2>/dev/null || true
 pkill -9 -f "wrangler dev" 2>/dev/null || true
 pkill -9 -f "workerd" 2>/dev/null || true
 
@@ -19,10 +23,15 @@ cleanup() {
         kill -9 $WRANGLER_PID 2>/dev/null
     fi
     # Safety net: match any level of the wrangler dev process tree
+    pkill -9 -f "wrangler-dist/cli.js dev" 2>/dev/null || true
     pkill -9 -f "wrangler dev" 2>/dev/null || true
     pkill -9 -f "workerd" 2>/dev/null || true
     # Port 8788 cleanup (from testMaxConnections in JS)
     lsof -ti :8788 2>/dev/null | xargs kill -9 2>/dev/null || true
+    # Port 8789/8791/8792 cleanup (from connection-limits tests in JS)
+    lsof -ti :8789 2>/dev/null | xargs kill -9 2>/dev/null || true
+    lsof -ti :8791 2>/dev/null | xargs kill -9 2>/dev/null || true
+    lsof -ti :8792 2>/dev/null | xargs kill -9 2>/dev/null || true
     # Port 8790 cleanup (from testRestartPersistence in JS)
     lsof -ti :8790 2>/dev/null | xargs kill -9 2>/dev/null || true
     echo "Cleanup complete."
@@ -91,7 +100,16 @@ fi
 
 # 3. Start Local Relay (redirect output to log file)
 echo "Step 3: Starting local relay on port $PORT..."
-npx wrangler dev --port $PORT --ip 127.0.0.1 > "$LOG_FILE" 2>&1 &
+# The connection gates are switched off for the functional suite: every test
+# socket arrives from 127.0.0.1 (one address, one network) and several tests
+# hold sockets open while waiting, so the gate would refuse healthy traffic.
+# Each gate has a dedicated test that starts its own relay — see
+# test/connection-limits.test.js.
+npx wrangler dev --port $PORT --ip 127.0.0.1 \
+    --var MAX_CONNECTIONS_PER_IP:0 \
+    --var MAX_CONNECTIONS_PER_ASN:0 \
+    --var IDLE_TIMEOUT_SECONDS:0 \
+    --var CONNECTION_SWEEP_SECONDS:0 > "$LOG_FILE" 2>&1 &
 WRANGLER_PID=$!
 
 # 4. Wait for Relay to be Ready

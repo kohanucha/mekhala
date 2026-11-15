@@ -579,6 +579,14 @@ impl<S: Storage> WalletRegistry<S> {
         false
     }
 
+    /// Whether the connection holds at least one subscription right now,
+    /// reading its persisted state first so a hibernating wallet is never
+    /// mistaken for an idle client.
+    pub async fn has_subscriptions(&mut self, conn_id: u32) -> bool {
+        self.load(conn_id).await;
+        self.index.sub_count(conn_id) > 0
+    }
+
     /// Connection IDs to notify about events addressed to `pubkey`: reads
     /// the persisted `pk:<pubkey>` index and loads each connection, pruning
     /// stale IDs from storage. When nothing is persisted, falls back to the

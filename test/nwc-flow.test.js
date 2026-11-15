@@ -1,5 +1,6 @@
 import { WebSocket } from "ws";
 import { RELAY_URL, HTTP_URL } from "./env.js";
+import { withRelay, connect, refused } from "./relay-harness.js";
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools/pure";
 
 async function testRouting(ws, sk, pk) {
@@ -578,81 +579,18 @@ export async function testMultiConnectionRouting() {
 export async function testMaxConnections() {
   console.log("\n--- Testing Max Connections (429 Too Many Requests) ---");
 
-  const LIMIT_PORT = 8788;
-  const limitSecret = "limit-test-secret";
-  const limitWsURL = `ws://localhost:${LIMIT_PORT}/${limitSecret}`;
-  const limitHttpURL = `http://localhost:${LIMIT_PORT}/${limitSecret}`;
+  // EVICT_MIN_IDLE_SECONDS keeps slot reclaiming out of the way: this test is
+  // about the cap itself, not about freeing a slot.
+  const vars = { MAX_CONNECTIONS: 3, EVICT_MIN_IDLE_SECONDS: 3600 };
 
-  const { execSync } = await import("child_process");
-  try { execSync(`lsof -ti :${LIMIT_PORT} | xargs kill -9 2>/dev/null || true`); } catch (e) {}
-
-  console.log("Starting limited relay on port 8788 (MAX_CONNECTIONS=3)...");
-
-  const { spawn } = await import("child_process");
-  const projectRoot = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
-
-  const wranglerProcess = spawn("npx", [
-    "wrangler", "dev",
-    "--port", String(LIMIT_PORT),
-    "--ip", "127.0.0.1",
-    "--var", "MAX_CONNECTIONS:3",
-    "--var", `RELAY_SECRET:${limitSecret}`
-  ], {
-    cwd: projectRoot,
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-
-  const cleanup = () => {
-    try { wranglerProcess.kill("SIGTERM"); } catch (e) {}
-    setTimeout(() => {
-      try { wranglerProcess.kill("SIGKILL"); } catch (e) {}
-    }, 2000);
-  };
-
-  let serverReady = false;
-  for (let i = 0; i < 30; i++) {
-    await new Promise(r => setTimeout(r, 2000));
-    try {
-      const resp = await fetch(limitHttpURL);
-      if (resp.status === 404 || resp.status === 200) {
-        serverReady = true;
-        break;
-      }
-    } catch (e) {}
-  }
-
-  if (!serverReady) {
-    cleanup();
-    throw new Error("Limited relay failed to start within 60 seconds");
-  }
-  console.log("Limited relay is up.");
-
-  try {
+  await withRelay({ port: 8788, vars, secret: "limit-test-secret" }, async ({ wsURL }) => {
     const connections = [];
     for (let i = 0; i < 3; i++) {
-      const ws = new WebSocket(limitWsURL);
-      await new Promise((resolve, reject) => {
-        ws.on("open", resolve);
-        ws.on("error", (err) => reject(new Error(`Connection ${i + 1} failed: ${err.message}`)));
-        setTimeout(() => reject(new Error(`Connection ${i + 1} timeout`)), 5000);
-      });
-      connections.push(ws);
+      connections.push(await connect(wsURL));
     }
     console.log("Opened 3 connections (max capacity reached).");
 
-    const fourthWs = new WebSocket(limitWsURL);
-    const fourthResult = await new Promise((resolve) => {
-      fourthWs.on("error", () => resolve("error"));
-      setTimeout(() => {
-        if (fourthWs.readyState === WebSocket.CLOSED || fourthWs.readyState === WebSocket.CLOSING) {
-          resolve("closed");
-        } else {
-          resolve("open");
-        }
-      }, 3000);
-    });
-
-    if (fourthResult === "open") {
+    if (!(await refused(wsURL))) {
       throw new Error("4th WebSocket connection should have been rejected but succeeded");
     }
     console.log("✅ 4th connection correctly rejected (429 Too Many Requests).");
@@ -660,7 +598,5 @@ export async function testMaxConnections() {
     for (const ws of connections) {
       ws.close();
     }
-  } finally {
-    cleanup();
-  }
+  });
 }

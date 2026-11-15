@@ -376,6 +376,12 @@ impl<S: Storage> NostrEngine<S> {
         self.registry.load(conn_id).await
     }
 
+    /// Whether the connection holds at least one subscription right now,
+    /// loading its persisted state first.
+    pub async fn has_subscriptions(&mut self, conn_id: u32) -> bool {
+        self.registry.has_subscriptions(conn_id).await
+    }
+
     /// Connection IDs whose subscriptions cover events addressed to
     /// `pubkey`, loading them from storage as needed.
     pub async fn load_by_pubkey(&mut self, pubkey: &str) -> Vec<u32> {

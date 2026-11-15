@@ -1786,3 +1786,22 @@ fn test_handle_req_rejects_routing_key_budget_overrun() {
         );
     });
 }
+
+#[test]
+fn test_engine_has_subscriptions_tracks_req_and_close() {
+    futures::executor::block_on(async {
+        let mut engine = new_test_engine();
+        engine.on_connect(1).await;
+        assert!(!engine.has_subscriptions(1).await);
+
+        let req = r#"["REQ", "sub1", {"kinds": [23194], "authors": ["pk1"]}]"#;
+        let msg = ClientMessage::from_json(req).unwrap();
+        engine.handle_typed(1, msg).await;
+        assert!(engine.has_subscriptions(1).await);
+
+        let close = r#"["CLOSE", "sub1"]"#;
+        let msg = ClientMessage::from_json(close).unwrap();
+        engine.handle_typed(1, msg).await;
+        assert!(!engine.has_subscriptions(1).await);
+    });
+}
