@@ -1,6 +1,9 @@
 use crate::cloudflare::config::CloudflareConfig;
-use crate::cloudflare::connection::ConnectionRegistry;
+use crate::cloudflare::connection::{
+    admit, attachment_of, Admission, AdmissionLimits, Attachment, ConnectionRegistry,
+};
 use crate::cloudflare::create_cors_response;
+use crate::cloudflare::identity::{self, ClientIdentity};
 use crate::cloudflare::kv::CloudflareKvStore;
 use crate::log_debug;
 use crate::log_error;
@@ -22,9 +25,19 @@ use std::cell::RefCell;
 use std::time::Duration;
 use wasm_bindgen::JsValue;
 use worker::{
-    durable_object, Delay, DurableObject, Env, Error, Request, Response, Result, State, WebSocket,
-    WebSocketIncomingMessage, WebSocketPair,
+    durable_object, Delay, DurableObject, Env, Error, Request, Response, Result, ScheduledTime,
+    State, WebSocket, WebSocketIncomingMessage, WebSocketPair,
 };
+
+/// How often a socket's attachment is refreshed with its last-seen time.
+/// The attachment is the only record a hibernated socket leaves behind, so
+/// the idle sweep can underestimate a connection's real age by at most this.
+const ATTACHMENT_REFRESH_SECONDS: u64 = 30;
+
+/// Storage reads allowed per eviction attempt. Deciding whether a candidate
+/// is evictable costs one read, and a full relay must not turn every connect
+/// attempt into a fan-out of reads.
+const MAX_EVICTION_CHECKS: usize = 3;
 
 pub struct CloudflareStorage {
     storage: worker::Storage,
@@ -145,7 +158,17 @@ impl DurableObject for CloudflareTransport {
             return handler.handle_callback(req, username, self).await;
         }
 
-        self.accept_new_connection().await
+        let identity = identity::from_headers(&req);
+        self.accept_new_connection(identity).await
+    }
+
+    /// Runs the idle sweep and keeps it scheduled. Alarms are one-shot, so
+    /// every run arms the next one for as long as sockets exist.
+    async fn alarm(&self) -> Result<Response> {
+        log_debug!("→ alarm handler invoked");
+        self.sweep_idle_connections().await;
+        self.rearm_sweep().await;
+        Response::empty()
     }
 
     async fn websocket_message(
@@ -555,46 +578,257 @@ impl CloudflareTransport {
 
         let _ = engine.load(id).await;
 
+        self.connections
+            .borrow_mut()
+            .touch(ws, id, crate::util::now(), ATTACHMENT_REFRESH_SECONDS);
         self.connections.borrow_mut().insert_active(id, ws.clone());
         log_debug!("↻ wake conn={}", id);
         Some(id)
     }
 
-    async fn accept_new_connection(&self) -> Result<Response> {
-        let max_connections = self.config.max_connections;
+    async fn accept_new_connection(&self, identity: ClientIdentity) -> Result<Response> {
+        let limits = AdmissionLimits {
+            max_connections: self.config.max_connections,
+            max_per_ip: self.config.max_connections_per_ip,
+            max_per_asn: self.config.max_connections_per_asn,
+        };
+        let now = crate::util::now();
+        let sockets = self.state.get_websockets();
+        let existing: Vec<Attachment> = sockets.iter().filter_map(attachment_of).collect();
+        let candidate = Attachment {
+            id: 0,
+            ip_tag: identity.ip_tag,
+            asn: identity.asn,
+            last_seen: now,
+        };
 
-        let WebSocketPair { client, server } = WebSocketPair::new()?;
-
-        // 1. Allocate ID without holding any RefCell borrow across await
-        let connection_id = self.allocate_id().await;
-
-        // 2. Accept + register atomically with count re-check inside borrow_mut
-        {
-            let mut connections = self.connections.borrow_mut();
-            if connections.len(&self.state) >= max_connections {
+        // Room is decided before an id is allocated: a refused connection
+        // must not burn one.
+        let mut freed = 0usize;
+        match admit(&existing, sockets.len(), &candidate, &limits) {
+            Admission::Accept => {}
+            Admission::IpAtCapacity => {
                 log_warn!(
-                    "✗ connection rejected: max={} connections reached",
-                    max_connections
+                    "✗ connection rejected: address limit {} reached",
+                    limits.max_per_ip
                 );
                 return Response::error("Too Many Requests", 429);
             }
-            connections.accept_and_register(&self.state, connection_id, &server);
+            Admission::AsnAtCapacity => {
+                log_warn!(
+                    "✗ connection rejected: network limit {} reached",
+                    limits.max_per_asn
+                );
+                return Response::error("Too Many Requests", 429);
+            }
+            Admission::Full => {
+                if self.reclaim_idle_slot(&existing, now).await? {
+                    // The evicted socket stays in `get_websockets()` until
+                    // its close propagates, so its slot is counted as freed
+                    // rather than read back as still occupied.
+                    freed = 1;
+                } else {
+                    log_warn!(
+                        "✗ connection rejected: max={} connections reached",
+                        limits.max_connections
+                    );
+                    return Response::error("Too Many Requests", 429);
+                }
+            }
         }
 
-        // 3. NOW safe to await — WS is accepted and in HashMap
-        let mut engine = self.engine.lock().await;
-        let responses = engine.on_connect(connection_id).await;
+        let WebSocketPair { client, server } = WebSocketPair::new()?;
+        let connection_id = self.allocate_id().await;
+        let attachment = Attachment {
+            id: connection_id,
+            ..candidate
+        };
 
-        log_info!(
-            "+ conn={} accepted count={}/{}",
-            connection_id,
-            self.connections.borrow().len(&self.state),
-            max_connections
-        );
+        {
+            let mut connections = self.connections.borrow_mut();
+            // Re-read the live count: an await above may have admitted
+            // another connection.
+            if connections.len(&self.state) >= limits.max_connections.saturating_add(freed) {
+                log_warn!(
+                    "✗ connection rejected: max={} connections reached",
+                    limits.max_connections
+                );
+                return Response::error("Too Many Requests", 429);
+            }
+            connections.accept_and_register(&self.state, &attachment, &server);
+        }
 
-        self.process_responses(responses, &mut engine).await?;
+        {
+            let mut engine = self.engine.lock().await;
+            let responses = engine.on_connect(connection_id).await;
+
+            log_info!(
+                "+ conn={} accepted count={}/{}",
+                connection_id,
+                self.connections.borrow().len(&self.state),
+                limits.max_connections
+            );
+
+            self.process_responses(responses, &mut engine).await?;
+        }
+
+        self.arm_sweep().await;
 
         Response::from_websocket(client)
+    }
+
+    /// Closes the longest-idle connection that holds no subscription to make
+    /// room for a new one; returns whether a slot was freed.
+    ///
+    /// A connection with subscriptions is never evicted: that is exactly the
+    /// client the relay exists for. Candidates are considered oldest first
+    /// and only past `EVICT_MIN_IDLE_SECONDS`, so a client that just
+    /// connected still has time to subscribe.
+    async fn reclaim_idle_slot(&self, existing: &[Attachment], now: u64) -> Result<bool> {
+        let min_idle = u64::try_from(self.config.evict_min_idle_seconds).unwrap_or(u64::MAX);
+        // Order and eligibility both use the merged activity time: an
+        // attachment can lag the memory record by up to the refresh interval,
+        // and sorting on it alone could hide the real oldest candidate.
+        let mut candidates: Vec<(u64, u32)> = existing
+            .iter()
+            .map(|attachment| (self.idle_since(attachment), attachment.id))
+            .collect();
+        candidates.sort_unstable();
+
+        for (seen, id) in candidates.into_iter().take(MAX_EVICTION_CHECKS) {
+            if now.saturating_sub(seen) < min_idle {
+                // Sorted oldest first: every remaining candidate is younger.
+                break;
+            }
+
+            let mut engine = self.engine.lock().await;
+            if engine.has_subscriptions(id).await {
+                continue;
+            }
+
+            let ws = self
+                .state
+                .get_websockets()
+                .into_iter()
+                .find(|ws| attachment_of(ws).is_some_and(|attachment| attachment.id == id));
+            let responses = engine.on_terminate(id).await;
+            self.connections.borrow_mut().remove(id);
+            self.process_responses(responses, &mut engine).await?;
+            drop(engine);
+
+            if let Some(ws) = ws {
+                let _ = ws.close(Some(1000), Some("connection slot reclaimed"));
+            }
+            log_info!(
+                "- conn={} evicted: idle {}s with no subscriptions",
+                id,
+                now.saturating_sub(seen)
+            );
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
+    /// Closes every connection that has been idle longer than
+    /// `IDLE_TIMEOUT_SECONDS` and holds no subscription, then cleans up its
+    /// state. A disabled timeout (`0`) skips the work entirely.
+    async fn sweep_idle_connections(&self) {
+        let idle_timeout = u64::try_from(self.config.idle_timeout_seconds).unwrap_or(u64::MAX);
+        if idle_timeout == 0 {
+            return;
+        }
+
+        let now = crate::util::now();
+        let mut closed = 0usize;
+
+        for ws in self.state.get_websockets() {
+            let Some(attachment) = attachment_of(&ws) else {
+                continue;
+            };
+            let seen = self.idle_since(&attachment);
+            if now.saturating_sub(seen) < idle_timeout {
+                continue;
+            }
+
+            let mut engine = self.engine.lock().await;
+            if engine.has_subscriptions(attachment.id).await {
+                continue;
+            }
+
+            let responses = engine.on_terminate(attachment.id).await;
+            self.connections.borrow_mut().remove(attachment.id);
+            let _ = self.process_responses(responses, &mut engine).await;
+            drop(engine);
+
+            log_info!(
+                "- conn={} idle {}s with no subscriptions: closing",
+                attachment.id,
+                now.saturating_sub(seen)
+            );
+            if let Err(e) = ws.close(Some(1000), Some("idle timeout")) {
+                log_warn!("close failed for conn={}: {}", attachment.id, e);
+            }
+            closed += 1;
+        }
+
+        if closed > 0 {
+            log_info!("idle sweep closed {} connection(s)", closed);
+        }
+    }
+
+    /// Most recent activity known for a connection, merging this instance's
+    /// record (accurate while awake) with the attachment (written before
+    /// hibernation, refreshed at most every `ATTACHMENT_REFRESH_SECONDS`).
+    fn idle_since(&self, attachment: &Attachment) -> u64 {
+        let observed = self.connections.borrow().last_seen(attachment.id);
+        observed.map_or(attachment.last_seen, |seen| seen.max(attachment.last_seen))
+    }
+
+    /// Arms the idle sweep if it is enabled and not already scheduled.
+    async fn arm_sweep(&self) {
+        let Some(interval_ms) = self.sweep_interval_ms() else {
+            return;
+        };
+        let storage = self.state.storage();
+        match storage.get_alarm().await {
+            Ok(Some(_)) => return,
+            Ok(None) => {}
+            Err(e) => {
+                log_warn!("get_alarm failed, re-arming anyway: {}", e);
+            }
+        }
+        if let Err(e) = storage.set_alarm(ScheduledTime::from(interval_ms)).await {
+            log_warn!("set_alarm failed: {}", e);
+        }
+    }
+
+    /// Arms the next sweep, unless there is nothing left to sweep — the next
+    /// accepted connection arms the loop again.
+    async fn rearm_sweep(&self) {
+        let Some(interval_ms) = self.sweep_interval_ms() else {
+            return;
+        };
+        if self.state.get_websockets().is_empty() {
+            return;
+        }
+        if let Err(e) = self
+            .state
+            .storage()
+            .set_alarm(ScheduledTime::from(interval_ms))
+            .await
+        {
+            log_warn!("set_alarm failed: {}", e);
+        }
+    }
+
+    /// Delay between sweeps, or `None` when the sweep is switched off.
+    fn sweep_interval_ms(&self) -> Option<i64> {
+        if self.config.idle_timeout_seconds == 0 || self.config.connection_sweep_seconds == 0 {
+            return None;
+        }
+        let seconds = i64::try_from(self.config.connection_sweep_seconds).unwrap_or(i64::MAX);
+        Some(seconds.saturating_mul(1000))
     }
 
     async fn handle_disconnect(&self, ws: &WebSocket) -> Result<()> {
@@ -638,6 +872,13 @@ impl CloudflareTransport {
 
 pub async fn connect(req: Request, env: &Env) -> Result<Response> {
     let config = CloudflareConfig::from_env(env);
+    // Admission limits are enforced inside the Durable Object, which cannot
+    // read the edge's view of the client, so stamp it on the forwarded
+    // request here — replacing anything the client sent under those names.
+    // Headers of a request that arrived from the network are immutable, so the
+    // request is re-created before it is touched.
+    let mut req = req.clone_mut()?;
+    identity::stamp(&mut req)?;
     crate::cloudflare::get_durable_stub(env, config.wallet_region.as_deref())?
         .fetch_with_request(req)
         .await

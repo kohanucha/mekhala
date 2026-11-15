@@ -5,6 +5,7 @@ pub mod config;
 pub mod connection;
 pub mod durable_object;
 pub mod handler;
+pub mod identity;
 pub mod kv;
 pub mod router;
 pub mod transport;

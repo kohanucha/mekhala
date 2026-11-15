@@ -2126,3 +2126,59 @@ fn test_delete_info_by_event_ignores_stale_reverse_index() {
         );
     });
 }
+
+#[test]
+fn test_has_subscriptions_reports_live_state() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let mut registry = WalletRegistry::new(storage, Limits::default());
+
+        assert!(
+            !registry.has_subscriptions(1).await,
+            "an unknown connection holds nothing"
+        );
+
+        registry
+            .subscribe(
+                1,
+                "sub1".into(),
+                vec![Filter {
+                    authors: Some(vec!["alice".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await
+            .unwrap();
+        assert!(registry.has_subscriptions(1).await);
+
+        registry.unsubscribe(1, "sub1".into()).await.unwrap();
+        assert!(
+            !registry.has_subscriptions(1).await,
+            "closing the last subscription leaves nothing"
+        );
+    });
+}
+
+#[test]
+fn test_has_subscriptions_reads_persisted_state() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        seed_subscription(
+            &storage,
+            7,
+            "sub1",
+            "alice",
+            vec![Filter {
+                authors: Some(vec!["alice".into()]),
+                ..Default::default()
+            }],
+        )
+        .await;
+
+        let mut registry = simulate_hibernation(&storage).await;
+        assert!(
+            registry.has_subscriptions(7).await,
+            "a hibernated wallet still holds its subscription"
+        );
+    });
+}

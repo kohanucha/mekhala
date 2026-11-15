@@ -31,6 +31,14 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 - `RELAY_SECRET` - password (set via Cloudflare dashboard)
 - `WALLET_REGION` - optional: apac/weur/wnam (default: apac)
 - `MAX_CONNECTIONS` - optional, default: 100
+- `MAX_CONNECTIONS_PER_IP` - optional, default: 5, `0` disables (see
+  "Connection admission" below)
+- `MAX_CONNECTIONS_PER_ASN` - optional, default: 20, `0` disables
+- `IDLE_TIMEOUT_SECONDS` - optional, default: 120, `0` disables the sweep
+  (connections idle longer than this *and* holding no subscription are closed)
+- `CONNECTION_SWEEP_SECONDS` - optional, default: 60, `0` disables the sweep
+- `EVICT_MIN_IDLE_SECONDS` - optional, default: 10: minimum idle time before a
+  subscription-less connection may be closed to free a slot
 - `MAX_SUBSCRIPTIONS_PER_CONNECTION` - optional, default: 100
 - `MAX_FILTER_ITEMS` - optional, default: 10 (max values per filter field)
 - `MAX_EVENT_TAGS` - optional, default: 10
@@ -45,7 +53,39 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
   through the custom domain bound in the dashboard. Do not flip these on to
   "test" a deploy — preview URLs would expose unreleased code publicly.
 
+## Connection admission
+
+Every WebSocket upgrade passes three gates in
+`CloudflareTransport::accept_new_connection`, in this order:
+
+1. `MAX_CONNECTIONS_PER_IP` — connections sharing one address tag.
+2. `MAX_CONNECTIONS_PER_ASN` — connections sharing one autonomous system.
+3. `MAX_CONNECTIONS` — the relay total. On reaching it, the longest-idle
+   connection **that holds no subscription** is closed to free a slot (only
+   when it has been idle at least `EVICT_MIN_IDLE_SECONDS`); with no such
+   connection the upgrade gets 429.
+
+The identity is decided in the Worker, not in the Durable Object: `connect()`
+reads `cf.asn()` and `CF-Connecting-IP`, hashes the address into a fixed-length
+tag, then sets `x-mekhala-client-ip-tag` / `x-mekhala-client-asn` on the
+forwarded request after deleting any client-supplied value under those names
+(`src/cloudflare/identity.rs`). Per-address counting is therefore only as
+trustworthy as `CF-Connecting-IP`; `asn` is edge-derived and is the
+rotation-resistant backstop.
+
+Identity and a last-seen timestamp ride on the WebSocket attachment
+(`serialize_attachment`), so they survive hibernation at no storage cost; the
+timestamp is refreshed at most every 30 s. `IDLE_TIMEOUT_SECONDS` closes
+connections that hold no subscription and have been silent that long, driven
+by the Durable Object alarm (`alarm()`), which re-arms itself every
+`CONNECTION_SWEEP_SECONDS` while sockets exist.
+
+Trade-offs: per-address caps put CGNAT and corporate NAT users in one bucket,
+so keep them generous (or disable them) where that matters; a wallet that is
+merely idle keeps its subscription and is never swept.
+
 ## Common Gotchas
+
 1. **Bounded REQs**: every value in a filter (`ids`, `authors`, `kinds`, `#p`, `#e`) becomes a persisted routing key, and `sync()` re-reads and rewrites all of a connection's keys on every subscribe. That is why `Limits::max_filter_items` / `max_routing_keys_per_connection` and the `MAX_SUB_ID_LENGTH` check in `NostrEngine::handle_req` exist; removing them turns one `REQ` into tens of thousands of storage operations.
 2. **Deliver to every connection**: a subscription is stored per connection, and a reconnecting client leaves its previous id behind until the old socket reports the close. `WalletRegistry::collect_matches` therefore sends to every recorded connection of a matching subscription — sending only to the newest id lets any later connection silence the others.
 3. **DO state**: Use `self.state.storage()`
@@ -53,6 +93,7 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 5. **Panic = Abort**: The project uses `panic = "abort"`. **NEVER** use `unwrap()` or `expect()`. Use `?`, `.get()` for indexing, and checked math to prevent isolate crashes.
 6. **`sync()` required for persistence**: Every `subscribe()`/`unsubscribe()` must call `sync()`. The in-memory index is lost on DO hibernation — only `state.storage()` survives. Removing `sync()` breaks event routing after wake. Regression test: `test_hibernation_contract`.
 7. **Routing index families**: A subscription can be indexed under `pk:` (`authors`/`#p`), `eid:` (`ids`) or `etag:` (`#e`); `sync()`, `load_indexed()`, `unsubscribe()` and `on_terminate()` must treat all three the same or routing silently degrades to "accepted, EOSE, no event", or the persisted index keeps a membership the live connection no longer has (leaks storage and resurrects dead subscriptions). Cached info events also persist an `info-p:<p tag>` alias so `#p`-only subscribers reach the author's `info:<author>` event; when two wallets address the same app the last publisher owns the alias, and `delete_info()` must check alias ownership before deleting it.
+8. **Alarms are one-shot**: the idle sweep re-arms itself inside `alarm()` and the accept path arms it when none is pending. Dropping either half leaves connections that are accepted once and never swept — the case this sweep exists to close. `IDLE_TIMEOUT_SECONDS=0` / `CONNECTION_SWEEP_SECONDS=0` switch it off, which is what the functional test suite does so its own sockets are not swept mid-test.
 
 ## Agent skills
 
@@ -102,6 +143,11 @@ Single-context layout. See `docs/agents/domain.md`.
   directory, and asserts the DO storage keys survive (`info:`, `info-p:`,
   `infoid:`, delete-by-e-tag). Local only; uses a separate state dir so it
   never clobbers `.wrangler/state`.
+- `test/relay-harness.js` (`withRelay`) starts a private `wrangler dev` for
+  tests that need non-default limits, and its `QUIET_LIMITS` switch the
+  connection gates off unless a scenario turns one on.
+  `test/connection-limits.test.js` is where those gates are exercised — one
+  scenario per gate (address/network caps, idle sweep, slot reclaiming).
 
 ## Coverage Gate
 - Measure **production code only**: test files (`*_test.rs`) and `cloudflare/`
