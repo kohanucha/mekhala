@@ -129,7 +129,7 @@ fn test_filter_matches_empty() {
 #[test]
 fn test_filter_is_valid_requires_narrowing() {
     let filter = Filter::default();
-    assert!(!filter.is_valid());
+    assert!(!filter.is_valid(&Limits::default()));
 }
 
 #[test]
@@ -139,7 +139,7 @@ fn test_filter_is_valid_with_narrowing() {
         p_tags: Some(vec!["author1".into()]),
         ..Default::default()
     };
-    assert!(filter.is_valid());
+    assert!(filter.is_valid(&Limits::default()));
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn test_filter_is_valid_requires_kinds() {
         authors: Some(vec!["author1".into()]),
         ..Default::default()
     };
-    assert!(!filter.is_valid());
+    assert!(!filter.is_valid(&Limits::default()));
 }
 
 #[test]
@@ -158,14 +158,14 @@ fn test_filter_is_valid_rejects_non_nwc_kinds() {
         authors: Some(vec!["author1".into()]),
         ..Default::default()
     };
-    assert!(!filter.is_valid());
+    assert!(!filter.is_valid(&Limits::default()));
 
     let filter = Filter {
         kinds: Some(vec![13194, 1]),
         authors: Some(vec!["author1".into()]),
         ..Default::default()
     };
-    assert!(!filter.is_valid());
+    assert!(!filter.is_valid(&Limits::default()));
 }
 
 #[test]
@@ -176,7 +176,10 @@ fn test_filter_is_valid_accepts_nwc_kinds() {
             authors: Some(vec!["author1".into()]),
             ..Default::default()
         };
-        assert!(filter.is_valid(), "kind {kind} should be valid");
+        assert!(
+            filter.is_valid(&Limits::default()),
+            "kind {kind} should be valid"
+        );
     }
 }
 
@@ -187,7 +190,7 @@ fn test_filter_is_valid_accepts_kind_5() {
         authors: Some(vec!["author1".into()]),
         ..Default::default()
     };
-    assert!(filter.is_valid());
+    assert!(filter.is_valid(&Limits::default()));
 }
 
 #[test]
@@ -196,7 +199,7 @@ fn test_filter_is_valid_with_p_tags_only() {
         p_tags: Some(vec!["pubkey1".into()]),
         ..Default::default()
     };
-    assert!(filter.is_valid());
+    assert!(filter.is_valid(&Limits::default()));
 }
 
 #[test]
@@ -251,7 +254,7 @@ fn test_filter_is_valid_narrowing_with_non_nwc_kind() {
         p_tags: Some(vec!["pk1".into()]),
         ..Default::default()
     };
-    assert!(!filter.is_valid());
+    assert!(!filter.is_valid(&Limits::default()));
 }
 
 #[test]
@@ -261,7 +264,7 @@ fn test_filter_is_valid_narrowing_with_mixed_kinds() {
         p_tags: Some(vec!["pk1".into()]),
         ..Default::default()
     };
-    assert!(!filter.is_valid());
+    assert!(!filter.is_valid(&Limits::default()));
 }
 
 #[test]
@@ -270,7 +273,7 @@ fn test_filter_is_valid_no_authors_or_tags() {
         kinds: Some(vec![13194]),
         ..Default::default()
     };
-    assert!(!filter.is_valid());
+    assert!(!filter.is_valid(&Limits::default()));
 }
 
 #[test]
@@ -280,7 +283,7 @@ fn test_filter_is_valid_empty_authors_valid_kinds() {
         authors: Some(vec![]),
         ..Default::default()
     };
-    assert!(filter.is_valid());
+    assert!(filter.is_valid(&Limits::default()));
 }
 
 #[test]
@@ -306,7 +309,7 @@ fn test_filter_is_valid_with_e_tags_only() {
         e_tags: Some(vec!["event1".into()]),
         ..Default::default()
     };
-    assert!(filter.is_valid());
+    assert!(filter.is_valid(&Limits::default()));
 }
 
 #[test]
@@ -315,7 +318,7 @@ fn test_filter_is_valid_with_ids_only() {
         ids: Some(vec!["id1".into()]),
         ..Default::default()
     };
-    assert!(filter.is_valid());
+    assert!(filter.is_valid(&Limits::default()));
 }
 
 #[test]
@@ -328,5 +331,99 @@ fn test_filter_is_valid_rejects_empty_kinds_without_narrowing() {
         authors: Some(vec!["a".into()]),
         ..Default::default()
     };
-    assert!(!filter.is_valid());
+    assert!(!filter.is_valid(&Limits::default()));
+}
+
+#[test]
+fn test_filter_item_limit_boundary() {
+    let limits = Limits::default();
+    let filter = Filter {
+        kinds: Some(vec![23194]),
+        authors: Some(
+            (0..limits.max_filter_items)
+                .map(|i| format!("a{i}"))
+                .collect(),
+        ),
+        ..Default::default()
+    };
+    assert!(!filter.exceeds_item_limit(&limits));
+    assert!(filter.is_valid(&limits));
+
+    let over = Filter {
+        kinds: Some(vec![23194]),
+        authors: Some(
+            (0..=limits.max_filter_items)
+                .map(|i| format!("a{i}"))
+                .collect(),
+        ),
+        ..Default::default()
+    };
+    assert!(over.exceeds_item_limit(&limits));
+    assert!(!over.is_valid(&limits));
+}
+
+#[test]
+fn test_filter_item_limit_applies_to_every_field() {
+    let limits = Limits {
+        max_filter_items: 2,
+        ..Limits::default()
+    };
+
+    let too_many = |i: usize| vec![format!("v{i}"); 3];
+    let filters = [
+        Filter {
+            kinds: Some(vec![23194]),
+            ids: Some(too_many(0)),
+            ..Default::default()
+        },
+        Filter {
+            kinds: Some(vec![23194]),
+            authors: Some(too_many(1)),
+            ..Default::default()
+        },
+        Filter {
+            kinds: Some(vec![23194, 23195, 23196]),
+            ..Default::default()
+        },
+        Filter {
+            kinds: Some(vec![13194]),
+            p_tags: Some(too_many(2)),
+            ..Default::default()
+        },
+        Filter {
+            kinds: Some(vec![23195]),
+            e_tags: Some(too_many(3)),
+            ..Default::default()
+        },
+    ];
+
+    for (index, filter) in filters.iter().enumerate() {
+        assert!(
+            filter.exceeds_item_limit(&limits),
+            "field #{index} must respect the item limit"
+        );
+        assert!(!filter.is_valid(&limits), "field #{index} must be rejected");
+    }
+}
+
+#[test]
+fn test_filter_item_limit_leaves_empty_fields_alone() {
+    let limits = Limits {
+        max_filter_items: 1,
+        ..Limits::default()
+    };
+    let filter = Filter {
+        kinds: Some(vec![13194]),
+        authors: Some(vec!["alice".into()]),
+        ..Default::default()
+    };
+    assert!(!filter.exceeds_item_limit(&limits));
+    assert!(filter.is_valid(&limits));
+
+    let empty = Filter {
+        ids: Some(Vec::new()),
+        authors: Some(Vec::new()),
+        ..Default::default()
+    };
+    assert!(!empty.exceeds_item_limit(&limits));
 }

@@ -499,8 +499,8 @@ export async function testEdgeCases() {
   });
 }
 
-export async function testLastInWinsRouting() {
-  console.log("\n--- Testing Last-In-Wins Routing (Singular Routing) ---");
+export async function testMultiConnectionRouting() {
+  console.log("\n--- Testing Multi-Connection Routing (every subscriber receives) ---");
 
   const walletSk = generateSecretKey();
   const walletPk = getPublicKey(walletSk);
@@ -529,6 +529,16 @@ export async function testLastInWinsRouting() {
     let wallet1Received = false;
     let wallet2Received = false;
 
+    const finishIfDone = () => {
+      if (wallet1Received && wallet2Received) {
+        console.log("✅ Both connections received the request.");
+        wallet1Ws.close();
+        wallet2Ws.close();
+        appWs.close();
+        resolve();
+      }
+    };
+
     console.log("Sending request from App...");
     const event = finalizeEvent({
       kind: 23194,
@@ -541,31 +551,27 @@ export async function testLastInWinsRouting() {
     wallet1Ws.on("message", (data) => {
       const msg = JSON.parse(data.toString());
       if (msg[0] === "EVENT" && msg[1] === "w1") {
-        console.log("❌ Wallet 1 received request! (Should have been routed to Wallet 2)");
+        console.log("✅ Wallet 1 received request.");
         wallet1Received = true;
+        finishIfDone();
       }
     });
 
     wallet2Ws.on("message", (data) => {
       const msg = JSON.parse(data.toString());
       if (msg[0] === "EVENT" && msg[1] === "w2") {
-        console.log("✅ Wallet 2 received request. (Correct singular routing)");
+        console.log("✅ Wallet 2 received request.");
         wallet2Received = true;
-
-        setTimeout(() => {
-          if (!wallet1Received && wallet2Received) {
-            wallet1Ws.close();
-            wallet2Ws.close();
-            appWs.close();
-            resolve();
-          } else {
-            reject(new Error("Singular routing failed: wallet 1 also received the event."));
-          }
-        }, 1000);
+        finishIfDone();
       }
     });
 
-    setTimeout(() => reject(new Error("Last-In-Wins Routing test timeout")), 5000);
+    setTimeout(
+      () => reject(new Error(
+        `Multi-connection routing failed. W1: ${wallet1Received}, W2: ${wallet2Received}`
+      )),
+      5000
+    );
   });
 }
 

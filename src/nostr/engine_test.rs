@@ -1572,3 +1572,217 @@ fn test_ids_only_subscription_receives_event() {
         );
     });
 }
+
+#[test]
+fn test_route_delivers_to_every_subscribed_connection() {
+    futures::executor::block_on(async {
+        set_test_time(crate::util::now());
+        let mut engine = new_test_engine();
+        engine.on_connect(1).await;
+        engine.on_connect(2).await;
+        let pk = crate::common::test_helpers::TEST_WALLET_PK;
+
+        for (conn, sub_id) in [(1u32, "app_a"), (2, "app_b")] {
+            engine
+                .handle_req(
+                    conn,
+                    sub_id.into(),
+                    vec![Filter {
+                        kinds: Some(vec![23194]),
+                        authors: Some(vec![pk.into()]),
+                        ..Default::default()
+                    }],
+                )
+                .await;
+        }
+
+        let event = signed_event(&wallet_sk(), 23194, vec![], "payload");
+        let event_id = event.id.clone();
+        let responses = engine.route_verified_event(3, event).await;
+
+        let mut recipients: Vec<(u32, String)> = responses
+            .iter()
+            .filter_map(|r| match r {
+                EngineResponse::Send {
+                    recipient_id,
+                    message: RelayMessage::Event(sub_id, e),
+                } if e.id == event_id => Some((*recipient_id, sub_id.clone())),
+                _ => None,
+            })
+            .collect();
+        recipients.sort();
+        assert_eq!(
+            recipients,
+            vec![(1, "app_a".to_string()), (2, "app_b".to_string())],
+            "both subscribers must receive the event: {responses:?}"
+        );
+    });
+}
+
+#[test]
+fn test_route_delivers_to_same_sub_id_on_two_connections() {
+    futures::executor::block_on(async {
+        set_test_time(crate::util::now());
+        let mut engine = new_test_engine();
+        engine.on_connect(1).await;
+        engine.on_connect(2).await;
+        let pk = crate::common::test_helpers::TEST_WALLET_PK;
+        let filter = Filter {
+            kinds: Some(vec![23194]),
+            authors: Some(vec![pk.into()]),
+            ..Default::default()
+        };
+
+        for conn in [1u32, 2] {
+            engine
+                .handle_req(conn, "sub1".into(), vec![filter.clone()])
+                .await;
+        }
+
+        let event = signed_event(&wallet_sk(), 23194, vec![], "payload");
+        let event_id = event.id.clone();
+        let responses = engine.route_verified_event(3, event).await;
+
+        let mut recipients: Vec<u32> = responses
+            .iter()
+            .filter_map(|r| match r {
+                EngineResponse::Send {
+                    recipient_id,
+                    message: RelayMessage::Event(_, e),
+                } if e.id == event_id => Some(*recipient_id),
+                _ => None,
+            })
+            .collect();
+        recipients.sort_unstable();
+        assert_eq!(recipients, vec![1, 2]);
+    });
+}
+
+#[test]
+fn test_handle_req_rejects_filter_with_too_many_values() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
+        engine.on_connect(1).await;
+
+        let authors: Vec<String> = (0..11).map(|i| format!("author{i}")).collect();
+        let responses = engine
+            .handle_req(
+                1,
+                "sub1".into(),
+                vec![Filter {
+                    kinds: Some(vec![23194]),
+                    authors: Some(authors),
+                    ..Default::default()
+                }],
+            )
+            .await;
+
+        assert_eq!(responses.len(), 1, "expected only a CLOSED: {responses:?}");
+        match &responses[0] {
+            EngineResponse::Send {
+                recipient_id: 1,
+                message: RelayMessage::Closed(sub_id, reason),
+            } => {
+                assert_eq!(sub_id, "sub1");
+                assert_eq!(reason, "filter too large (max 10 values per field)");
+            }
+            other => panic!("expected CLOSED, got: {other:?}"),
+        }
+        assert!(
+            data.lock().unwrap().is_empty(),
+            "a rejected filter must not write routing keys"
+        );
+    });
+}
+
+#[test]
+fn test_handle_req_rejects_oversized_sub_id() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        let mut engine = NostrEngine::new_with_storage(storage, Limits::default(), test_now);
+        engine.on_connect(1).await;
+
+        let sub_id = "s".repeat(crate::nostr::limits::MAX_SUB_ID_LENGTH + 1);
+        let responses = engine
+            .handle_req(
+                1,
+                sub_id.clone(),
+                vec![Filter {
+                    kinds: Some(vec![23194]),
+                    authors: Some(vec!["alice".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await;
+
+        assert_eq!(responses.len(), 1, "expected only a CLOSED: {responses:?}");
+        match &responses[0] {
+            EngineResponse::Send {
+                recipient_id: 1,
+                message: RelayMessage::Closed(closed_sub_id, reason),
+            } => {
+                assert_eq!(closed_sub_id, &sub_id);
+                assert!(
+                    reason.contains("subscription id too long"),
+                    "unexpected reason: {reason}"
+                );
+            }
+            other => panic!("expected CLOSED, got: {other:?}"),
+        }
+        assert!(
+            data.lock().unwrap().is_empty(),
+            "a rejected subscription must not write routing keys"
+        );
+    });
+}
+
+#[test]
+fn test_handle_req_rejects_routing_key_budget_overrun() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        let limits = Limits {
+            max_routing_keys_per_connection: 5,
+            ..Limits::default()
+        };
+        let mut engine = NostrEngine::new_with_storage(storage, limits, test_now);
+        engine.on_connect(1).await;
+
+        // 4 authors + 4 `#p` values = 8 routing keys, all inside the
+        // per-field cap but over the connection budget.
+        let responses = engine
+            .handle_req(
+                1,
+                "sub1".into(),
+                vec![Filter {
+                    authors: Some((0..4).map(|i| format!("author{i}")).collect()),
+                    kinds: Some(vec![23194]),
+                    p_tags: Some((0..4).map(|i| format!("payee{i}")).collect()),
+                    ..Default::default()
+                }],
+            )
+            .await;
+
+        assert_eq!(responses.len(), 1, "expected only a CLOSED: {responses:?}");
+        match &responses[0] {
+            EngineResponse::Send {
+                recipient_id: 1,
+                message: RelayMessage::Closed(sub_id, reason),
+            } => {
+                assert_eq!(sub_id, "sub1");
+                assert!(
+                    reason.contains("too many routing keys"),
+                    "unexpected reason: {reason}"
+                );
+            }
+            other => panic!("expected CLOSED, got: {other:?}"),
+        }
+        assert!(
+            data.lock().unwrap().is_empty(),
+            "a rejected subscription must not write routing keys"
+        );
+    });
+}

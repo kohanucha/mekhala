@@ -32,8 +32,9 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 - `WALLET_REGION` - optional: apac/weur/wnam (default: apac)
 - `MAX_CONNECTIONS` - optional, default: 100
 - `MAX_SUBSCRIPTIONS_PER_CONNECTION` - optional, default: 100
-- `MAX_FILTER_ITEMS` - default: 10
-- `MAX_EVENT_TAGS` - default: 10
+- `MAX_FILTER_ITEMS` - optional, default: 10 (max values per filter field)
+- `MAX_EVENT_TAGS` - optional, default: 10
+- `MAX_ROUTING_KEYS_PER_CONNECTION` - optional, default: 1000
 - `MAX_CONTENT_LENGTH` - default: 98304 (96 KB, covers the 87,472-character NIP-44 ceiling)
 
 ## Wrangler Config
@@ -45,11 +46,13 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
   "test" a deploy — preview URLs would expose unreleased code publicly.
 
 ## Common Gotchas
-1. **DO state**: Use `self.state.storage()`
-2. **WebSocket tags**: Use `utils::HibernationState` trait
-3. **Panic = Abort**: The project uses `panic = "abort"`. **NEVER** use `unwrap()` or `expect()`. Use `?`, `.get()` for indexing, and checked math to prevent isolate crashes.
-4. **`sync()` required for persistence**: Every `subscribe()`/`unsubscribe()` must call `sync()`. The in-memory index is lost on DO hibernation — only `state.storage()` survives. Removing `sync()` breaks event routing after wake. Regression test: `test_hibernation_contract`.
-5. **Routing index families**: A subscription can be indexed under `pk:` (`authors`/`#p`), `eid:` (`ids`) or `etag:` (`#e`); `sync()`, `load_indexed()`, `unsubscribe()` and `on_terminate()` must treat all three the same or routing silently degrades to "accepted, EOSE, no event", or the persisted index keeps a membership the live connection no longer has (leaks storage and resurrects dead subscriptions). Cached info events also persist an `info-p:<p tag>` alias so `#p`-only subscribers reach the author's `info:<author>` event; when two wallets address the same app the last publisher owns the alias, and `delete_info()` must check alias ownership before deleting it.
+1. **Bounded REQs**: every value in a filter (`ids`, `authors`, `kinds`, `#p`, `#e`) becomes a persisted routing key, and `sync()` re-reads and rewrites all of a connection's keys on every subscribe. That is why `Limits::max_filter_items` / `max_routing_keys_per_connection` and the `MAX_SUB_ID_LENGTH` check in `NostrEngine::handle_req` exist; removing them turns one `REQ` into tens of thousands of storage operations.
+2. **Deliver to every connection**: a subscription is stored per connection, and a reconnecting client leaves its previous id behind until the old socket reports the close. `WalletRegistry::collect_matches` therefore sends to every recorded connection of a matching subscription — sending only to the newest id lets any later connection silence the others.
+3. **DO state**: Use `self.state.storage()`
+4. **WebSocket tags**: Use `utils::HibernationState` trait
+5. **Panic = Abort**: The project uses `panic = "abort"`. **NEVER** use `unwrap()` or `expect()`. Use `?`, `.get()` for indexing, and checked math to prevent isolate crashes.
+6. **`sync()` required for persistence**: Every `subscribe()`/`unsubscribe()` must call `sync()`. The in-memory index is lost on DO hibernation — only `state.storage()` survives. Removing `sync()` breaks event routing after wake. Regression test: `test_hibernation_contract`.
+7. **Routing index families**: A subscription can be indexed under `pk:` (`authors`/`#p`), `eid:` (`ids`) or `etag:` (`#e`); `sync()`, `load_indexed()`, `unsubscribe()` and `on_terminate()` must treat all three the same or routing silently degrades to "accepted, EOSE, no event", or the persisted index keeps a membership the live connection no longer has (leaks storage and resurrects dead subscriptions). Cached info events also persist an `info-p:<p tag>` alias so `#p`-only subscribers reach the author's `info:<author>` event; when two wallets address the same app the last publisher owns the alias, and `delete_info()` must check alias ownership before deleting it.
 
 ## Agent skills
 

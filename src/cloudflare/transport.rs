@@ -90,10 +90,15 @@ impl DurableObject for CloudflareTransport {
         let storage = CloudflareStorage {
             storage: state.storage(),
         };
-        let limits = Limits::new(
-            config.max_content_length,
-            config.max_subscriptions_per_connection,
-        );
+        let limits = Limits {
+            max_filter_items: config.max_filter_items,
+            max_event_tags: config.max_event_tags,
+            max_routing_keys_per_connection: config.max_routing_keys_per_connection,
+            ..Limits::new(
+                config.max_content_length,
+                config.max_subscriptions_per_connection,
+            )
+        };
         let engine = NostrEngine::new_with_storage(storage, limits, crate::util::now);
         // `DurableObject::new` cannot return a `Result`, and the release profile
         // builds with `panic = "abort"`: unwrapping the KV binding here would

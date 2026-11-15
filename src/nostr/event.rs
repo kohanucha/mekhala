@@ -57,7 +57,7 @@ impl Event {
     }
 
     /// Full relay-side validation: allowed kinds, required `p`/`e` tags for
-    /// NWC kinds, content length against `limits`, timestamp window
+    /// NWC kinds, tag and content length against `limits`, timestamp window
     /// (±900 s / not older than one year), recomputed event ID, and Schnorr
     /// signature verification.
     ///
@@ -92,6 +92,13 @@ impl Event {
                 }
             }
             _ => {}
+        }
+
+        if self.tags.len() > limits.max_event_tags {
+            return Err(RelayError::LimitExceeded(format!(
+                "too many tags (max {})",
+                limits.max_event_tags
+            )));
         }
 
         if self.content.len() > limits.max_content_length {
