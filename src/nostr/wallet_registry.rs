@@ -8,11 +8,18 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
+/// How many `info-p:` keys one legacy-alias sweep removes.
+///
+/// `Storage::delete_batch` issues one storage call per key, and the layout that
+/// wrote those keys stored up to ten per cached event, so a deployed relay can
+/// hold thousands. Bounding one pass keeps the Durable Object alarm short; the
+/// next alarm continues where this one stopped.
+const LEGACY_ALIAS_SWEEP_LIMIT: usize = 128;
+
 /// Persistence boundary of the registry: a key/value store backed by Durable
 /// Object storage in production (see `cloudflare`) and `MockStorage` in
 /// tests. Keys follow the `conn:<id>`, `pk:<pubkey>`, `eid:<event id>`,
-/// `etag:<event id>`, `info:<pubkey>`, `infoid:<event id>` and
-/// `info-p:<pubkey>` conventions.
+/// `etag:<event id>`, `info:<pubkey>` and `infoid:<event id>` conventions.
 #[async_trait(?Send)]
 pub trait Storage {
     /// Reads the JSON value stored under `key`, if any.
@@ -60,17 +67,7 @@ struct WalletIndex {
     id_index: HashMap<String, HashSet<SubKey>>,
     e_index: HashMap<String, HashSet<SubKey>>,
     info_id_index: HashMap<String, String>,
-    info_p_index: HashMap<String, String>,
     reverse_index: HashMap<u32, HashMap<String, Vec<Filter>>>,
-}
-
-/// Public keys an info event is addressed to through its `p` tags.
-fn p_tag_pubkeys(event: &Event) -> Vec<String> {
-    event
-        .tags
-        .iter()
-        .filter_map(|t| t.pubkey().map(str::to_string))
-        .collect()
 }
 
 /// Persisted routing keys (`pk:`, `eid:`, `etag:`) a connection's
@@ -117,7 +114,6 @@ impl WalletIndex {
             id_index: HashMap::new(),
             e_index: HashMap::new(),
             info_id_index: HashMap::new(),
-            info_p_index: HashMap::new(),
             reverse_index: HashMap::new(),
         }
     }
@@ -236,55 +232,21 @@ impl WalletIndex {
             self.info_id_index.remove(&previous_id);
         }
 
-        // Drop aliases that belonged to the previous info event of this
-        // author and are not part of the new one (a wallet may re-publish
-        // with a different `p` tag set).
-        let stale_aliases = self.stale_info_aliases(&event);
-        for pk in stale_aliases {
-            self.info_p_index.remove(&pk);
-        }
-
         let entry = self
             .pk_index
             .entry(event.pubkey.clone())
             .or_insert_with(|| (HashSet::new(), None));
         self.info_id_index
             .insert(event.id.clone(), event.pubkey.clone());
-        for pk in p_tag_pubkeys(&event) {
-            self.info_p_index.insert(pk, event.pubkey.clone());
-        }
         entry.1 = Some(event);
     }
 
-    /// Aliases of the author's previous info event that the new event no
-    /// longer carries.
-    fn stale_info_aliases(&self, event: &Event) -> Vec<String> {
-        let current: HashSet<String> = p_tag_pubkeys(event).into_iter().collect();
-        self.pk_index
-            .get(&event.pubkey)
-            .and_then(|entry| entry.1.as_ref())
-            .map(|previous| {
-                p_tag_pubkeys(previous)
-                    .into_iter()
-                    .filter(|pk| !current.contains(pk))
-                    .filter(|pk| {
-                        self.info_p_index
-                            .get(pk)
-                            .is_some_and(|author| author == &event.pubkey)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// Latest info event addressed to `pubkey`, either as its author or as a
-    /// `p` tag target (NWA apps learn about a wallet through the `p` tag).
+    /// Cached info event authored by `pubkey`.
+    ///
+    /// Only the author resolves. A `p` tag on an info event names the app a
+    /// wallet is announcing itself to; it is not a lookup key for that app.
     fn get_info(&self, pubkey: &str) -> Option<Event> {
-        if let Some(event) = self.pk_index.get(pubkey).and_then(|e| e.1.clone()) {
-            return Some(event);
-        }
-        let author = self.info_p_index.get(pubkey)?;
-        self.pk_index.get(author).and_then(|e| e.1.clone())
+        self.pk_index.get(pubkey).and_then(|e| e.1.clone())
     }
 
     /// Removes the cached info event authored by `pubkey` and returns it.
@@ -296,9 +258,6 @@ impl WalletIndex {
         if let Some(ref event) = removed {
             self.info_id_index.remove(&event.id);
         }
-        // Aliases are keyed by target and two wallets can address the same
-        // app, so only the aliases owned by this author are dropped.
-        self.info_p_index.retain(|_, owner| owner != pubkey);
         // Clean up pk_index entry if both subscriptions and info are gone
         if let Some(entry) = self.pk_index.get(pubkey) {
             if entry.0.is_empty() && entry.1.is_none() {
@@ -664,16 +623,20 @@ impl<S: Storage> WalletRegistry<S> {
     }
 
     /// Caches a wallet-service info event in memory and in storage:
-    /// `info:<author>` holds the event itself, `infoid:<event id>` maps the
-    /// event back to its author (so kind `5` deletion by `e` tag still works
-    /// after hibernation), and `info-p:<p tag>` maps each addressed app back
-    /// to the author so `#p`-scoped subscriptions can be replayed.
+    /// `info:<author>` holds the event itself and `infoid:<event id>` maps the
+    /// event back to its author, so kind `5` deletion by `e` tag still works
+    /// after hibernation.
+    ///
+    /// `p` tags on the event are stored as part of it but indexed by nothing:
+    /// they name the app the wallet is announcing itself to, and the relay
+    /// does not treat them as a discovery path. A `#p`-only `REQ` therefore
+    /// only matches an event whose author is that pubkey.
     pub async fn cache_info(&mut self, event: Event) {
         log_debug!("persist info: pk={}", short(&event.pubkey, 8));
 
         // The author has at most one info event. A republish must drop the
-        // previous event's reverse mapping and any `p` alias it no longer
-        // carries; after hibernation only storage knows the previous event.
+        // previous event's reverse mapping; after hibernation only storage
+        // knows the previous event.
         let previous = match self
             .index
             .pk_index
@@ -687,25 +650,12 @@ impl<S: Storage> WalletRegistry<S> {
             }
         };
 
-        let mut stale_keys: Vec<String> = Vec::new();
         if let Some(previous) = &previous {
-            let current: HashSet<String> = p_tag_pubkeys(&event).into_iter().collect();
-            for pk in p_tag_pubkeys(previous) {
-                if current.contains(&pk) {
-                    continue;
-                }
-                let alias_key = format!("info-p:{pk}");
-                let owner = self.storage.get(&alias_key).await;
-                if owner.as_ref().and_then(Value::as_str) == Some(event.pubkey.as_str()) {
-                    stale_keys.push(alias_key);
-                }
-            }
             if previous.id != event.id {
-                stale_keys.push(format!("infoid:{}", previous.id));
+                self.storage
+                    .delete_batch(vec![format!("infoid:{}", previous.id)])
+                    .await;
             }
-        }
-        if !stale_keys.is_empty() {
-            self.storage.delete_batch(stale_keys).await;
         }
 
         let mut entries = HashMap::new();
@@ -717,12 +667,6 @@ impl<S: Storage> WalletRegistry<S> {
             format!("infoid:{}", event.id),
             serde_json::json!(event.pubkey.clone()),
         );
-        for pk in p_tag_pubkeys(&event) {
-            entries.insert(
-                format!("info-p:{pk}"),
-                serde_json::json!(event.pubkey.clone()),
-            );
-        }
         if !entries.is_empty() {
             let _ = self.storage.put_batch(entries).await;
         }
@@ -760,9 +704,8 @@ impl<S: Storage> WalletRegistry<S> {
         }
     }
 
-    /// Latest wallet-service info event addressed to `pubkey`: either the
-    /// event's author or one of its `p` tag targets. Reads the in-memory
-    /// index first, then `info:<pubkey>`, then the `info-p:<pubkey>` alias.
+    /// Cached wallet-service info event authored by `pubkey`. Reads the
+    /// in-memory index first, then `info:<pubkey>`; nothing else resolves.
     ///
     /// An expired event is treated as absent and removed: serving it would
     /// keep advertising a wallet that may no longer exist.
@@ -867,27 +810,16 @@ impl<S: Storage> WalletRegistry<S> {
     }
 
     /// Removes the given info events from memory and storage, together with
-    /// their `infoid:` reverse mappings and every `info-p:` alias that points
-    /// at one of them. Aliases owned by another author (two wallets can
-    /// address the same app) are left alone.
+    /// their `infoid:` reverse mappings.
     async fn prune_info_entries(&mut self, events: Vec<Event>) {
         if events.is_empty() {
             return;
         }
 
-        let authors: HashSet<&str> = events.iter().map(|event| event.pubkey.as_str()).collect();
         let mut keys = Vec::with_capacity(events.len().saturating_mul(2));
         for event in &events {
             keys.push(format!("info:{}", event.pubkey));
             keys.push(format!("infoid:{}", event.id));
-        }
-
-        // One enumeration beats a read per `p` tag, and the owner is the
-        // stored value, so the check is the same one `delete_info` makes.
-        for (key, owner) in self.storage.list_prefix("info-p:").await {
-            if owner.as_str().is_some_and(|owner| authors.contains(owner)) {
-                keys.push(key);
-            }
         }
 
         self.storage.delete_batch(keys).await;
@@ -897,30 +829,40 @@ impl<S: Storage> WalletRegistry<S> {
         }
     }
 
+    /// Deletes every `info-p:` key left behind by versions that replayed a
+    /// cached info event to `#p`-only subscriptions. Nothing writes those keys
+    /// any more, so this is a one-way cleanup for already-deployed storage;
+    /// returns how many keys were removed.
+    ///
+    /// One pass removes at most [`LEGACY_ALIAS_SWEEP_LIMIT`] keys: the old
+    /// layout allowed up to ten aliases per cached event, so a deployed relay
+    /// can hold thousands, and `delete_batch` issues one storage call per key.
+    /// The next alarm continues where this one stopped.
+    pub async fn prune_legacy_info_aliases(&self) -> usize {
+        let mut keys: Vec<String> = self
+            .storage
+            .list_prefix("info-p:")
+            .await
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+        keys.truncate(LEGACY_ALIAS_SWEEP_LIMIT);
+        if keys.is_empty() {
+            return 0;
+        }
+        let removed = keys.len();
+        self.storage.delete_batch(keys).await;
+        removed
+    }
+
     /// Loads the cached event for `pubkey` without applying the time to live.
     async fn load_info(&mut self, pubkey: &str) -> Option<Event> {
         if let Some(event) = self.index.get_info(pubkey) {
             return Some(event);
         }
 
-        if let Some(event) = self.read_info_event(&format!("info:{pubkey}")).await {
-            log_debug!("info restored from storage: pk={}", short(pubkey, 8));
-            self.index.cache_info(event.clone());
-            return Some(event);
-        }
-
-        let author = self
-            .storage
-            .get(&format!("info-p:{pubkey}"))
-            .await?
-            .as_str()?
-            .to_string();
-        let event = self.read_info_event(&format!("info:{author}")).await?;
-        log_debug!(
-            "info restored from p-tag alias: pk={} author={}",
-            short(pubkey, 8),
-            short(&author, 8)
-        );
+        let event = self.read_info_event(&format!("info:{pubkey}")).await?;
+        log_debug!("info restored from storage: pk={}", short(pubkey, 8));
         self.index.cache_info(event.clone());
         Some(event)
     }
@@ -930,12 +872,9 @@ impl<S: Storage> WalletRegistry<S> {
         serde_json::from_value::<Event>(val).ok()
     }
 
-    /// Removes the cached info event for `pubkey` (its author) from memory
-    /// and storage, including every `p` tag alias that resolves to it and
-    /// the event's `infoid:` reverse mapping. Aliases owned by another author
-    /// (two wallets can address the same app) are left untouched, and the
-    /// event is read from storage when the in-memory index was lost to
-    /// hibernation.
+    /// Removes the cached info event authored by `pubkey` from memory and
+    /// storage, together with the event's `infoid:` reverse mapping. The event
+    /// is read from storage when the in-memory index was lost to hibernation.
     pub async fn delete_info(&mut self, pubkey: &str) {
         let removed = self.index.delete_info(pubkey);
 
@@ -950,13 +889,6 @@ impl<S: Storage> WalletRegistry<S> {
                 self.forget_info_events(1);
                 log_debug!("info deleted: pk={}", short(pubkey, 8));
                 keys.push(format!("infoid:{}", event.id));
-                for pk in p_tag_pubkeys(&event) {
-                    let alias_key = format!("info-p:{pk}");
-                    let owner = self.storage.get(&alias_key).await;
-                    if owner.as_ref().and_then(Value::as_str) == Some(pubkey) {
-                        keys.push(alias_key);
-                    }
-                }
             }
             None => {
                 log_debug!("info delete: nothing cached for pk={}", short(pubkey, 8));

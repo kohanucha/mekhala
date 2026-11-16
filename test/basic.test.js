@@ -50,6 +50,17 @@ export async function testNip11() {
   if (!data.supported_nips.includes(47)) {
     throw new Error("NIP-11 failed: " + JSON.stringify(data));
   }
+  if (!data.description || !data.description.includes("Wallet-auth")) {
+    throw new Error(
+      "NIP-11 description must state that wallet-auth discovery is not supported: " +
+        JSON.stringify(data),
+    );
+  }
+  if (!data.limitation || typeof data.limitation.max_subscriptions !== "number") {
+    throw new Error(
+      "NIP-11 limitation must publish the enforced ceilings: " + JSON.stringify(data),
+    );
+  }
   console.log("✅ NIP-11 JSON metadata passed.");
 
   console.log("Testing NIP-11 (Plain HTTP fallback compatibility)...");

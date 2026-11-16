@@ -24,9 +24,8 @@ pub struct Limits {
     /// without this bound a single `REQ` could ask for tens of thousands.
     pub max_routing_keys_per_connection: usize,
     /// Maximum number of wallet-service info events kept in the cache
-    /// (`info:` family). Each one also carries an `infoid:` reverse mapping
-    /// and one `info-p:` alias per addressed app, so the number of keys is a
-    /// multiple of this. `0` disables the cap.
+    /// (`info:` family). Each one also carries an `infoid:` reverse mapping.
+    /// `0` disables the cap.
     ///
     /// The cache exists so hibernated connections can still answer a
     /// discovery `REQ`; it is not meant to be an archive of every wallet that

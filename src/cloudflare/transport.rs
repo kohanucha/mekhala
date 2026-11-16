@@ -422,15 +422,26 @@ impl crate::common::NwcTransport for CloudflareTransport {
 }
 
 impl CloudflareTransport {
-    /// Drops cached wallet info events that have expired or overflowed the
-    /// cache cap. Runs on the same alarm as the idle sweep: both keep storage
-    /// bounded by time, and the cache is only read while sockets exist.
+    /// Keeps the cached wallet info family bounded and removes keys that no
+    /// current code writes. Runs on the same alarm as the idle sweep: both
+    /// keep storage bounded by time, and the cache is only read while sockets
+    /// exist.
     async fn sweep_info_cache(&self) {
+        let mut engine = self.engine.lock().await;
+
+        // One-way cleanup of `info-p:` keys from previous versions. This runs
+        // regardless of the cache bounds below because those bounds only
+        // control `info:`/`infoid:`; leaving the aliases behind would leak
+        // storage forever.
+        let aliases = engine.prune_legacy_info_aliases().await;
+        if aliases > 0 {
+            log_info!("info cache: {} legacy alias keys removed", aliases);
+        }
+
         let config = &self.config;
         if config.info_ttl_seconds == 0 && config.max_info_events == 0 {
             return;
         }
-        let mut engine = self.engine.lock().await;
         let removed = engine.prune_info_cache().await;
         if removed > 0 {
             log_info!("info cache: {} entries swept", removed);

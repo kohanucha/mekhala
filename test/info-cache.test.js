@@ -1,4 +1,4 @@
-// Bounds on the cached wallet-info family (`info:`, `infoid:`, `info-p:`).
+// Bounds on the cached wallet-info family (`info:`, `infoid:`).
 //
 // Rust unit tests cover the eviction and expiry logic against `MockStorage`.
 // These two scenarios exercise the piece those cannot: `Storage::list_prefix`

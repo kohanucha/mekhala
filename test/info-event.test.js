@@ -344,19 +344,19 @@ export async function testRealisticPaymentFlow() {
   console.log("✅ Realistic payment flow completed successfully.");
 }
 
-export async function testNwaInfoReplayByPTag() {
-  console.log("\n--- NWA: info replay for a #p-only subscription ---");
+export async function testAppAliasInfoNotReplayed() {
+  console.log("\n--- info replay for a #p-only (wallet-auth) subscription ---");
 
   const walletSk = generateSecretKey();
   const walletPk = getPublicKey(walletSk);
   const appPk = getPublicKey(generateSecretKey());
 
-  // 1. Wallet publishes its info event addressed to the app through a p tag.
+  // 1. Wallet publishes its info event addressed to an app through a p tag.
   const publisher = new WebSocket(RELAY_URL);
   await new Promise((resolve, reject) => {
     const sentinel = setTimeout(() => {
       publisher.close();
-      reject(new Error("NWA: info publish timeout"));
+      reject(new Error("info publish timeout"));
     }, 5000);
     publisher.on("open", () => {
       const info = finalizeEvent({
@@ -378,32 +378,69 @@ export async function testNwaInfoReplayByPTag() {
   });
   publisher.close();
 
-  // 2. A fresh app connection subscribes exactly like `NWAClient`: #p only.
+  // 2. A #p-only subscription names the app, not the wallet. The relay caches
+  //    info events by author only, so this replays nothing and just EOSEs.
   const app = new WebSocket(RELAY_URL);
-  await new Promise((resolve, reject) => {
-    const sentinel = setTimeout(() => {
-      app.close();
-      reject(new Error(
-        "FAIL: cached info event was not replayed for a #p-only subscription",
-      ));
-    }, 5000);
-    app.on("open", () => {
-      app.send(JSON.stringify(["REQ", "nwa-info", { kinds: [13194], "#p": [appPk] }]));
+  try {
+    await new Promise((resolve, reject) => {
+      const sentinel = setTimeout(() => {
+        reject(new Error("timed out waiting for EOSE"));
+      }, 5000);
+      const events = [];
+      app.on("open", () => {
+        app.send(JSON.stringify(["REQ", "app-info", { kinds: [13194], "#p": [appPk] }]));
+      });
+      app.on("message", (data) => {
+        const msg = JSON.parse(data.toString());
+        if (msg[0] === "EVENT" && msg[1] === "app-info") events.push(msg[2]);
+        if (msg[0] === "EOSE" && msg[1] === "app-info") {
+          clearTimeout(sentinel);
+          try {
+            if (events.length !== 0) {
+              throw new Error(
+                `#p-only discovery replayed ${events.length} event(s); ` +
+                  `info events are cached by author only`,
+              );
+            }
+            console.log("  ✅ #p-only discovery replayed nothing (author-only cache).");
+            resolve();
+          } catch (err) {
+            reject(err);
+          }
+        }
+      });
+      app.on("error", (e) => { clearTimeout(sentinel); reject(e); });
     });
-    app.on("message", (data) => {
-      const msg = JSON.parse(data.toString());
-      if (
-        msg[0] === "EVENT" &&
-        msg[1] === "nwa-info" &&
-        msg[2].kind === 13194 &&
-        msg[2].pubkey === walletPk
-      ) {
-        clearTimeout(sentinel);
-        console.log("  ✅ NWA: cached info event replayed through the p-tag alias.");
-        resolve();
-      }
+  } finally {
+    app.close();
+  }
+
+  // 3. The author-scoped filter still serves the same cached event.
+  const author = new WebSocket(RELAY_URL);
+  try {
+    await new Promise((resolve, reject) => {
+      const sentinel = setTimeout(() => {
+        reject(new Error("authors replay timed out"));
+      }, 5000);
+      author.on("open", () => {
+        author.send(JSON.stringify(["REQ", "author-info", { kinds: [13194], authors: [walletPk] }]));
+      });
+      author.on("message", (data) => {
+        const msg = JSON.parse(data.toString());
+        if (
+          msg[0] === "EVENT" &&
+          msg[1] === "author-info" &&
+          msg[2].kind === 13194 &&
+          msg[2].pubkey === walletPk
+        ) {
+          clearTimeout(sentinel);
+          console.log("  ✅ authors filter still replays the cached info event.");
+          resolve();
+        }
+      });
+      author.on("error", (e) => { clearTimeout(sentinel); reject(e); });
     });
-    app.on("error", (e) => { clearTimeout(sentinel); reject(e); });
-  });
-  app.close();
+  } finally {
+    author.close();
+  }
 }

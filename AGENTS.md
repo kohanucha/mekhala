@@ -91,17 +91,15 @@ merely idle keeps its subscription and is never swept.
 ## Info cache
 
 `kind` 13194 events are cached so a hibernated or freshly connected client can
-still answer a wallet-discovery `REQ`. Each cached event occupies an
-`info:<author>` key, an `infoid:<event id>` reverse mapping, and one
-`info-p:<app>` alias per `p` tag — so the cache costs several keys per wallet
-and is bounded by two independent settings:
+still answer a wallet-discovery `REQ`. Each cached event occupies exactly two
+keys, `info:<author>` (the event) and `infoid:<event id>` (reverse mapping), and
+the cache is bounded by two independent settings:
 
 - `MAX_INFO_EVENTS` caps how many events are kept. Enforced on publish
   (`cache_info`) because the publisher decides how many keys exist; one publish
   over the cap trims back to 90% of it so a burst pays for one enumeration
   rather than one per publish. Eviction drops the oldest `created_at` first,
-  and takes the `infoid:` mapping and any alias the evicted author owns with
-  it — aliases that now belong to another author are left alone.
+  and takes the `infoid:` mapping with it.
 
   Because the publisher also controls how often that check runs, it may not
   cost a listing per publish: `WalletRegistry` keeps an in-memory `info_count`
@@ -125,6 +123,27 @@ A wallet that republishes keeps its entry; one that never republishes
 disappears after 30 days and its discovery `REQ` simply returns nothing, which
 is the same answer the relay gave before the event was ever published.
 
+### Scope: author-only discovery
+
+The cache is keyed by author, so a `REQ` can only replay an event whose author is
+one of the filter's values. `{kinds:[13194], "#p":[<app pubkey>]}` replays
+nothing and just EOSEs, and `Filter::matches` still requires a real `p` tag, so
+even `#p:[<wallet pubkey>]` matches only an info event that carries that tag.
+That is deliberate: the wallet-auth / one-click Nostr flow, where a wallet
+introduces itself to an app it has never met, is out of scope. Adding it back
+means indexing `p` tags again, which the two-key layout above avoids (a single
+alias key per app would let any publisher hide another wallet, and replaying
+every announcement for an app multiplies the bytes one `REQ` can pull).
+
+A live publish is unaffected: it is routed like any other NIP-01 event, so an
+app already subscribed when the wallet publishes still receives it. Only
+replay — the case where the app subscribes after the fact — has no path.
+
+Keys written by the version that did index `p` tags (`info-p:`) are deleted by
+`prune_legacy_info_aliases()`, which the alarm calls. Nothing writes them any
+more, so the sweep is a one-way migration and its "already empty" case is a
+single `list_prefix`.
+
 ## Common Gotchas
 
 1. **Bounded REQs**: every value in a filter (`ids`, `authors`, `kinds`, `#p`, `#e`) becomes a persisted routing key, and `sync()` re-reads and rewrites all of a connection's keys on every subscribe. That is why `Limits::max_filter_items` / `max_routing_keys_per_connection` and the `MAX_SUB_ID_LENGTH` check in `NostrEngine::handle_req` exist; removing them turns one `REQ` into tens of thousands of storage operations.
@@ -133,7 +152,7 @@ is the same answer the relay gave before the event was ever published.
 4. **WebSocket tags**: Use `utils::HibernationState` trait
 5. **Panic = Abort**: The project uses `panic = "abort"`. **NEVER** use `unwrap()` or `expect()`. Use `?`, `.get()` for indexing, and checked math to prevent isolate crashes.
 6. **`sync()` required for persistence**: Every `subscribe()`/`unsubscribe()` must call `sync()`. The in-memory index is lost on DO hibernation — only `state.storage()` survives. Removing `sync()` breaks event routing after wake. Regression test: `test_hibernation_contract`.
-7. **Routing index families**: A subscription can be indexed under `pk:` (`authors`/`#p`), `eid:` (`ids`) or `etag:` (`#e`); `sync()`, `load_indexed()`, `unsubscribe()` and `on_terminate()` must treat all three the same or routing silently degrades to "accepted, EOSE, no event", or the persisted index keeps a membership the live connection no longer has (leaks storage and resurrects dead subscriptions). Cached info events also persist an `info-p:<p tag>` alias so `#p`-only subscribers reach the author's `info:<author>` event; when two wallets address the same app the last publisher owns the alias, and `delete_info()` must check alias ownership before deleting it.
+7. **Routing index families**: A subscription can be indexed under `pk:` (`authors`/`#p`), `eid:` (`ids`) or `etag:` (`#e`); `sync()`, `load_indexed()`, `unsubscribe()` and `on_terminate()` must treat all three the same or routing silently degrades to "accepted, EOSE, no event", or the persisted index keeps a membership the live connection no longer has (leaks storage and resurrects dead subscriptions). Cached info events follow the same rule as any other event: they reach a `#p` filter only through a real `p` tag, and only the author key (`info:<author>`) is comparable, so an app's pubkey resolves to nothing.
 8. **Alarms are one-shot**: the idle sweep re-arms itself inside `alarm()` and the accept path arms it when none is pending. Dropping either half leaves connections that are accepted once and never swept — the case this sweep exists to close. `IDLE_TIMEOUT_SECONDS=0` / `CONNECTION_SWEEP_SECONDS=0` switch it off, which is what the functional test suite does so its own sockets are not swept mid-test.
 9. **Info cache is bounded on purpose**: `MAX_INFO_EVENTS` / `INFO_TTL_SECONDS` are the only thing keeping the `info:` family from growing forever, since anyone may publish a `kind` 13194 event. Both are enforced through one `list_prefix("info:")` enumeration, so a new bound must go there rather than into a separate pass. Unit tests set `info_ttl_seconds: 0` (`test_limits()`) because fixtures publish `created_at: 1000` against a pinned clock of 1_700_000_000 — leaving the default TTL on would expire every fixture. Tests that mean to test expiry set the TTL and `set_test_time` explicitly.
 
@@ -176,15 +195,15 @@ Single-context layout. See `docs/agents/domain.md`.
 - `test/run-all.js` orchestrates everything; remote runs (`node run-all.js host`)
   skip local-only tests via `isLocal`.
 - `test/conformance.test.js` drives the **real `@getalby/sdk`**
-  (`NWCClient` / `NWCWalletService` / `NWAClient`) end-to-end with canned
-  wallet handlers — no Lightning node. Keep it aligned with the exact version
-  pinned in `test/package.json`; its filters/tags are what Alby Go/Hub send.
+  (`NWCClient` / `NWCWalletService`) end-to-end with canned wallet handlers —
+  no Lightning node. Keep it aligned with the exact version pinned in
+  `test/package.json`; its filters/tags are what Alby Go/Hub send.
   It runs against local and remote relays.
 - `test/restart-persistence.test.js` spawns its own `wrangler dev` on port
   8790 with a temp `--persist-to` directory, kills it, restarts on the same
-  directory, and asserts the DO storage keys survive (`info:`, `info-p:`,
-  `infoid:`, delete-by-e-tag). Local only; uses a separate state dir so it
-  never clobbers `.wrangler/state`.
+  directory, and asserts the DO storage keys survive (`info:`, `infoid:`,
+  delete-by-e-tag). Local only; uses a separate state dir so it never clobbers
+  `.wrangler/state`.
 - `test/relay-harness.js` (`withRelay`) starts a private `wrangler dev` for
   tests that need non-default limits, and its `QUIET_LIMITS` switch the
   connection gates off unless a scenario turns one on.

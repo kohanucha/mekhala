@@ -505,6 +505,10 @@ fn test_kind_5_deletion_with_e_tag_after_hibernation() {
         let info = signed_event(&sk, 13194, vec![Tag::p("app")], "{}");
         engine.process_info_event(info.clone()).await;
         assert!(engine.get_wallet_info(pk).await.is_some());
+        assert!(
+            !data.lock().unwrap().contains_key("info-p:app"),
+            "caching a p-tagged info event must not write an alias"
+        );
 
         // Simulate hibernation: only the persisted keys survive.
         let snapshot = data.lock().unwrap().clone();
@@ -518,10 +522,6 @@ fn test_kind_5_deletion_with_e_tag_after_hibernation() {
         restarted.process_deletion_event(&deletion).await;
 
         assert!(restarted.get_wallet_info(pk).await.is_none());
-        assert!(
-            restarted.get_wallet_info("app").await.is_none(),
-            "the p tag alias must be gone as well"
-        );
     });
 }
 
@@ -1461,7 +1461,7 @@ fn replay_events(responses: &[EngineResponse]) -> Vec<(String, String)> {
 }
 
 #[test]
-fn test_req_replays_info_for_p_tag_filter() {
+fn test_req_does_not_replay_info_for_a_p_tag_scoped_app() {
     futures::executor::block_on(async {
         let mut engine = new_test_engine();
         engine.on_connect(1).await;
@@ -1469,15 +1469,14 @@ fn test_req_replays_info_for_p_tag_filter() {
             .process_info_event(info_event_for("info1", vec![Tag::p("app")]))
             .await;
 
-        // NWA apps address the wallet through the info event's `p` tag.
+        // A wallet announcing itself to an app through a `p` tag is not a
+        // discovery path this relay serves: the info event is cached under its
+        // author only, so an app-scoped REQ gets EOSE and nothing else.
         let msg =
             ClientMessage::from_json(r##"["REQ","nwa",{"kinds":[13194],"#p":["app"]}]"##).unwrap();
         let responses = engine.handle_typed(1, msg).await;
 
-        assert_eq!(
-            replay_events(&responses),
-            vec![("nwa".to_string(), "info1".to_string())]
-        );
+        assert!(replay_events(&responses).is_empty());
         assert!(responses.iter().any(|r| matches!(
             r,
             EngineResponse::Send {
@@ -1485,6 +1484,17 @@ fn test_req_replays_info_for_p_tag_filter() {
                 ..
             }
         )));
+
+        // The same event still reaches a subscriber that names the author.
+        let msg = ClientMessage::from_json(
+            r##"["REQ","author",{"kinds":[13194],"authors":["wallet"]}]"##,
+        )
+        .unwrap();
+        let responses = engine.handle_typed(1, msg).await;
+        assert_eq!(
+            replay_events(&responses),
+            vec![("author".to_string(), "info1".to_string())]
+        );
     });
 }
 
@@ -1493,12 +1503,14 @@ fn test_req_replays_info_once_when_author_and_p_tag_match() {
     futures::executor::block_on(async {
         let mut engine = new_test_engine();
         engine.on_connect(1).await;
+        // Both filter values resolve to the same cached event, so the replay
+        // must deduplicate them.
         engine
-            .process_info_event(info_event_for("info1", vec![Tag::p("app")]))
+            .process_info_event(info_event_for("info1", vec![Tag::p("wallet")]))
             .await;
 
         let msg = ClientMessage::from_json(
-            r##"["REQ","both",{"kinds":[13194],"authors":["wallet"],"#p":["app"]}]"##,
+            r##"["REQ","both",{"kinds":[13194],"authors":["wallet"],"#p":["wallet"]}]"##,
         )
         .unwrap();
         let responses = engine.handle_typed(1, msg).await;
@@ -1837,5 +1849,38 @@ fn test_engine_prune_info_cache_removes_expired_events() {
         assert!(engine.get_wallet_info("wallet").await.is_none());
 
         set_test_time(1_700_000_000);
+    });
+}
+
+#[test]
+fn test_engine_prune_legacy_info_aliases_removes_stale_keys() {
+    futures::executor::block_on(async {
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+
+        let data = Arc::new(Mutex::new(HashMap::new()));
+        let storage = MockStorage {
+            data: data.clone(),
+            fail_put_batch: false,
+        };
+        let mut engine = NostrEngine::new_with_storage(storage, test_limits(), test_now);
+
+        // Keys left behind by the version that indexed `p` tags.
+        {
+            let mut data = data.lock().unwrap();
+            data.insert("info-p:app".to_string(), serde_json::json!("wallet"));
+            data.insert("info-p:other".to_string(), serde_json::json!("wallet2"));
+        }
+
+        assert_eq!(engine.prune_legacy_info_aliases().await, 2);
+
+        {
+            let data = data.lock().unwrap();
+            assert!(data.get("info-p:app").is_none());
+            assert!(data.get("info-p:other").is_none());
+        }
+
+        // Nothing left to sweep.
+        assert_eq!(engine.prune_legacy_info_aliases().await, 0);
     });
 }

@@ -15,7 +15,8 @@
 Mekhala is a specialized, ephemeral Nostr relay built in Rust and compiled to WebAssembly. It acts as a private communication bridge between Lightning wallet applications (e.g. Alby, Amethyst) and your wallet node:
 
 - **No event history:** Events are validated, routed, and dropped. The only persisted state is subscription metadata plus cached wallet-service info events, kept so hibernated connections can resume.
-- **Standard NIP-01 routing:** Events reach subscriptions addressed by `authors`/`#p`, by `ids`, or by `#e`, with every index persisted so routing still works after hibernation. Cached `13194` info events are also replayed to `#p`-only subscriptions (the NWA discovery pattern).
+- **Standard NIP-01 routing:** Events reach subscriptions addressed by `authors`/`#p`, by `ids`, or by `#e`, with every index persisted so routing still works after hibernation. Cached `13194` info events are replayed to filters that name the wallet's own pubkey (`authors`, or a `p` tag carrying that pubkey); they are not discoverable through an app's pubkey.
+- **Plain NWC only:** Connections are the standard `nostr+walletconnect://` kind, where the client already knows the wallet pubkey (Alby Go ↔ Alby Hub, or any app that accepts an NWC connection string). The wallet-auth / one-click Nostr flow, where a wallet announces itself to an app through a `p` tag on its info event, is not served: a `{kinds:[13194], "#p":[<app>]}` `REQ` replays no events. (A live publish still routes like any NIP-01 event; only the replay path is missing.)
 - **WebSocket Hibernation:** Uses Cloudflare Durable Objects to hibernate idle connections, waking up seamlessly when new events arrive to save resources.
 - **Strictly Specialized:** Only handles NWC-related event kinds (`5` for deleting cached wallet info, `13194`, `23194-23197`). Social and generic Nostr events are rejected.
 
