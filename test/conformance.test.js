@@ -1,9 +1,9 @@
 // Conformance tests against the real `@getalby/sdk` (the client library used
 // by Alby Go / Alby Hub). The existing tests build NIP-01 frames by hand,
 // which can silently diverge from what the SDK actually sends. These tests
-// drive `NWCClient` (app), `NWCWalletService` (wallet) and `NWAClient`
-// (discovery) end-to-end, so the relay is exercised with the exact filters,
-// tags and payload sizes real clients use.
+// drive `NWCClient` (app) and `NWCWalletService` (wallet) end-to-end, so the
+// relay is exercised with the exact filters, tags and payload sizes real
+// clients use.
 //
 // No Lightning node is involved: every wallet handler below returns a canned
 // NIP-47 response. Covers:
@@ -15,13 +15,11 @@
 //   - notifications on both kinds (23197 nip44, 23196 nip04)
 //   - NIP-47 error responses (`Nip47WalletError`)
 //   - a near-maximum NIP-44 payload (>64 KiB ciphertext, <96 KiB relay cap)
-//   - NWA discovery (`{kinds:[13194], "#p":[app]}`), then `getInfo`
 
 import { WebSocket } from "ws";
 import { nip44 } from "nostr-tools";
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools/pure";
 import {
-  NWAClient,
   NWCClient,
   NWCWalletService,
   NWCWalletServiceKeyPair,
@@ -791,77 +789,6 @@ export async function testSdkLargeResponse() {
   }
 }
 
-// ---------------------------------------------------------------------------
-// 7. NWA discovery (#p-only info replay) then getInfo through the new client
-// ---------------------------------------------------------------------------
-export async function testSdkNwaDiscovery() {
-  console.log("\n--- SDK conformance: NWA discovery + getInfo ---");
-
-  const walletSk = generateSecretKey();
-  const nwaSk = generateSecretKey();
-  const nwaPk = getPublicKey(nwaSk);
-
-  const walletService = new NWCWalletService({ relayUrls: RELAY_URLS });
-  const nwa = new NWAClient({
-    relayUrls: RELAY_URLS,
-    appSecretKey: hexKey(nwaSk),
-    requestMethods: ["get_info", "get_balance"],
-    name: "Conformance App",
-  });
-
-  try {
-    // A wallet answering an NWA request publishes its info event addressed to
-    // the app through a p tag (the NWA discovery pattern).
-    await publishInfoEvent(
-      walletSk,
-      [
-        ["encryption", "nip44_v2"],
-        ["notifications", "payment_received"],
-        ["p", nwaPk],
-      ],
-      "get_info get_balance",
-    );
-
-    const keypair = new NWCWalletServiceKeyPair(hexKey(walletSk), nwaPk);
-    const unsubscribe = await withTimeout(
-      walletService.subscribe(keypair, {
-        getInfo: async () => ({ result: getInfoResult, error: undefined }),
-      }),
-      CALL_TIMEOUT_MS,
-      "walletService.subscribe (NWA)",
-    );
-
-    try {
-      const client = await withTimeout(
-        new Promise((resolve, reject) => {
-          nwa
-            .subscribe({
-              onSuccess: (nwcClient) => {
-                try {
-                  nwcClient.getInfo().then(resolve).catch(reject);
-                } catch (err) {
-                  reject(err);
-                }
-              },
-            })
-            .catch(reject);
-        }),
-        CALL_TIMEOUT_MS,
-        "NWA subscribe + getInfo",
-      );
-
-      assertEqual(client.alias, getInfoResult.alias, "NWA getInfo.alias");
-      assertEqual(getPublicKey(nwaSk), nwaPk, "NWA app key");
-      console.log("✅ SDK: NWA #p-only info replay + getInfo passed.");
-    } finally {
-      unsubscribe();
-    }
-  } finally {
-    nwa.close();
-    await closeWalletService(walletService);
-  }
-}
-
 export async function runSdkConformance() {
   await testSdkInfoDiscovery();
   await testSdkWalletMethods();
@@ -870,5 +797,4 @@ export async function runSdkConformance() {
   await testSdkNotifications();
   await testSdkWalletError();
   await testSdkLargeResponse();
-  await testSdkNwaDiscovery();
 }

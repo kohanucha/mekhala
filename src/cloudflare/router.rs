@@ -55,7 +55,7 @@ async fn handle_request(req: Request, ctx: RouteContext<()>) -> Result<Response>
         return handle_upgrade(req, &ctx).await;
     }
 
-    handle_nip11()
+    handle_nip11(&ctx.env)
 }
 
 fn handle_options() -> Result<Response> {
@@ -88,7 +88,26 @@ async fn handle_upgrade(req: Request, ctx: &RouteContext<()>) -> Result<Response
     crate::cloudflare::transport::connect(req, &ctx.env).await
 }
 
-fn handle_nip11() -> Result<Response> {
-    let info = serde_json::json!({"supported_nips": [1, 9, 11, 47]});
+/// NIP-11 relay information document.
+///
+/// The `description` states the supported scope, since the relay serves plain
+/// NWC connections only: a wallet announces itself by publishing a `kind`
+/// 13194 event, and cached events are replayed to `authors` filters. The
+/// wallet-auth discovery pattern (a wallet announcing itself to an app through
+/// a `p` tag) is not served; stating that here lets a client author check the
+/// relay's scope without reading its source.
+fn handle_nip11(env: &Env) -> Result<Response> {
+    let config = CloudflareConfig::from_env(env);
+    let info = serde_json::json!({
+        "name": "mekhala",
+        "description": "Nostr Wallet Connect relay. Supports plain NWC connection strings: cached kind 13194 wallet info events are replayed for `authors` filters. Wallet-auth discovery, where a wallet announces itself to an app through a `p` tag on its info event, is not supported.",
+        "supported_nips": [1, 9, 11, 47],
+        "limitation": {
+            "max_subscriptions": config.max_subscriptions_per_connection,
+            "max_subid_length": crate::nostr::limits::MAX_SUB_ID_LENGTH,
+            "max_event_tags": config.max_event_tags,
+            "max_content_length": config.max_content_length,
+        }
+    });
     crate::cloudflare::transport::create_response(&info, "application/nostr+json")
 }

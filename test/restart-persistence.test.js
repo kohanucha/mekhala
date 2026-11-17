@@ -6,9 +6,9 @@
 //
 // What survives a restart (and is asserted here):
 //   - `info:<pubkey>`      → the cached kind 13194 event
-//   - `info-p:<pubkey>`    → the NWA `#p` alias
 //   - `infoid:<event id>`  → kind 5 deletion by `e` tag
-//   - republishing reads the previous event from storage and drops stale aliases
+//   - republishing reads the previous event from storage and drops stale ids
+//   - a `p` tag on an info event creates no discovery alias
 //
 // Connection-scoped routing (`conn:`/`pk:`/`eid:`/`etag:`) is NOT asserted:
 // a process restart kills every WebSocket, and reconnect allocates a new
@@ -242,17 +242,18 @@ export async function testRestartPersistence() {
       assert(byAuthor[0].id === info1.id, "authors replay returned a different event");
       console.log("  ✅ Cached info event survived the restart (authors filter).");
 
-      // 2. `info-p:<pubkey>` survived: NWA #p-only replay.
+      // 2. A `#p`-only subscription (the wallet-auth flow) replays nothing:
+      //    info events are cached by author only, so the app pubkey in the
+      //    event's `p` tag addresses no cached event.
       const byPTag = await query(ws, "after-ptag", {
         kinds: [13194],
         "#p": [appPk],
       });
-      assert(byPTag.length === 1, `#p replay after restart: ${byPTag.length} event(s)`);
-      assert(byPTag[0].id === info1.id, "#p replay returned a different event");
-      console.log("  ✅ NWA #p alias survived the restart.");
+      assert(byPTag.length === 0, `#p-only replay after restart: ${byPTag.length} event(s)`);
+      console.log("  ✅ #p-only discovery replayed nothing after the restart.");
 
       // 3. Republishing reads the previous event from storage and drops the
-      //    alias it no longer carries.
+      //    stale event id mapping it no longer carries.
       const app2Pk = getPublicKey(generateSecretKey());
       const info2 = finalizeEvent(
         {
@@ -276,18 +277,12 @@ export async function testRestartPersistence() {
           `want ${info2.id.slice(0, 8)}(created_at=${info2.created_at})`,
       );
 
-      const staleAlias = await query(ws, "after-republish-stale-ptag", {
-        kinds: [13194],
-        "#p": [appPk],
-      });
-      assert(staleAlias.length === 0, `stale alias still replayed ${staleAlias.length} event(s)`);
-
       const freshAlias = await query(ws, "after-republish-new-ptag", {
         kinds: [13194],
         "#p": [app2Pk],
       });
-      assert(freshAlias.length === 1 && freshAlias[0].id === info2.id, "new alias not replayed");
-      console.log("  ✅ Republish replaced the event and pruned the stale p-tag alias.");
+      assert(freshAlias.length === 0, "a p tag must not create a discovery alias");
+      console.log("  ✅ Republish replaced the event and created no discovery alias.");
 
       // 4. Kind 5 by e tag resolves `infoid:` from storage after the restart.
       const deletion = finalizeEvent(
@@ -301,13 +296,7 @@ export async function testRestartPersistence() {
         authors: [walletPk],
       });
       assert(afterDelete.length === 0, `info survived deletion: ${afterDelete.length} event(s)`);
-
-      const afterDeleteAlias = await query(ws, "after-delete-ptag", {
-        kinds: [13194],
-        "#p": [app2Pk],
-      });
-      assert(afterDeleteAlias.length === 0, `alias survived deletion: ${afterDeleteAlias.length} event(s)`);
-      console.log("  ✅ Delete by e tag survived the restart (infoid mapping + alias cleanup).");
+      console.log("  ✅ Delete by e tag survived the restart (infoid mapping).");
 
       // 5. Fresh routing still works next to the recovered state.
       const liveAppSk = generateSecretKey();

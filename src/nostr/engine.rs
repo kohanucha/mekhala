@@ -360,6 +360,12 @@ impl<S: Storage> NostrEngine<S> {
         self.registry.prune_info_cache().await
     }
 
+    /// Removes `info-p:` keys written by versions that replayed a cached info
+    /// event to `#p`-only subscriptions; returns how many keys were deleted.
+    pub async fn prune_legacy_info_aliases(&mut self) -> usize {
+        self.registry.prune_legacy_info_aliases().await
+    }
+
     /// Parses the cached wallet info event (`kind` 13194) for `pubkey` into
     /// the wallet's advertised capabilities; `None` when nothing is cached.
     pub async fn get_wallet_info(&mut self, pubkey: &str) -> Option<super::WalletInfo> {

@@ -1409,7 +1409,7 @@ fn test_on_terminate_keeps_numeric_pk_index_for_other_connections() {
     });
 }
 
-// ── NWA `#p` info replay ──
+// ── info events resolve by author only ──
 
 fn info_with_p_tags(id: &str, author: &str, p_tags: &[&str]) -> Event {
     crate::common::test_helpers::test_event(
@@ -1422,97 +1422,118 @@ fn info_with_p_tags(id: &str, author: &str, p_tags: &[&str]) -> Event {
 }
 
 #[test]
-fn test_get_info_resolves_p_tag_alias() {
+fn test_cache_info_indexes_only_the_author() {
     futures::executor::block_on(async {
         let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
             .await;
 
-        // The author keeps working as before.
+        // The author resolves, both in memory and through storage.
         assert_eq!(
             registry.index.get_info("wallet").map(|e| e.id),
             Some("info1".into())
         );
-        // A NWA app finds the event through its `p` tag.
         assert_eq!(
-            registry.get_info("app").await.map(|e| e.id),
+            registry.get_info("wallet").await.map(|e| e.id),
             Some("info1".into())
         );
-        assert!(registry.get_info("unrelated").await.is_none());
-    });
-}
 
-#[test]
-fn test_p_tag_alias_survives_hibernation() {
-    futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
-        registry
-            .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
-            .await;
-
-        let mut restarted = simulate_hibernation(&registry.storage).await;
-        // Fresh index, only persisted keys available.
-        assert!(restarted.index.get_info("app").is_none());
-
-        let info = restarted.get_info("app").await.expect("alias must resolve");
-        assert_eq!(info.id, "info1");
-        assert_eq!(info.pubkey, "wallet");
-        // Resolving through the alias re-caches the event in memory.
-        assert_eq!(
-            restarted.index.get_info("app").map(|e| e.id),
-            Some("info1".into())
-        );
-    });
-}
-
-#[test]
-fn test_republish_drops_stale_p_tag_alias() {
-    futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
-        registry
-            .cache_info(info_with_p_tags("info1", "wallet", &["app1"]))
-            .await;
-        registry
-            .cache_info(info_with_p_tags("info2", "wallet", &["app2"]))
-            .await;
-
-        assert!(
-            registry.get_info("app1").await.is_none(),
-            "the old app must not resolve to the new info event"
-        );
-        assert_eq!(
-            registry.get_info("app2").await.map(|e| e.id),
-            Some("info2".into())
-        );
-        assert!(
-            registry
-                .storage
-                .data
-                .lock()
-                .unwrap()
-                .get("info-p:app1")
-                .is_none(),
-            "stale alias must be deleted from storage"
-        );
-    });
-}
-
-#[test]
-fn test_delete_info_removes_p_tag_alias() {
-    futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
-        registry
-            .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
-            .await;
-
-        registry.delete_info("wallet").await;
-
+        // The `p` tag names an app the wallet announced itself to. It is not
+        // a lookup key, so app-scoped discovery finds nothing.
+        assert!(registry.index.get_info("app").is_none());
         assert!(registry.get_info("app").await.is_none());
-        assert!(registry.get_info("wallet").await.is_none());
-        let data = registry.storage.data.lock().unwrap();
-        assert!(data.get("info:wallet").is_none());
-        assert!(data.get("info-p:app").is_none());
+
+        let keys = stored_keys(&registry);
+        assert!(
+            keys.iter().all(|key| !key.starts_with("info-p:")),
+            "caching an info event must not write p-tag aliases: {keys:?}"
+        );
+    });
+}
+
+#[test]
+fn test_app_p_tag_does_not_resolve_after_hibernation() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
+        registry
+            .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
+            .await;
+
+        // Fresh process: only persisted keys are available.
+        let mut restarted = simulate_hibernation(&registry.storage).await;
+
+        assert!(
+            restarted.get_info("app").await.is_none(),
+            "the app in the p tag must not resolve to the wallet"
+        );
+        assert_eq!(
+            restarted.get_info("wallet").await.map(|e| e.id),
+            Some("info1".into())
+        );
+    });
+}
+
+#[test]
+fn test_prune_legacy_info_aliases_removes_only_p_tag_keys() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
+        registry
+            .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
+            .await;
+
+        // State written by a version that indexed `p` tags.
+        let mut entries = std::collections::HashMap::new();
+        entries.insert("info-p:app".to_string(), serde_json::json!("wallet"));
+        entries.insert("info-p:other".to_string(), serde_json::json!("wallet2"));
+        registry.storage.put_batch(entries).await.unwrap();
+
+        assert_eq!(registry.prune_legacy_info_aliases().await, 2);
+
+        let keys = stored_keys(&registry);
+        assert!(!keys.contains(&"info-p:app".to_string()));
+        assert!(!keys.contains(&"info-p:other".to_string()));
+        assert!(keys.contains(&"info:wallet".to_string()));
+        assert!(keys.contains(&"infoid:info1".to_string()));
+
+        // Already clean: a second pass is a no-op.
+        assert_eq!(registry.prune_legacy_info_aliases().await, 0);
+    });
+}
+
+#[test]
+fn test_prune_legacy_info_aliases_drains_in_bounded_batches() {
+    futures::executor::block_on(async {
+        let registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
+        // More keys than one pass may delete: the sweep has to keep going on
+        // the next alarm instead of dropping the rest.
+        let seeded = LEGACY_ALIAS_SWEEP_LIMIT + 2;
+        let mut entries = std::collections::HashMap::new();
+        for i in 0..seeded {
+            entries.insert(format!("info-p:app{i}"), serde_json::json!("wallet"));
+        }
+        registry.storage.put_batch(entries).await.unwrap();
+
+        let mut passes = 0usize;
+        let mut removed = registry.prune_legacy_info_aliases().await;
+        assert_eq!(
+            removed, LEGACY_ALIAS_SWEEP_LIMIT,
+            "one pass must stop at the limit"
+        );
+        passes += 1;
+        while removed > 0 {
+            removed = registry.prune_legacy_info_aliases().await;
+            if removed > 0 {
+                passes += 1;
+            }
+        }
+
+        assert_eq!(passes, 2, "the remainder drains on one more pass");
+        let keys = stored_keys(&registry);
+        assert!(
+            keys.iter().all(|key| !key.starts_with("info-p:")),
+            "the sweep must drain every legacy key: {keys:?}"
+        );
     });
 }
 
@@ -1699,98 +1720,6 @@ fn test_unsubscribe_keeps_other_subscription_in_same_index() {
 }
 
 #[test]
-fn test_delete_info_keeps_alias_owned_by_other_author() {
-    futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
-        registry
-            .cache_info(info_with_p_tags("info1", "wallet-a", &["shared", "only-a"]))
-            .await;
-        registry
-            .cache_info(info_with_p_tags("info2", "wallet-b", &["shared", "only-b"]))
-            .await;
-
-        registry.delete_info("wallet-a").await;
-
-        // In memory: the author's own alias is dropped, the shared one is
-        // still owned by the surviving author.
-        assert!(!registry.index.info_p_index.contains_key("only-a"));
-        assert_eq!(
-            registry
-                .index
-                .info_p_index
-                .get("shared")
-                .map(String::as_str),
-            Some("wallet-b")
-        );
-
-        let info = registry
-            .get_info("shared")
-            .await
-            .expect("the surviving author's alias must still resolve");
-        assert_eq!(info.id, "info2");
-        assert_eq!(info.pubkey, "wallet-b");
-
-        let data = registry.storage.data.lock().unwrap();
-        assert_eq!(
-            data.get("info-p:shared").and_then(Value::as_str),
-            Some("wallet-b"),
-            "deleting one author must not delete another author's alias"
-        );
-        assert!(data.get("info-p:only-a").is_none());
-        assert!(data.get("info:wallet-a").is_none());
-        assert!(data.get("info:wallet-b").is_some());
-    });
-}
-
-#[test]
-fn test_delete_info_after_hibernation_removes_event_and_alias() {
-    futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
-        registry
-            .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
-            .await;
-
-        // Fresh process: the in-memory index is empty, only storage remains.
-        let mut restarted = simulate_hibernation(&registry.storage).await;
-        restarted.delete_info("wallet").await;
-
-        assert!(restarted.get_info("wallet").await.is_none());
-        assert!(restarted.get_info("app").await.is_none());
-        let data = restarted.storage.data.lock().unwrap();
-        assert!(data.get("info:wallet").is_none());
-        assert!(data.get("info-p:app").is_none());
-    });
-}
-
-#[test]
-fn test_delete_info_after_hibernation_keeps_other_authors_alias() {
-    futures::executor::block_on(async {
-        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
-        registry
-            .cache_info(info_with_p_tags("info1", "wallet-a", &["app"]))
-            .await;
-        registry
-            .cache_info(info_with_p_tags("info2", "wallet-b", &["app"]))
-            .await;
-
-        let mut restarted = simulate_hibernation(&registry.storage).await;
-        restarted.delete_info("wallet-a").await;
-
-        let info = restarted
-            .get_info("app")
-            .await
-            .expect("the surviving author's alias must still resolve");
-        assert_eq!(info.id, "info2");
-        let data = restarted.storage.data.lock().unwrap();
-        assert_eq!(
-            data.get("info-p:app").and_then(Value::as_str),
-            Some("wallet-b")
-        );
-        assert!(data.get("info:wallet-a").is_none());
-    });
-}
-
-#[test]
 fn test_unsubscribe_prunes_secondary_index_keys() {
     futures::executor::block_on(async {
         let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
@@ -1964,7 +1893,7 @@ fn test_republish_moves_infoid_index() {
 }
 
 #[test]
-fn test_republish_after_hibernation_cleans_infoid_and_stale_alias() {
+fn test_republish_after_hibernation_cleans_infoid_index() {
     futures::executor::block_on(async {
         let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
@@ -1985,14 +1914,6 @@ fn test_republish_after_hibernation_cleans_infoid_and_stale_alias() {
         assert_eq!(
             restarted.find_info_pubkey_by_id("info2").await.as_deref(),
             Some("wallet")
-        );
-        assert!(
-            restarted.get_info("app1").await.is_none(),
-            "a p tag the new event no longer carries must not resolve"
-        );
-        assert_eq!(
-            restarted.get_info("app2").await.map(|e| e.id),
-            Some("info2".into())
         );
         let data = restarted.storage.data.lock().unwrap();
         assert!(data.get("info-p:app1").is_none());
@@ -2192,11 +2113,6 @@ fn info_at(id: &str, author: &str, created_at: u64) -> Event {
     crate::common::test_helpers::test_event(id, author, 13194, vec![], created_at)
 }
 
-/// Info event addressed to one app (`p` tag) at a chosen `created_at`.
-fn info_for_app_at(id: &str, author: &str, app: &str, created_at: u64) -> Event {
-    crate::common::test_helpers::test_event(id, author, 13194, vec![Tag::p(app)], created_at)
-}
-
 /// Cap only: expiry off, so eviction is the only way an event can disappear.
 fn capped(max_info_events: usize) -> Limits {
     Limits {
@@ -2330,30 +2246,6 @@ fn test_info_cache_expiry_hides_and_deletes_an_old_event() {
 }
 
 #[test]
-fn test_info_cache_expiry_applies_through_the_app_alias() {
-    futures::executor::block_on(async {
-        set_test_time(1_000_000);
-        let mut registry = WalletRegistry::new(MockStorage::new(), expiring(60), test_now);
-        registry
-            .cache_info(info_for_app_at("id1", "wallet", "app", 999_000))
-            .await;
-
-        assert!(
-            registry.get_info("app").await.is_none(),
-            "an expired event must not resolve through its alias"
-        );
-        let keys = stored_keys(&registry);
-        assert!(!keys.contains(&"info:wallet".to_string()));
-        assert!(
-            !keys.contains(&"info-p:app".to_string()),
-            "the alias of an expired event is dead weight"
-        );
-
-        set_test_time(1_700_000_000);
-    });
-}
-
-#[test]
 fn test_info_cache_ttl_zero_serves_old_events() {
     futures::executor::block_on(async {
         // The pinned clock is far past the fixture's `created_at`; with expiry
@@ -2388,35 +2280,6 @@ fn test_prune_info_cache_removes_expired_events_and_reports_them() {
         assert!(keys.contains(&"info:fresh-wallet".to_string()));
         assert!(registry.get_info("old-wallet").await.is_none());
         assert!(registry.get_info("fresh-wallet").await.is_some());
-
-        set_test_time(1_700_000_000);
-    });
-}
-
-#[test]
-fn test_prune_info_cache_keeps_an_alias_owned_by_another_author() {
-    futures::executor::block_on(async {
-        set_test_time(2_000_000);
-        let mut registry = WalletRegistry::new(MockStorage::new(), expiring(100), test_now);
-
-        // Two wallets address the same app; the newer one owns the alias.
-        registry
-            .cache_info(info_for_app_at("old", "old-wallet", "app", 1_000_000))
-            .await;
-        registry
-            .cache_info(info_for_app_at("fresh", "fresh-wallet", "app", 1_999_950))
-            .await;
-
-        assert_eq!(registry.prune_info_cache().await, 1);
-
-        let keys = stored_keys(&registry);
-        assert!(!keys.contains(&"info:old-wallet".to_string()));
-        assert!(keys.contains(&"info-p:app".to_string()));
-        assert_eq!(
-            registry.get_info("app").await.map(|e| e.pubkey),
-            Some("fresh-wallet".into()),
-            "the surviving author keeps the alias"
-        );
 
         set_test_time(1_700_000_000);
     });
