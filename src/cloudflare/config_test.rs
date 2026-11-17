@@ -51,3 +51,18 @@ fn test_parse_opt_u64_invalid_uses_default() {
 fn test_parse_opt_u64_zero_is_kept() {
     assert_eq!(CloudflareConfig::parse_opt_u64(Some("0".into()), 42), 0);
 }
+
+#[test]
+fn test_parse_opt_u32_valid() {
+    assert_eq!(CloudflareConfig::parse_opt_u32(Some("10".into()), 42), 10);
+}
+
+#[test]
+fn test_parse_opt_u32_invalid_uses_default() {
+    assert_eq!(CloudflareConfig::parse_opt_u32(Some("ten".into()), 42), 42);
+}
+
+#[test]
+fn test_parse_opt_u32_zero_disables() {
+    assert_eq!(CloudflareConfig::parse_opt_u32(Some("0".into()), 42), 0);
+}

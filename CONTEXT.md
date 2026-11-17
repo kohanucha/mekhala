@@ -35,7 +35,9 @@ Mekhala provides an LN Address bridge, allowing users to pay to an LN Address (e
 - **RpcReceiveError**: The error type for the `receive_response` seam — `Timeout` or `ChannelClosed`, both representable without Cloudflare-specific types.
 - **Clock seam**: Both `NostrEngine` and `NwcClient` accept `fn() -> u64` as a clock parameter, defaulting to `crate::util::now`. No domain module calls `now()` directly — all timestamps flow through the injected seam.
 - **UserStore**: A `?Send` trait for looking up NWC connection URIs by username. `CloudflareKvStore` implements it using Workers KV. The seam enables unit-testing the LN Address handler without a worker runtime.
-- **LnAddressHandler<S>**: A struct generic over `UserStore` that orchestrates LNURL-pay requests and callbacks. It resolves usernames to NWC URIs via the `UserStore` seam and delegates invoice creation to `LnAddressGateway` and `NwcSession` via the `NwcTransport` seam.
+- **LnAddressHandler<S>**: A struct generic over `UserStore` that orchestrates LNURL-pay requests and callbacks. It resolves usernames to NWC URIs via the `UserStore` seam and delegates invoice creation to `LnAddressGateway` and `NwcSession` via the `NwcTransport` seam. The callback runs its gates in a fixed order — amount present, amount in range, per-source rate limit, store lookup, invoice — so a refusal costs neither a storage write nor a wallet round trip.
+- **SendableLimits** (`src/lnaddress/policy.rs`): The inclusive invoice amount range, in millisatoshis. One value feeds both the `.well-known` advertisement and the callback check, so the range a client is shown is the range that is enforced. A zero or inverted range falls back to the defaults and warns once; the check is never disabled.
+- **WindowCounter** (`src/lnaddress/rate_limit.rs`): A fixed 60-second admission window per source, persisted through the `CounterStore` seam (`CloudflareTransport` in production) under `rate:<ip-tag>`. Counters are only written when a request is admitted, stale ones (two windows old) are removed by the alarm sweep at most 128 per pass, and a limit of `0` admits everything without touching storage.
 
 ## Architecture Map
 
@@ -78,11 +80,16 @@ The NWC RPC orchestration loop lives directly in `CloudflareTransport::execute_n
 - **Called By:** `NostrEngine`.
 
 ### 4. Integration Layer (The Bridge)
-**Module:** `LnAddressHandler<S: UserStore>` (`src/lnaddress/handler.rs`)
-- **Role:** Orchestrates LNURL-pay requests and callbacks using domain logic (`LnAddressGateway`, `NwcSession`) accessed through seams (`UserStore`, `NwcTransport`).
-- **Seams:** `UserStore` (username → NWC URI lookup), `NwcTransport` (existing, for RPC).
-- **Production Adapter:** `CloudflareKvStore` wraps `worker::KvStore` for Workers KV.
-- **Test Double:** `MockUserStore` (HashMap-backed).
+**Module:** `LnAddressHandler<S: UserStore>` (`src/cloudflare/handler.rs`)
+- **Role:** Orchestrates LNURL-pay requests and callbacks using domain logic (`LnAddressGateway`, `NwcSession`) accessed through seams (`UserStore`, `NwcTransport`, `CounterStore`).
+- **Seams:** `UserStore` (username → NWC URI lookup), `NwcTransport` (existing, for RPC), `CounterStore` (per-source callback counters).
+- **Production Adapter:** `CloudflareKvStore` wraps `worker::KvStore` for Workers KV; `CloudflareTransport` implements `CounterStore` over Durable Object storage.
+- **Test Double:** `MockUserStore` (HashMap-backed), `MockStore` in `rate_limit_test.rs`.
+
+### 4a. LN Address Policy
+**Module:** `LnAddressPolicy` / `SendableLimits` (`src/lnaddress/policy.rs`) and `WindowCounter` (`src/lnaddress/rate_limit.rs`)
+- **Role:** Pure policy for LN address callbacks: the invoice amount range (advertised and enforced from the same value) and the fixed-window per-source rate limit (`admit`). Storage is reached only through the `CounterStore` seam, so both are unit-testable without a worker runtime.
+- **Called By:** `LnAddressHandler`; `CloudflareConfig::lnaddress_policy()` builds it from the environment.
 
 ### 4b. LN Address Domain Logic
 **Module:** `LnAddressGateway` (`src/lnaddress/gateway.rs`)

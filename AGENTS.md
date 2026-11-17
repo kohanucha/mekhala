@@ -47,6 +47,12 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
   "Info cache" below)
 - `INFO_TTL_SECONDS` - optional, default: 2592000 (30 days), `0` disables
   expiry
+- `MIN_AMOUNT_MSAT` - optional, default: 1000: lowest LN address invoice
+  amount, advertised and enforced
+- `MAX_AMOUNT_MSAT` - optional, default: 100000000: highest LN address
+  invoice amount, advertised and enforced
+- `CALLBACK_RATE_LIMIT_PER_MINUTE` - optional, default: 10, `0` disables (see
+  "LN address callbacks" below)
 - `MAX_CONTENT_LENGTH` - default: 98304 (96 KB, covers the 87,472-character NIP-44 ceiling)
 
 ## Wrangler Config
@@ -144,6 +150,37 @@ Keys written by the version that did index `p` tags (`info-p:`) are deleted by
 more, so the sweep is a one-way migration and its "already empty" case is a
 single `list_prefix`.
 
+## LN address callbacks
+
+`GET /lnaddress/:username/callback?amount=<msat>` passes four gates, in this
+order, before it reaches a wallet (`src/cloudflare/handler.rs`):
+
+1. **Amount present** — a missing or non-numeric `amount` is refused without
+   touching anything else.
+2. **Amount in range** — `MIN_AMOUNT_MSAT..=MAX_AMOUNT_MSAT`. The `.well-known`
+   document advertises these same values as `minSendable`/`maxSendable`, so a
+   client is never told one range and refused for another. A zero bound or an
+   inverted range cannot be advertised meaningfully, so it falls back to the
+   defaults and logs once; the range is never switched off.
+3. **Per-source rate limit** — `CALLBACK_RATE_LIMIT_PER_MINUTE` callbacks per
+   60-second window, keyed on the address tag the Worker stamps on the
+   forwarded request (`x-mekhala-client-ip-tag`). A request with no tag (local
+   development, or an edge that reports no address) is admitted, matching
+   per-address connection limits. Refused requests get HTTP 200 with
+   `{"status":"ERROR","reason":"Too many requests, retry in Ns"}` and do not
+   consume a slot or write storage.
+4. **Store lookup and invoice** — only now is the username resolved and the
+   wallet asked to mint an invoice.
+
+The counters live in Durable Object storage under `rate:<ip-tag>` and are
+swept by the same alarm as the idle and info sweeps, with the pass delay taken
+from `CONNECTION_SWEEP_SECONDS` (independent of `IDLE_TIMEOUT_SECONDS`: a relay
+may keep sockets forever and still want counters cleaned). Each pass deletes at
+most 128 keys because `delete_batch` issues one storage call per key, and the
+alarm re-arms itself while any counter remains, so the family drains after
+traffic stops even with no sockets. Setting `CONNECTION_SWEEP_SECONDS=0` turns
+sweeping off entirely, and then `rate:` keys linger until read again.
+
 ## Common Gotchas
 
 1. **Bounded REQs**: every value in a filter (`ids`, `authors`, `kinds`, `#p`, `#e`) becomes a persisted routing key, and `sync()` re-reads and rewrites all of a connection's keys on every subscribe. That is why `Limits::max_filter_items` / `max_routing_keys_per_connection` and the `MAX_SUB_ID_LENGTH` check in `NostrEngine::handle_req` exist; removing them turns one `REQ` into tens of thousands of storage operations.
@@ -155,6 +192,7 @@ single `list_prefix`.
 7. **Routing index families**: A subscription can be indexed under `pk:` (`authors`/`#p`), `eid:` (`ids`) or `etag:` (`#e`); `sync()`, `load_indexed()`, `unsubscribe()` and `on_terminate()` must treat all three the same or routing silently degrades to "accepted, EOSE, no event", or the persisted index keeps a membership the live connection no longer has (leaks storage and resurrects dead subscriptions). Cached info events follow the same rule as any other event: they reach a `#p` filter only through a real `p` tag, and only the author key (`info:<author>`) is comparable, so an app's pubkey resolves to nothing.
 8. **Alarms are one-shot**: the idle sweep re-arms itself inside `alarm()` and the accept path arms it when none is pending. Dropping either half leaves connections that are accepted once and never swept — the case this sweep exists to close. `IDLE_TIMEOUT_SECONDS=0` / `CONNECTION_SWEEP_SECONDS=0` switch it off, which is what the functional test suite does so its own sockets are not swept mid-test.
 9. **Info cache is bounded on purpose**: `MAX_INFO_EVENTS` / `INFO_TTL_SECONDS` are the only thing keeping the `info:` family from growing forever, since anyone may publish a `kind` 13194 event. Both are enforced through one `list_prefix("info:")` enumeration, so a new bound must go there rather than into a separate pass. Unit tests set `info_ttl_seconds: 0` (`test_limits()`) because fixtures publish `created_at: 1000` against a pinned clock of 1_700_000_000 — leaving the default TTL on would expire every fixture. Tests that mean to test expiry set the TTL and `set_test_time` explicitly.
+10. **LN address range is one value**: the `.well-known` advertisement and the callback check both read `SendableLimits` from `CloudflareConfig::lnaddress_policy()`. Changing one side alone makes the service advertise a range it refuses. The callback rate limiter is only swept while `CONNECTION_SWEEP_SECONDS` is non-zero; that switch is deliberately separate from `IDLE_TIMEOUT_SECONDS`.
 
 ## Agent skills
 

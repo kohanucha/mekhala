@@ -1,3 +1,12 @@
+[advisories]
+# chrono is unmaintained but not known to be vulnerable. It arrives only
+# transitively through the Worker SDK, and there is no release to upgrade to:
+# the advisory covers every chrono version, and worker 0.9.0 still depends on
+# chrono 0.4. Drop this entry when workers-rs moves off it.
+ignore = [
+  { id = "RUSTSEC-2026-0543", reason = "transitive dependency of the Worker SDK; an unmaintained (not vulnerable) advisory with no fixed release" },
+]
+
 [licenses]
 allow = ["Apache-2.0", "MIT", "BSD-3-Clause", "Unicode-3.0"]
 
