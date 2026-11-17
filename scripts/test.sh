@@ -37,6 +37,9 @@ cleanup() {
     # Port 8793/8794 cleanup (from info-cache tests in JS)
     lsof -ti :8793 2>/dev/null | xargs kill -9 2>/dev/null || true
     lsof -ti :8794 2>/dev/null | xargs kill -9 2>/dev/null || true
+    # Port 8795/8796 cleanup (from LN address policy tests in JS)
+    lsof -ti :8795 2>/dev/null | xargs kill -9 2>/dev/null || true
+    lsof -ti :8796 2>/dev/null | xargs kill -9 2>/dev/null || true
     echo "Cleanup complete."
     echo "Wrangler logs saved to: $LOG_FILE"
 }
@@ -112,7 +115,8 @@ npx wrangler dev --port $PORT --ip 127.0.0.1 \
     --var MAX_CONNECTIONS_PER_IP:0 \
     --var MAX_CONNECTIONS_PER_ASN:0 \
     --var IDLE_TIMEOUT_SECONDS:0 \
-    --var CONNECTION_SWEEP_SECONDS:0 > "$LOG_FILE" 2>&1 &
+    --var CONNECTION_SWEEP_SECONDS:0 \
+    --var CALLBACK_RATE_LIMIT_PER_MINUTE:0 > "$LOG_FILE" 2>&1 &
 WRANGLER_PID=$!
 
 # 4. Wait for Relay to be Ready

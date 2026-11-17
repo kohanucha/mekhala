@@ -1,5 +1,6 @@
 use crate::common::NwcError;
 use crate::common::NwcTransport;
+use crate::lnaddress::policy::SendableLimits;
 use crate::lnaddress::wallet_connector::NwcSession;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -7,15 +8,18 @@ use url::Url;
 
 /// Builds the LNURL-pay `payRequest` document served for a Lightning
 /// Address username: `callback` (points back at this relay's `/callback`
-/// route), sendable range, and the `text/plain` metadata used to derive the
-/// invoice description hash.
-pub fn pay_request_info(username: &str, request_url: &Url) -> Value {
+/// route), the advertised sendable range, and the `text/plain` metadata used
+/// to derive the invoice description hash.
+///
+/// `limits` is the same range the callback enforces, so the advertisement and
+/// the refusal rules cannot drift apart.
+pub fn pay_request_info(username: &str, request_url: &Url, limits: &SendableLimits) -> Value {
     let callback_url = build_callback_url(username, request_url);
 
     serde_json::json!({
         "callback": callback_url,
-        "maxSendable": 100000000,
-        "minSendable": 1000,
+        "maxSendable": limits.max_msat(),
+        "minSendable": limits.min_msat(),
         "metadata": generate_metadata(username),
         "tag": "payRequest"
     })

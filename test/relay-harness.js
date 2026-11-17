@@ -13,6 +13,10 @@ export const QUIET_LIMITS = {
   IDLE_TIMEOUT_SECONDS: 0,
   CONNECTION_SWEEP_SECONDS: 0,
   EVICT_MIN_IDLE_SECONDS: 3600,
+  // Every request of a scenario may share one source tag, so leaving the
+  // callback limiter on would let one scenario's traffic decide another's.
+  // test/lnaddress-limits.test.js turns it on for the scenario that proves it.
+  CALLBACK_RATE_LIMIT_PER_MINUTE: 0,
 };
 
 export function wait(ms) {

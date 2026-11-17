@@ -5,6 +5,7 @@ use crate::cloudflare::connection::{
 use crate::cloudflare::create_cors_response;
 use crate::cloudflare::identity::{self, ClientIdentity};
 use crate::cloudflare::kv::CloudflareKvStore;
+use crate::lnaddress::rate_limit::{self, CounterStore, WindowCounter};
 use crate::log_debug;
 use crate::log_error;
 use crate::log_info;
@@ -38,6 +39,11 @@ const ATTACHMENT_REFRESH_SECONDS: u64 = 30;
 /// is evictable costs one read, and a full relay must not turn every connect
 /// attempt into a fan-out of reads.
 const MAX_EVICTION_CHECKS: usize = 3;
+
+/// Rate counters deleted per alarm pass. `delete_batch` issues one storage
+/// call per key, so the pass is bounded the same way the legacy info-alias
+/// sweep is.
+const RATE_SWEEP_LIMIT: usize = 128;
 
 pub struct CloudflareStorage {
     storage: worker::Storage,
@@ -187,8 +193,18 @@ impl DurableObject for CloudflareTransport {
                 log_error!("LN address callback requires the MEKHALA_NWC_KV binding");
                 return Response::error("Internal Server Error", 500);
             };
-            let handler = crate::cloudflare::handler::LnAddressHandler::new(kv);
-            return handler.handle_callback(req, username, self).await;
+            let identity = identity::from_headers(&req);
+            let handler = crate::cloudflare::handler::LnAddressHandler::new(
+                kv,
+                self.config.lnaddress_policy(),
+            );
+            let response = handler
+                .handle_callback(req, username, &identity, self, self)
+                .await;
+            // Counters are swept by the alarm; make sure one is pending even
+            // when no socket (and therefore no idle sweep) is holding it.
+            self.ensure_rate_sweep_alarm().await;
+            return response;
         }
 
         let identity = identity::from_headers(&req);
@@ -201,7 +217,15 @@ impl DurableObject for CloudflareTransport {
         log_debug!("→ alarm handler invoked");
         self.sweep_idle_connections().await;
         self.sweep_info_cache().await;
+        // Rate counters share the alarm with the idle and info sweeps. When
+        // keys remain (fresh counters, or more than one bounded pass covers)
+        // the alarm is re-armed even with no sockets, so the family drains to
+        // empty after traffic stops.
+        let rate_keys_remain = self.sweep_rate_counters().await;
         self.rearm_sweep().await;
+        if rate_keys_remain {
+            self.rearm_rate_sweep().await;
+        }
         Response::empty()
     }
 
@@ -421,6 +445,33 @@ impl crate::common::NwcTransport for CloudflareTransport {
     }
 }
 
+#[async_trait::async_trait(?Send)]
+impl CounterStore for CloudflareTransport {
+    async fn load(&self, key: &str) -> Option<WindowCounter> {
+        let value = self
+            .state
+            .storage()
+            .get::<serde_json::Value>(key)
+            .await
+            .ok()
+            .flatten()?;
+        rate_limit::decode(&value)
+    }
+
+    async fn save(&self, key: &str, counter: &WindowCounter) {
+        let value = match serde_json::to_value(counter) {
+            Ok(value) => value,
+            Err(e) => {
+                log_error!("rate limit: could not encode counter '{}': {}", key, e);
+                return;
+            }
+        };
+        if let Err(e) = self.state.storage().put(key, value).await {
+            log_warn!("rate limit: failed to persist '{}': {}", key, e);
+        }
+    }
+}
+
 impl CloudflareTransport {
     /// Keeps the cached wallet info family bounded and removes keys that no
     /// current code writes. Runs on the same alarm as the idle sweep: both
@@ -446,6 +497,86 @@ impl CloudflareTransport {
         if removed > 0 {
             log_info!("info cache: {} entries swept", removed);
         }
+    }
+
+    /// Removes stale `rate:` counters, at most [`RATE_SWEEP_LIMIT`] keys per
+    /// pass so one alarm does not turn into an unbounded delete loop.
+    ///
+    /// Returns whether any counter remains (fresh ones that will age out, or
+    /// keys a later pass has not reached yet); the caller re-arms the alarm
+    /// while that is true, so the family drains to empty after traffic stops.
+    async fn sweep_rate_counters(&self) -> bool {
+        let storage = CloudflareStorage {
+            storage: self.state.storage(),
+        };
+        let entries = storage.list_prefix(rate_limit::RATE_KEY_PREFIX).await;
+        let total = entries.len();
+        let now = crate::util::now();
+
+        let mut stale = Vec::new();
+        let mut kept = 0usize;
+        for (key, value) in entries.into_iter().take(RATE_SWEEP_LIMIT) {
+            match rate_limit::decode(&value) {
+                // Unreadable values are dropped: nothing can roll them
+                // forward, so they would otherwise live forever.
+                Some(counter) if !counter.is_stale(now) => kept += 1,
+                _ => stale.push(key),
+            }
+        }
+
+        if !stale.is_empty() {
+            let removed = stale.len();
+            storage.delete_batch(stale).await;
+            log_info!("rate limit: {} stale counters swept", removed);
+        }
+
+        kept > 0 || total > RATE_SWEEP_LIMIT
+    }
+
+    /// Arms the alarm for the rate sweep when none is pending. Called after a
+    /// callback touched the counters, because the idle sweep only keeps an
+    /// alarm alive while sockets exist.
+    async fn ensure_rate_sweep_alarm(&self) {
+        if self.config.callback_rate_limit_per_minute == 0 {
+            return;
+        }
+        let Some(interval_ms) = self.rate_sweep_interval_ms() else {
+            return;
+        };
+        let storage = self.state.storage();
+        if let Ok(Some(_)) = storage.get_alarm().await {
+            return;
+        }
+        if let Err(e) = storage.set_alarm(ScheduledTime::from(interval_ms)).await {
+            log_warn!("set_alarm failed: {}", e);
+        }
+    }
+
+    /// Re-arms the alarm after a sweep pass while rate counters remain.
+    async fn rearm_rate_sweep(&self) {
+        let Some(interval_ms) = self.rate_sweep_interval_ms() else {
+            return;
+        };
+        if let Err(e) = self
+            .state
+            .storage()
+            .set_alarm(ScheduledTime::from(interval_ms))
+            .await
+        {
+            log_warn!("set_alarm failed: {}", e);
+        }
+    }
+
+    /// Delay between rate-counter sweeps, or `None` when sweeping is switched
+    /// off. Independent of `IDLE_TIMEOUT_SECONDS`: a relay may keep sockets
+    /// forever and still want the counters cleaned.
+    fn rate_sweep_interval_ms(&self) -> Option<i64> {
+        if self.config.connection_sweep_seconds == 0 {
+            return None;
+        }
+        i64::try_from(self.config.connection_sweep_seconds)
+            .ok()
+            .map(|seconds| seconds.saturating_mul(1000))
     }
 
     async fn allocate_id(&self) -> u32 {

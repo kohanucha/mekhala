@@ -43,7 +43,7 @@ fn test_description_hash_deterministic() {
 #[test]
 fn test_pay_request_info_structure() {
     let url = Url::parse("https://relay.com/.well-known/lnurlp/alice").unwrap();
-    let info = pay_request_info("alice", &url);
+    let info = pay_request_info("alice", &url, &SendableLimits::default());
     assert_eq!(info["tag"], "payRequest");
     assert_eq!(
         info["callback"],
@@ -57,9 +57,27 @@ fn test_pay_request_info_structure() {
 #[test]
 fn test_pay_request_info_different_username() {
     let url = Url::parse("https://other.com/.well-known/lnurlp/bob").unwrap();
-    let info = pay_request_info("bob", &url);
+    let info = pay_request_info("bob", &url, &SendableLimits::default());
     assert_eq!(info["callback"], "https://other.com/lnaddress/bob/callback");
     assert_eq!(info["metadata"], "[[\"text/plain\",\"Payment to bob\"]]");
+}
+
+#[test]
+fn test_pay_request_info_advertises_the_configured_range() {
+    let url = Url::parse("https://relay.com/.well-known/lnurlp/alice").unwrap();
+    let limits = SendableLimits::new(5_000, 50_000);
+    let info = pay_request_info("alice", &url, &limits);
+    assert_eq!(info["minSendable"], 5_000);
+    assert_eq!(info["maxSendable"], 50_000);
+}
+
+#[test]
+fn test_pay_request_info_uses_defaults_for_an_invalid_range() {
+    let url = Url::parse("https://relay.com/.well-known/lnurlp/alice").unwrap();
+    let limits = SendableLimits::new(0, 0);
+    let info = pay_request_info("alice", &url, &limits);
+    assert_eq!(info["minSendable"], 1_000);
+    assert_eq!(info["maxSendable"], 100_000_000);
 }
 
 #[test]

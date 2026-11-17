@@ -23,6 +23,9 @@ examine_globs = [
 exclude_re = [
   # `now()` divides the wasm clock; that branch is cfg'd out of native builds.
   'replace / with [%*] in now',
+  # Log-only: `log_warn!` is a no-op in native test builds, so dropping the
+  # one-shot warning cannot change anything a unit test can observe.
+  'replace warn_invalid_range_once with',
   # Equivalent: the body is already `Vec::new()`.
   'on_connect -> Vec<EngineResponse> with vec!\[',
   'on_disconnect -> Vec<EngineResponse> with vec!\[',

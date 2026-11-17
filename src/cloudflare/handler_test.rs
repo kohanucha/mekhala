@@ -1,6 +1,10 @@
 use super::*;
 use std::collections::HashMap;
 
+fn test_policy() -> LnAddressPolicy {
+    LnAddressPolicy::new(1_000, 100_000_000, 0)
+}
+
 struct MockUserStore {
     uris: HashMap<String, String>,
 }
@@ -20,7 +24,7 @@ fn test_lookup_user_found() {
         "nostr+walletconnect://pk?secret=s&relay=wss%3A%2F%2Frelay.com".to_string(),
     );
     let store = MockUserStore { uris };
-    let handler = LnAddressHandler::new(&store);
+    let handler = LnAddressHandler::new(&store, test_policy());
 
     futures::executor::block_on(async {
         let result = handler.lookup_user("alice").await;
@@ -34,7 +38,7 @@ fn test_lookup_user_not_found() {
     let store = MockUserStore {
         uris: HashMap::new(),
     };
-    let handler = LnAddressHandler::new(&store);
+    let handler = LnAddressHandler::new(&store, test_policy());
 
     futures::executor::block_on(async {
         let result = handler.lookup_user("nobody").await;
@@ -47,7 +51,7 @@ fn test_lookup_user_empty_uri() {
     let mut uris = HashMap::new();
     uris.insert("bob".to_string(), String::new());
     let store = MockUserStore { uris };
-    let handler = LnAddressHandler::new(&store);
+    let handler = LnAddressHandler::new(&store, test_policy());
 
     futures::executor::block_on(async {
         let result = handler.lookup_user("bob").await;
