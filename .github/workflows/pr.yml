@@ -32,6 +32,10 @@ jobs:
   test:
     name: Tests
     runs-on: ubuntu-latest
+    # The suite takes about five minutes when it is healthy. A wait that never
+    # ends (a `wrangler dev` that never answers) used to run until the job was
+    # cancelled by hand; cap it so it fails instead.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
 

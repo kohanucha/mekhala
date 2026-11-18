@@ -302,7 +302,12 @@ Single-context layout. See `docs/agents/domain.md`.
   `.wrangler/state`.
 - `test/relay-harness.js` (`withRelay`) starts a private `wrangler dev` for
   tests that need non-default limits, and its `QUIET_LIMITS` switch the
-  connection gates off unless a scenario turns one on.
+  connection gates off unless a scenario turns one on. Each relay runs in its
+  own process group, and shutdown signals the group, waits for the exit, and
+  returns only once the port is released: `wrangler dev` is npx → node →
+  workerd, so a layer that outlives the signal keeps the port bound, and a
+  start that cannot bind hangs instead of failing. Scenarios reuse ports, so
+  the harness also clears the port before every start.
   `test/connection-limits.test.js` is where those gates are exercised — one
   scenario per gate (address/network caps, idle sweep, slot reclaiming).
 
