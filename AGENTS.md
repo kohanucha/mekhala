@@ -53,6 +53,8 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
   invoice amount, advertised and enforced
 - `CALLBACK_RATE_LIMIT_PER_MINUTE` - optional, default: 10, `0` disables (see
   "LN address callbacks" below)
+- `RATE_LIMIT_MAX_KEYS` - optional, default: 1000, `0` removes the cap: how many
+  sources may own a counter before new ones share one
 - `LN_ADDRESS_KEY` - required to use Lightning Addresses: 64 hex characters
   (32 bytes). Seals stored wallet connections; without a usable value no
   Lightning Address is served or stored (see "LN address storage" below)
@@ -177,6 +179,19 @@ order, before it reaches a wallet (`src/cloudflare/handler.rs`):
 4. **Store lookup and invoice** — only now is the username resolved and the
    wallet asked to mint an invoice.
 
+Each source owns a counter at `rate:<ip-tag>`, but the family is capped by
+`RATE_LIMIT_MAX_KEYS`: once that many sources hold a key, a source that has
+none is charged to `rate:overflow` instead. Without the cap, rotating through
+addresses would let one caller grow Durable Object storage without bound. An
+existing counter always keeps working, so the cap limits who may open a new
+one, not how much traffic an owner may send. The count is held in memory per
+isolate, seeded by one listing, and corrected by every sweep.
+
+Invoice failures answer with one fixed reason (`Wallet unavailable`) and the
+wallet's own message goes to the log. The callback endpoint is anonymous, and
+its errors would otherwise tell a caller whether the wallet is online, short of
+funds, or rejecting the amount.
+
 The counters live in Durable Object storage under `rate:<ip-tag>` and are
 swept by the same alarm as the idle and info sweeps, with the pass delay taken
 from `CONNECTION_SWEEP_SECONDS` (independent of `IDLE_TIMEOUT_SECONDS`: a relay
@@ -215,6 +230,10 @@ Behavior that matters operationally:
   `LN_ADDRESS_KEY` to the new one: reads try the current key first, then the
   previous one. Only rows written again are sealed under the new key, so keep
   `LN_ADDRESS_KEY_PREVIOUS` set until every record has been rewritten.
+- **Usernames are bounded.** At most 64 characters of `[A-Za-z0-9._~-]`, and
+  `.`/`..` are refused: those two are the only path segments an HTTP client
+  rewrites, which would turn a callback URL into one that misses this route.
+  The same check guards `.well-known`, callbacks, and stored registrations.
 - **Local development needs the key too.** `wrangler dev` without `LN_ADDRESS_KEY`
   (in `.dev.vars` or as `--var LN_ADDRESS_KEY:<64 hex chars>`) answers every
   Lightning Address lookup with `User not found`; the integration suite passes

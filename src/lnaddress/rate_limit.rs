@@ -11,6 +11,10 @@ use serde::{Deserialize, Serialize};
 /// Storage key prefix for the per-source callback counters.
 pub const RATE_KEY_PREFIX: &str = "rate:";
 
+/// Tag shared by sources that arrive after the relay has spent its counter
+/// budget. Source tags are hex digests, so this value cannot collide with one.
+pub const OVERFLOW_TAG: &str = "overflow";
+
 /// Length of one admission window, in seconds.
 pub const WINDOW_SECONDS: u64 = 60;
 
@@ -80,6 +84,16 @@ pub trait CounterStore {
 
     /// Persists `counter` under `key`.
     async fn save(&self, key: &str, counter: &WindowCounter);
+
+    /// Chooses the counter key for a source.
+    ///
+    /// Every source gets a key of its own by default. A store with a finite
+    /// key budget folds sources that arrive after the budget is spent onto
+    /// [`OVERFLOW_TAG`] instead, so rotating through addresses cannot grow
+    /// storage without bound.
+    async fn key_for_source(&self, ip_tag: &str) -> String {
+        key_for(ip_tag)
+    }
 }
 
 /// Storage key for one source tag.

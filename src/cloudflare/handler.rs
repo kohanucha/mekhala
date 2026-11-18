@@ -6,6 +6,10 @@ use crate::lnaddress::policy::{validate_amount, LnAddressPolicy};
 use crate::lnaddress::rate_limit::{self, Admission, CounterStore};
 use worker::{Error, Request, Response, Result};
 
+/// Answer for any failure while an invoice is minted. Deliberately says nothing
+/// about the wallet's state; the detail is logged instead.
+const WALLET_UNAVAILABLE: &str = "Wallet unavailable";
+
 pub struct LnAddressHandler<'a, S: UserStore> {
     store: &'a S,
     policy: LnAddressPolicy,
@@ -84,7 +88,9 @@ async fn handle_callback_inner<S: UserStore>(
     // reports no address) the request is admitted, matching how per-address
     // connection limits are applied.
     if let Some(tag) = identity.ip_tag.as_deref() {
-        let key = rate_limit::key_for(tag);
+        // The store decides which counter this source is charged to: it may
+        // fold a source onto a shared key once its key budget is spent.
+        let key = counters.key_for_source(tag).await;
         if let Admission::Limited { retry_after } = rate_limit::admit(
             counters,
             &key,
@@ -103,9 +109,17 @@ async fn handle_callback_inner<S: UserStore>(
         .await
         .ok_or_else(|| Error::from("User not found"))?;
 
-    let pr = lnurl::create_invoice(transport, &nwc_uri, username, amount_msat)
-        .await
-        .map_err(|e| Error::from(e.to_string()))?;
+    // A wallet reply can describe the wallet's own state — whether it is
+    // online, what its balance refused, which upstream error it hit — and this
+    // endpoint is anonymous. Keep that detail in the log and answer every
+    // invoice failure with one fixed reason.
+    let pr = match lnurl::create_invoice(transport, &nwc_uri, username, amount_msat).await {
+        Ok(pr) => pr,
+        Err(e) => {
+            crate::log_error!("LN address invoice for '{}' failed: {}", username, e);
+            return lnaddress_error(WALLET_UNAVAILABLE);
+        }
+    };
 
     let resp = serde_json::json!({
         "pr": pr,

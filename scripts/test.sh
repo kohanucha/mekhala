@@ -44,6 +44,8 @@ cleanup() {
     lsof -ti :8797 2>/dev/null | xargs kill -9 2>/dev/null || true
     lsof -ti :8798 2>/dev/null | xargs kill -9 2>/dev/null || true
     lsof -ti :8799 2>/dev/null | xargs kill -9 2>/dev/null || true
+    # Port 8800 cleanup (from the LN address counter budget test in JS)
+    lsof -ti :8800 2>/dev/null | xargs kill -9 2>/dev/null || true
     echo "Cleanup complete."
     echo "Wrangler logs saved to: $LOG_FILE"
 }

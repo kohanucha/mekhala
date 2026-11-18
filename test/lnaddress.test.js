@@ -104,11 +104,13 @@ export async function testLnAddressOffline() {
 
   if (callbackResp.status === 200) {
     const errData = await callbackResp.json();
-    if (errData.status === "ERROR" && errData.reason && errData.reason.includes("Wallet not connected")) {
+    // The reason is deliberately generic: it must not tell an anonymous
+    // caller whether the wallet is offline, short of funds, or unreachable.
+    if (errData.status === "ERROR" && errData.reason === "Wallet unavailable") {
       console.log("✅ LN Address offline error handled correctly.");
       return;
     }
-    throw new Error(`Expected 'Wallet not connected' error, but got: 200 - ${JSON.stringify(errData)}`);
+    throw new Error(`Expected 'Wallet unavailable', but got: 200 - ${JSON.stringify(errData)}`);
   }
 
   throw new Error(`Expected 200 error, but got: ${callbackResp.status}`);
@@ -152,4 +154,16 @@ export async function testLnAddressErrors() {
     throw new Error(`Expected ERROR 'Missing amount' for negative, got: ${JSON.stringify(dataNegative)}`);
   }
   console.log("✅ Callback with negative amount returns 'Missing amount' ERROR.");
+
+  // A name longer than the relay accepts is refused before any lookup, so a
+  // crafted name cannot reach the store or the invoice metadata.
+  const tooLong = "a".repeat(65);
+  const longResp = await fetch(`${HTTP_URL.replace(/\/$/, "")}/.well-known/lnurlp/${tooLong}`);
+  const longData = await longResp.json();
+  if (longResp.status !== 404 || longData.status !== "ERROR") {
+    throw new Error(
+      `Expected 404 for an over-long username, got ${longResp.status} ${JSON.stringify(longData)}`,
+    );
+  }
+  console.log("✅ An over-long username is refused.");
 }

@@ -219,6 +219,21 @@ fn test_key_for_prefixes_the_tag() {
 }
 
 #[test]
+fn test_default_source_key_is_the_tag_key() {
+    let store = MockStore::default();
+    let key = futures::executor::block_on(store.key_for_source("0a0b0c0d0e0f1011"));
+    assert_eq!(key, "rate:0a0b0c0d0e0f1011");
+}
+
+#[test]
+fn test_overflow_tag_cannot_collide_with_a_source_tag() {
+    // Source tags are hex digests, so a tag that is not all hex digits cannot
+    // name a real source.
+    assert_eq!(key_for(OVERFLOW_TAG), "rate:overflow");
+    assert!(!OVERFLOW_TAG.chars().all(|c| c.is_ascii_hexdigit()));
+}
+
+#[test]
 fn test_decode_round_trips_a_counter() {
     let counter = WindowCounter {
         window_start: 1_700_000_000,
