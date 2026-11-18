@@ -15,6 +15,12 @@ const setup = (username, walletSecretByte, bridgeSecretByte) => {
     console.log(`Setting up KV for ${username}...`);
     console.log(`  Wallet PK: ${pk}`);
     console.log(`  Bridge Secret: ${secretHex}`);
+    // Drop a sealed row from an earlier run first: the store prefers
+    // `lnaddr:<username>` over the plaintext key, so a leftover would shadow
+    // the value seeded here and hide the migration path this suite relies on.
+    try {
+        execSync(`npx wrangler kv key delete --binding MEKHALA_NWC_KV --local --config ../wrangler.toml "lnaddr:${username}"`, { stdio: 'ignore' });
+    } catch (e) {}
     execSync(`npx wrangler kv key put --binding MEKHALA_NWC_KV --local --config ../wrangler.toml "${username}" "${nwcUri}"`, { stdio: 'inherit' });
 };
 

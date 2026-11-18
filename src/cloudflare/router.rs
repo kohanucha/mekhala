@@ -13,8 +13,8 @@ pub async fn run(req: Request, env: Env) -> Result<Response> {
         .get_async("/:secret", handle_request)
         .get_async("/.well-known/lnurlp/:username", |req, ctx| async move {
             let kv = ctx.env.kv("MEKHALA_NWC_KV")?;
-            let kv_store = CloudflareKvStore::new(kv);
             let config = CloudflareConfig::from_env(&ctx.env);
+            let kv_store = CloudflareKvStore::new(kv, config.ln_address_keys);
             let handler = LnAddressHandler::new(&kv_store, config.lnaddress_policy());
             let username = ctx
                 .param("username")

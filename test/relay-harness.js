@@ -19,6 +19,13 @@ export const QUIET_LIMITS = {
   CALLBACK_RATE_LIMIT_PER_MINUTE: 0,
 };
 
+/**
+ * Sealing key every private relay gets unless a scenario overrides it. The
+ * LN address store refuses to serve rows without one, so tests that seed a
+ * username must start with a configured key.
+ */
+export const TEST_LN_ADDRESS_KEY = "5a".repeat(32);
+
 export function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -34,7 +41,7 @@ export function wait(ms) {
  * client-visible response.
  */
 export async function withRelay(
-  { port, vars, secret = "limited-test-secret", persistTo },
+  { port, vars = {}, secret = "limited-test-secret", persistTo },
   fn,
 ) {
   const httpURL = `http://127.0.0.1:${port}/${secret}`;
@@ -45,7 +52,8 @@ export async function withRelay(
   } catch (e) {}
 
   const args = ["wrangler", "dev", "--port", String(port), "--ip", "127.0.0.1"];
-  for (const [key, value] of Object.entries({ ...QUIET_LIMITS, ...vars })) {
+  const defaults = { LN_ADDRESS_KEY: TEST_LN_ADDRESS_KEY, ...QUIET_LIMITS };
+  for (const [key, value] of Object.entries({ ...defaults, ...vars })) {
     args.push("--var", `${key}:${value}`);
   }
   args.push("--var", `RELAY_SECRET:${secret}`);

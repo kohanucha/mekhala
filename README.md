@@ -60,6 +60,8 @@ Configurable via `wrangler.toml` or environment variables:
 | `MIN_AMOUNT_MSAT` | `1000` | Lowest accepted LN address invoice amount; also advertised as `minSendable`. |
 | `MAX_AMOUNT_MSAT` | `100000000` | Highest accepted LN address invoice amount; also advertised as `maxSendable`. |
 | `CALLBACK_RATE_LIMIT_PER_MINUTE` | `10` | LN address callbacks admitted per source per minute; `0` disables. |
+| `LN_ADDRESS_KEY` | *None* | 64 hex characters (32 bytes) sealing the stored wallet connections. Required for LN address use; without it no address is served or stored. |
+| `LN_ADDRESS_KEY_PREVIOUS` | *None* | Previous sealing key, kept readable while rotating `LN_ADDRESS_KEY`. |
 | `MAX_CONTENT_LENGTH` | `98304` | Max event `content` size in bytes. Covers the largest NIP-44 payload (87,472 base64 chars) plus the JSON envelope. |
 
 ---

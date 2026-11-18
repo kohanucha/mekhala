@@ -19,6 +19,7 @@ pub struct CloudflareConfig {
     pub min_amount_msat: u64,
     pub max_amount_msat: u64,
     pub callback_rate_limit_per_minute: u32,
+    pub ln_address_keys: crate::lnaddress::LnAddressKeys,
 }
 
 impl CloudflareConfig {
@@ -107,6 +108,14 @@ impl CloudflareConfig {
                     .ok()
                     .map(|v| v.to_string()),
                 10,
+            ),
+            ln_address_keys: crate::lnaddress::LnAddressKeys::from_hex(
+                env.var(crate::lnaddress::record::KEY_ENV)
+                    .ok()
+                    .map(|v| v.to_string()),
+                env.var(crate::lnaddress::record::PREVIOUS_KEY_ENV)
+                    .ok()
+                    .map(|v| v.to_string()),
             ),
         }
     }
