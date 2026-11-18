@@ -124,7 +124,29 @@ export async function testLnAddressStorage() {
     );
     console.log("✅ A plaintext row is re-sealed on first read and removed.");
 
-    // 2. A record sealed under the old key keeps working during rotation.
+    // 2. A plaintext row left behind by a failed delete is cleared the next
+    // time the sealed record is read, and stops being served.
+    seedPlaintext(persistTo, migratedUser, nwcUri(13, 8797, secret));
+    await withRelay({ port: 8797, secret, persistTo }, async () => {
+      const resp = await wellKnown(8797, migratedUser);
+      check(
+        resp.body.tag === "payRequest",
+        `a leftover plaintext row must not break the sealed record, got ${JSON.stringify(resp.body)}`,
+      );
+    });
+
+    keys = listKeys(persistTo);
+    check(
+      !keys.includes(migratedUser),
+      "the leftover plaintext row should be deleted when the sealed record is read",
+    );
+    check(
+      keys.includes(`lnaddr:${migratedUser}`),
+      "the sealed record should survive the cleanup",
+    );
+    console.log("✅ A plaintext row left behind by a failed delete is cleared.");
+
+    // 3. A record sealed under the old key keeps working during rotation.
     await withRelay(
       {
         port: 8799,
@@ -145,7 +167,7 @@ export async function testLnAddressStorage() {
     );
     console.log("✅ A record written under the previous key still opens.");
 
-    // 3. With no usable key, neither layout is served, and nothing is deleted.
+    // 4. With no usable key, neither layout is served, and nothing is deleted.
     await withRelay(
       { port: 8798, secret, persistTo, vars: { LN_ADDRESS_KEY: "not-a-key" } },
       async ({ log }) => {

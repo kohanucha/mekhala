@@ -48,7 +48,10 @@ export async function withRelay(
   const wsURL = `ws://127.0.0.1:${port}/${secret}`;
 
   try {
-    execSync(`lsof -ti :${port} | xargs kill -9 2>/dev/null || true`);
+    // Listeners only: a plain `lsof -ti :port` also matches this process's own
+    // keep-alive socket from an earlier scenario on the same port, and killing
+    // that kills the test.
+    execSync(`lsof -ti :${port} -sTCP:LISTEN | xargs kill -9 2>/dev/null || true`);
   } catch (e) {}
 
   const args = ["wrangler", "dev", "--port", String(port), "--ip", "127.0.0.1"];
