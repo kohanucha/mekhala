@@ -157,7 +157,7 @@ impl DurableObject for CloudflareTransport {
         // kill the isolate. Degrade instead — the WebSocket relay core does not
         // need KV; only LN address routes use it, and they return 500.
         let kv = match env.kv("MEKHALA_NWC_KV") {
-            Ok(kv) => Some(CloudflareKvStore::new(kv)),
+            Ok(kv) => Some(CloudflareKvStore::new(kv, config.ln_address_keys)),
             Err(e) => {
                 log_error!("MEKHALA_NWC_KV binding missing ({e}): LN address callback routes will return 500");
                 None

@@ -15,6 +15,7 @@ import { runSdkConformance } from "./conformance.test.js";
 import { testRestartPersistence } from "./restart-persistence.test.js";
 import { testInfoCacheCap, testInfoCacheExpiry } from "./info-cache.test.js";
 import { testLnAddressAmountBounds, testLnAddressCallbackRateLimit } from "./lnaddress-limits.test.js";
+import { testLnAddressStorage } from "./lnaddress-storage.test.js";
 
 async function runAll() {
   try {
@@ -75,6 +76,7 @@ async function runAll() {
       await testInfoCacheExpiry();
       await testLnAddressAmountBounds();
       await testLnAddressCallbackRateLimit();
+      await testLnAddressStorage();
     } else {
       console.log("Skipping Max Connections test (remote — spawns local wrangler)...");
       console.log("Skipping connection limit tests (remote — spawn local wrangler)...");

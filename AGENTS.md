@@ -53,6 +53,11 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
   invoice amount, advertised and enforced
 - `CALLBACK_RATE_LIMIT_PER_MINUTE` - optional, default: 10, `0` disables (see
   "LN address callbacks" below)
+- `LN_ADDRESS_KEY` - required to use Lightning Addresses: 64 hex characters
+  (32 bytes). Seals stored wallet connections; without a usable value no
+  Lightning Address is served or stored (see "LN address storage" below)
+- `LN_ADDRESS_KEY_PREVIOUS` - optional: the previous `LN_ADDRESS_KEY` during a
+  rotation, kept readable until every record has been re-sealed
 - `MAX_CONTENT_LENGTH` - default: 98304 (96 KB, covers the 87,472-character NIP-44 ceiling)
 
 ## Wrangler Config
@@ -180,6 +185,40 @@ most 128 keys because `delete_batch` issues one storage call per key, and the
 alarm re-arms itself while any counter remains, so the family drains after
 traffic stops even with no sockets. Setting `CONNECTION_SWEEP_SECONDS=0` turns
 sweeping off entirely, and then `rate:` keys linger until read again.
+
+## LN address storage
+
+A stored NWC URI can spend from the user's wallet, so it is never kept in
+plaintext. `CloudflareKvStore` (`src/cloudflare/kv.rs`) stores each registration
+under `lnaddr:<username>` as `v1:<NIP-44 payload>`, sealed with a key derived
+from `LN_ADDRESS_KEY` by HKDF-SHA256 with info `lnaddr:v1`
+(`src/lnaddress/record.rs`). The sealed JSON carries the version, the username,
+the URI, and the verified methods once a registration has checked them.
+
+The username is sealed inside the payload and compared after opening, so a row
+copied to another username's key decrypts but is refused — moving KV rows
+around cannot attach one user's wallet to another address. `Debug` for the
+record and for the key set prints no URI or key material, because both end up
+in log lines on the error paths.
+
+Behavior that matters operationally:
+
+- **Missing or malformed key fails closed.** Sealed rows cannot be opened, and
+  plaintext rows from earlier versions are refused rather than served, so a
+  forgotten secret cannot silently downgrade storage. No row is deleted in that
+  state; fix the secret and the records work again.
+- **Plaintext rows migrate lazily.** Earlier versions stored the URI under the
+  bare username. The first read seals the row under `lnaddr:<username>` and
+  then deletes the plaintext key (sealed write first, so an interruption cannot
+  lose the URI). There is no separate migration step or version bump.
+- **Rotation is two-step.** Set `LN_ADDRESS_KEY_PREVIOUS` to the old key and
+  `LN_ADDRESS_KEY` to the new one: reads try the current key first, then the
+  previous one. Only rows written again are sealed under the new key, so keep
+  `LN_ADDRESS_KEY_PREVIOUS` set until every record has been rewritten.
+- **Local development needs the key too.** `wrangler dev` without `LN_ADDRESS_KEY`
+  (in `.dev.vars` or as `--var LN_ADDRESS_KEY:<64 hex chars>`) answers every
+  Lightning Address lookup with `User not found`; the integration suite passes
+  one for exactly this reason.
 
 ## Common Gotchas
 

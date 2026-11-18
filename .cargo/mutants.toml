@@ -26,6 +26,10 @@ exclude_re = [
   # Log-only: `log_warn!` is a no-op in native test builds, so dropping the
   # one-shot warning cannot change anything a unit test can observe.
   'replace warn_invalid_range_once with',
+  # Log-only for the same reason: which one-shot warning a malformed key picks
+  # (current vs previous) is only visible in the log line.
+  'replace log_malformed_key_once with',
+  'replace == with != in log_malformed_key_once',
   # Equivalent: the body is already `Vec::new()`.
   'on_connect -> Vec<EngineResponse> with vec!\[',
   'on_disconnect -> Vec<EngineResponse> with vec!\[',

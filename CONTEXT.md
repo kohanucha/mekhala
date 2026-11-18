@@ -34,7 +34,8 @@ Mekhala provides an LN Address bridge, allowing users to pay to an LN Address (e
 - **NwcRpcMachine**: A pure state machine that drives the NWC RPC request-response cycle (subscribe → wait for response → success/failure). It is used internally by `CloudflareTransport::execute_nwc_rpc`. The `NwcTransport` trait is the public seam for RPC, with `CloudflareTransport` as the production adapter and `MockTransport` as the test double.
 - **RpcReceiveError**: The error type for the `receive_response` seam — `Timeout` or `ChannelClosed`, both representable without Cloudflare-specific types.
 - **Clock seam**: Both `NostrEngine` and `NwcClient` accept `fn() -> u64` as a clock parameter, defaulting to `crate::util::now`. No domain module calls `now()` directly — all timestamps flow through the injected seam.
-- **UserStore**: A `?Send` trait for looking up NWC connection URIs by username. `CloudflareKvStore` implements it using Workers KV. The seam enables unit-testing the LN Address handler without a worker runtime.
+- **UserStore**: A `?Send` trait for looking up NWC connection URIs by username. `CloudflareKvStore` implements it over Workers KV, opening sealed records and migrating plaintext rows from earlier versions on first read. The seam enables unit-testing the LN Address handler without a worker runtime.
+- **LnAddressRecord** (`src/lnaddress/record.rs`): The stored registration — version, username, NWC URI, and optionally the verified methods — sealed as a NIP-44 v2 payload under an HKDF-SHA256 key derived from `LN_ADDRESS_KEY` (info `lnaddr:v1`). The username is checked after opening, so a record moved to another username's key is refused. A missing or malformed key fails closed: no record is served, and none is written.
 - **LnAddressHandler<S>**: A struct generic over `UserStore` that orchestrates LNURL-pay requests and callbacks. It resolves usernames to NWC URIs via the `UserStore` seam and delegates invoice creation to `LnAddressGateway` and `NwcSession` via the `NwcTransport` seam. The callback runs its gates in a fixed order — amount present, amount in range, per-source rate limit, store lookup, invoice — so a refusal costs neither a storage write nor a wallet round trip.
 - **SendableLimits** (`src/lnaddress/policy.rs`): The inclusive invoice amount range, in millisatoshis. One value feeds both the `.well-known` advertisement and the callback check, so the range a client is shown is the range that is enforced. A zero or inverted range falls back to the defaults and warns once; the check is never disabled.
 - **WindowCounter** (`src/lnaddress/rate_limit.rs`): A fixed 60-second admission window per source, persisted through the `CounterStore` seam (`CloudflareTransport` in production) under `rate:<ip-tag>`. Counters are only written when a request is admitted, stale ones (two windows old) are removed by the alarm sweep at most 128 per pass, and a limit of `0` admits everything without touching storage.
@@ -95,6 +96,12 @@ The NWC RPC orchestration loop lives directly in `CloudflareTransport::execute_n
 **Module:** `LnAddressGateway` (`src/lnaddress/gateway.rs`)
 - **Role:** Pure domain logic for LNURL-pay metadata generation, callback URL construction, and description hashing. No infrastructure dependencies.
 - **Called By:** `LnAddressHandler`.
+
+### 4c. LN Address Storage
+**Module:** `CloudflareKvStore` (`src/cloudflare/kv.rs`) and `LnAddressRecord` (`src/lnaddress/record.rs`)
+- **Role:** Keeps each registration under `lnaddr:<username>` as `v1:<NIP-44 payload>`, sealed with a key derived from `LN_ADDRESS_KEY` (previous key accepted during rotation). Reads move plaintext rows left by earlier versions to the sealed layout before deleting them; a missing or malformed key serves and writes nothing.
+- **Seam:** the sealing format and key derivation are pure functions in `record.rs`, unit-tested without a worker runtime; `kv.rs` is only the Workers KV adapter.
+- **Called By:** `LnAddressHandler` through `UserStore`; `CloudflareConfig::ln_address_keys` supplies the keys.
 
 ### The Data Flow
 1. A physical WebSocket wakes up from **WebSocket Hibernation** and sends text to `CloudflareTransport`.
