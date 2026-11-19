@@ -59,3 +59,30 @@ fn test_invalid_unicode() {
 fn test_invalid_unicode_emoji() {
     assert!(!is_valid_username("alice😀"));
 }
+
+#[test]
+fn test_valid_at_the_length_cap() {
+    let name = "a".repeat(MAX_USERNAME_LEN);
+    assert!(is_valid_username(&name));
+}
+
+#[test]
+fn test_invalid_over_the_length_cap() {
+    let name = "a".repeat(MAX_USERNAME_LEN + 1);
+    assert!(!is_valid_username(&name));
+}
+
+#[test]
+fn test_invalid_explicit_dot_segments() {
+    assert!(!is_valid_username("."));
+    assert!(!is_valid_username(".."));
+}
+
+#[test]
+fn test_valid_dot_segment_lookalikes() {
+    // Only the two path segments an HTTP client rewrites are refused; other
+    // dot-led names are ordinary usernames.
+    assert!(is_valid_username("..."));
+    assert!(is_valid_username(".alice"));
+    assert!(is_valid_username("alice."));
+}

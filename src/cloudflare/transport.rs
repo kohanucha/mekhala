@@ -23,6 +23,7 @@ use js_sys::{Object, Reflect};
 use serde::Serialize;
 use serde_wasm_bindgen::Serializer;
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use wasm_bindgen::JsValue;
 use worker::{
@@ -44,6 +45,9 @@ const MAX_EVICTION_CHECKS: usize = 3;
 /// call per key, so the pass is bounded the same way the legacy info-alias
 /// sweep is.
 const RATE_SWEEP_LIMIT: usize = 128;
+
+/// Sentinel for "this isolate has not counted the rate counters yet".
+const RATE_KEYS_UNKNOWN: usize = usize::MAX;
 
 pub struct CloudflareStorage {
     storage: worker::Storage,
@@ -132,6 +136,10 @@ pub struct CloudflareTransport {
     connections: RefCell<ConnectionRegistry>,
     id_counter: Mutex<IdCounterState>,
     kv: Option<CloudflareKvStore>,
+    /// Live `rate:` counter count, or [`RATE_KEYS_UNKNOWN`] until a listing
+    /// seeds it. Keeps the callback path from listing storage on every request
+    /// while still refusing to create counters past the configured budget.
+    rate_keys: AtomicUsize,
 }
 
 impl DurableObject for CloudflareTransport {
@@ -174,6 +182,7 @@ impl DurableObject for CloudflareTransport {
                 id_limit: 0,
             }),
             kv,
+            rate_keys: AtomicUsize::new(RATE_KEYS_UNKNOWN),
         }
     }
 
@@ -470,6 +479,19 @@ impl CounterStore for CloudflareTransport {
             log_warn!("rate limit: failed to persist '{}': {}", key, e);
         }
     }
+
+    /// Gives a source its own counter while the relay holds fewer than
+    /// `RATE_LIMIT_MAX_KEYS` of them, and the shared overflow counter after
+    /// that. An attacker rotating through addresses can therefore create at
+    /// most that many keys, and the traffic it sends afterwards is charged to
+    /// one key it does not control the shape of.
+    async fn key_for_source(&self, ip_tag: &str) -> String {
+        let key = rate_limit::key_for(ip_tag);
+        if self.reserve_rate_key(&key).await {
+            return key;
+        }
+        rate_limit::key_for(rate_limit::OVERFLOW_TAG)
+    }
 }
 
 impl CloudflareTransport {
@@ -499,6 +521,56 @@ impl CloudflareTransport {
         }
     }
 
+    /// Whether a counter may be created for `key`.
+    ///
+    /// A counter that already exists is always reused — the budget limits how
+    /// many sources may own a key, not how much traffic an owner may send. The
+    /// count is kept in memory and seeded from one listing per isolate; when
+    /// the listing is a full page the count saturates at the budget, which is
+    /// all the decision needs.
+    async fn reserve_rate_key(&self, key: &str) -> bool {
+        if CounterStore::load(self, key).await.is_some() {
+            return true;
+        }
+        let max = self.config.rate_limit_max_keys;
+        if max == 0 {
+            return true;
+        }
+
+        let mut current = self.rate_keys.load(Ordering::Relaxed);
+        if current == RATE_KEYS_UNKNOWN {
+            current = self.seed_rate_key_count(max).await;
+        }
+        loop {
+            if current >= max {
+                return false;
+            }
+            match self.rate_keys.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    /// Counts the live rate counters once per isolate.
+    async fn seed_rate_key_count(&self, max: usize) -> usize {
+        let storage = CloudflareStorage {
+            storage: self.state.storage(),
+        };
+        let count = storage
+            .list_prefix(rate_limit::RATE_KEY_PREFIX)
+            .await
+            .len()
+            .min(max);
+        self.rate_keys.store(count, Ordering::Relaxed);
+        count
+    }
+
     /// Removes stale `rate:` counters, at most [`RATE_SWEEP_LIMIT`] keys per
     /// pass so one alarm does not turn into an unbounded delete loop.
     ///
@@ -524,10 +596,19 @@ impl CloudflareTransport {
             }
         }
 
+        let live = total.saturating_sub(stale.len());
         if !stale.is_empty() {
             let removed = stale.len();
             storage.delete_batch(stale).await;
             log_info!("rate limit: {} stale counters swept", removed);
+        }
+
+        // Correct the key-budget hint the callback path counts against. The
+        // listing is one page, which is enough: a full page means the budget
+        // is spent, and the hint saturates there.
+        let max = self.config.rate_limit_max_keys;
+        if max != 0 {
+            self.rate_keys.store(live.min(max), Ordering::Relaxed);
         }
 
         kept > 0 || total > RATE_SWEEP_LIMIT

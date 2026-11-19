@@ -30,6 +30,61 @@ export function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** How long a relay may take to answer its first request. */
+const START_TIMEOUT_MS = 60_000;
+
+/** How long a shut-down relay may keep its port before it is killed. */
+const STOP_TIMEOUT_MS = 5_000;
+
+/**
+ * PIDs of the processes holding anything on `port`, excluding this one.
+ *
+ * `lsof` also reports the test process's own keep-alive connection to an
+ * earlier relay on the same port, and killing that kills the test.
+ */
+function portHolders(port) {
+  let output = "";
+  try {
+    output = execSync(`lsof -ti :${port}`, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch (e) {
+    // Either nothing holds the port or the machine has no `lsof`; nothing to
+    // kill in both cases.
+    return [];
+  }
+  return [...new Set(output.trim().split(/\s+/).filter(Boolean))]
+    .map(Number)
+    .filter((pid) => pid !== process.pid);
+}
+
+/**
+ * Kills whatever still holds `port` and resolves true once it is clear.
+ *
+ * A relay left behind by an interrupted run keeps the next `wrangler dev` from
+ * binding, and wrangler waits on a bound port instead of reporting the
+ * conflict, so the port is cleared before every start rather than trusted.
+ */
+async function freePort(port, timeoutMs = STOP_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const holders = portHolders(port);
+    if (holders.length === 0) {
+      return true;
+    }
+    for (const pid of holders) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch (e) {
+        // Already gone.
+      }
+    }
+    await wait(100);
+  }
+  return portHolders(port).length === 0;
+}
+
 /**
  * Starts a private `wrangler dev` on `port` with the given vars, runs `fn`
  * against it, and always stops it again.
@@ -47,9 +102,12 @@ export async function withRelay(
   const httpURL = `http://127.0.0.1:${port}/${secret}`;
   const wsURL = `ws://127.0.0.1:${port}/${secret}`;
 
-  try {
-    execSync(`lsof -ti :${port} | xargs kill -9 2>/dev/null || true`);
-  } catch (e) {}
+  // Clear the port first: a relay left behind by an interrupted run keeps the
+  // new server from binding, and a start that cannot bind hangs rather than
+  // fails, which turns into a suite that never finishes.
+  if (!(await freePort(port))) {
+    throw new Error(`port ${port} is still held by another process`);
+  }
 
   const args = ["wrangler", "dev", "--port", String(port), "--ip", "127.0.0.1"];
   const defaults = { LN_ADDRESS_KEY: TEST_LN_ADDRESS_KEY, ...QUIET_LIMITS };
@@ -64,6 +122,10 @@ export async function withRelay(
   console.log(`Starting relay on port ${port} (${JSON.stringify(vars)})...`);
   const server = spawn("npx", args, {
     cwd: projectRoot,
+    // Its own process group: `wrangler dev` runs as npx → node → workerd, and
+    // signalling only the process that was spawned leaves the others behind
+    // with the port still bound.
+    detached: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -71,28 +133,55 @@ export async function withRelay(
   server.stdout.on("data", (chunk) => (output += chunk.toString()));
   server.stderr.on("data", (chunk) => (output += chunk.toString()));
 
-  const stop = () => {
+  /** Signals the whole tree, falling back to the process if the group is gone. */
+  const signalTree = (sig) => {
     try {
-      server.kill("SIGTERM");
-    } catch (e) {}
-    setTimeout(() => {
+      process.kill(-server.pid, sig);
+    } catch (e) {
       try {
-        server.kill("SIGKILL");
-      } catch (e) {}
-    }, 2000);
+        server.kill(sig);
+      } catch (e2) {
+        // Already gone.
+      }
+    }
+  };
+
+  const stop = async () => {
+    if (server.exitCode === null && server.signalCode === null) {
+      const exited = new Promise((resolve) => server.once("exit", resolve));
+      signalTree("SIGTERM");
+      const graceful = await Promise.race([exited.then(() => true), wait(2000).then(() => false)]);
+      if (!graceful) {
+        signalTree("SIGKILL");
+        await Promise.race([exited, wait(2000)]);
+      }
+    }
+    // Scenarios reuse ports, and the next start would otherwise bind against a
+    // server that is still shutting down.
+    await freePort(port);
   };
 
   try {
+    const deadline = Date.now() + START_TIMEOUT_MS;
     let ready = false;
-    for (let i = 0; i < 30; i++) {
-      await wait(2000);
+    while (Date.now() < deadline) {
+      if (server.exitCode !== null) {
+        throw new Error(
+          `relay on port ${port} exited early (${server.exitCode}):\n${output.slice(-2000)}`,
+        );
+      }
       try {
-        const resp = await fetch(httpURL);
+        // Bounded: a server that accepts the connection but never answers must
+        // not stall the wait for good.
+        const resp = await fetch(httpURL, { signal: AbortSignal.timeout(2000) });
         if (resp.status === 404 || resp.status === 200) {
           ready = true;
           break;
         }
-      } catch (e) {}
+      } catch (e) {
+        // Not listening yet.
+      }
+      await wait(500);
     }
     if (!ready) {
       throw new Error(`relay on port ${port} did not start:\n${output.slice(-2000)}`);
@@ -101,7 +190,7 @@ export async function withRelay(
 
     await fn({ httpURL, wsURL, log: () => output });
   } finally {
-    stop();
+    await stop();
   }
 }
 

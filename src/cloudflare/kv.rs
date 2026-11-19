@@ -13,6 +13,16 @@ use crate::common::UserStore;
 use crate::lnaddress::record::{self, LnAddressKeys, LnAddressRecord};
 use crate::log_error;
 use crate::log_warn;
+use std::sync::{Mutex, OnceLock};
+
+/// Usernames whose plaintext row this isolate has already looked for.
+///
+/// A read that finds a sealed record still checks once for a plaintext row,
+/// because a migration whose delete failed leaves both behind and the next read
+/// would otherwise never retry. The set is bounded: past the limit the check
+/// simply runs on every request again, which costs a read but keeps memory flat
+/// and still cleans the row up.
+const LEGACY_CHECK_LIMIT: usize = 256;
 
 pub struct CloudflareKvStore {
     kv: worker::KvStore,
@@ -34,7 +44,14 @@ impl CloudflareKvStore {
         let stored = self.kv.get(&key).text().await.ok().flatten();
         if let Some(value) = stored {
             return match record::open_sealed(&value, username, &self.keys) {
-                Ok(record) => Some(record),
+                Ok(record) => {
+                    // The sealed row wins over any plaintext row, but a
+                    // leftover must not stay at rest: a migration whose delete
+                    // failed leaves both behind, and this is the only place
+                    // that can notice.
+                    self.clear_legacy_row(username).await;
+                    Some(record)
+                }
                 Err(e) => {
                     log_warn!("LN address record for '{}' is unreadable: {}", username, e);
                     None
@@ -80,14 +97,66 @@ impl CloudflareKvStore {
             );
             return Some(record);
         }
-        if let Err(e) = self.kv.delete(username).await {
-            log_warn!(
-                "plaintext record for '{}' left behind after migration: {}",
-                username,
-                e
-            );
-        }
+        self.delete_legacy_row(username).await;
         Some(record)
+    }
+
+    /// Deletes a plaintext row for `username` if one is still present, and
+    /// remembers that the check has been made in this isolate.
+    async fn clear_legacy_row(&self, username: &str) {
+        if !legacy_check_pending(username) {
+            return;
+        }
+        match self.kv.get(username).text().await {
+            Ok(None) => mark_legacy_checked(username),
+            Ok(Some(_)) => self.delete_legacy_row(username).await,
+            Err(e) => {
+                log_warn!(
+                    "could not check the legacy record for '{}': {}",
+                    username,
+                    e
+                );
+            }
+        }
+    }
+
+    /// Deletes `username`'s plaintext row, remembering the check once it
+    /// succeeds so a failure is retried on the next read.
+    async fn delete_legacy_row(&self, username: &str) {
+        match self.kv.delete(username).await {
+            Ok(()) => mark_legacy_checked(username),
+            Err(e) => {
+                log_warn!(
+                    "plaintext record for '{}' left behind after migration: {}",
+                    username,
+                    e
+                );
+            }
+        }
+    }
+}
+
+fn legacy_checked() -> &'static Mutex<Vec<String>> {
+    static CHECKED: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+    CHECKED.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Whether the plaintext row for `username` still needs a look in this isolate.
+fn legacy_check_pending(username: &str) -> bool {
+    match legacy_checked().lock() {
+        Ok(checked) => !checked.iter().any(|name| name == username),
+        // A poisoned lock costs one repeated check; never skip the cleanup
+        // because of it.
+        Err(_) => true,
+    }
+}
+
+/// Remembers that `username` has no plaintext row left to clear.
+fn mark_legacy_checked(username: &str) {
+    if let Ok(mut checked) = legacy_checked().lock() {
+        if checked.len() < LEGACY_CHECK_LIMIT {
+            checked.push(username.to_owned());
+        }
     }
 }
 

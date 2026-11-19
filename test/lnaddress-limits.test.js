@@ -125,13 +125,13 @@ export async function testLnAddressAmountBounds() {
       console.log("✅ Just above the maximum is refused with the advertised bound.");
 
       // Both ends of the advertised range are accepted, which is what LUD-06
-      // promises. No wallet is connected here, so the in-range check is proven
+      // promises. No wallet is reachable here, so the in-range check is proven
       // by reaching the wallet gate rather than by minting an invoice.
       for (const amount of [5000, 50000]) {
         const inRange = await requestCallback(port, username, amount);
         check(
           inRange.body.status === "ERROR" &&
-            inRange.body.reason === "Wallet not connected",
+            inRange.body.reason === "Wallet unavailable",
           `amount ${amount} must pass the range check and reach the wallet, got ${JSON.stringify(inRange.body)}`,
         );
       }
@@ -154,12 +154,12 @@ export async function testLnAddressCallbackRateLimit() {
     await withRelay({ port, vars, secret, persistTo }, async () => {
       const source = { "CF-Connecting-IP": "203.0.113.7" };
 
-      // Admitted callbacks proceed to the wallet, which is offline, so a
-      // "Wallet not connected" answer is the observable proof of admission.
+      // Admitted callbacks proceed to the wallet, which is unreachable, so the
+      // generic wallet answer is the observable proof of admission.
       for (let i = 1; i <= 2; i++) {
         const resp = await requestCallback(port, username, 21000, source);
         check(
-          resp.body.status === "ERROR" && resp.body.reason === "Wallet not connected",
+          resp.body.status === "ERROR" && resp.body.reason === "Wallet unavailable",
           `callback ${i} should be admitted, got ${JSON.stringify(resp.body)}`,
         );
       }
@@ -181,7 +181,7 @@ export async function testLnAddressCallbackRateLimit() {
         "CF-Connecting-IP": "203.0.113.8",
       });
       check(
-        other.body.status === "ERROR" && other.body.reason === "Wallet not connected",
+        other.body.status === "ERROR" && other.body.reason === "Wallet unavailable",
         `a different source must not share the counter, got ${JSON.stringify(other.body)}`,
       );
       console.log("✅ A different source has its own counter.");
@@ -191,10 +191,76 @@ export async function testLnAddressCallbackRateLimit() {
       // follow).
       const untagged = await requestCallback(port, username, 21000);
       check(
-        untagged.body.status === "ERROR" && untagged.body.reason === "Wallet not connected",
+        untagged.body.status === "ERROR" && untagged.body.reason === "Wallet unavailable",
         `a callback with no address tag must be admitted, got ${JSON.stringify(untagged.body)}`,
       );
       console.log("✅ A callback with no address tag is admitted.");
+    });
+  });
+}
+
+export async function testLnAddressCounterBudget() {
+  console.log("\n--- Testing the LN address counter budget ---");
+
+  await withStateDir("lnaddr-budget", async (persistTo) => {
+    const port = 8800;
+    const secret = "budget-test-secret";
+    const username = "budget_user";
+    // Two sources may own a counter; every source that arrives afterwards is
+    // charged to one shared counter.
+    const vars = {
+      CALLBACK_RATE_LIMIT_PER_MINUTE: 2,
+      RATE_LIMIT_MAX_KEYS: 2,
+    };
+
+    seedUser(persistTo, port, secret, username, 9);
+
+    await withRelay({ port, vars, secret, persistTo }, async () => {
+      const admit = async (address) => {
+        const resp = await requestCallback(port, username, 21000, {
+          "CF-Connecting-IP": address,
+        });
+        return resp.body;
+      };
+
+      for (let i = 1; i <= 2; i++) {
+        const body = await admit("198.51.100.1");
+        check(
+          body.reason === "Wallet unavailable",
+          `source 1 request ${i} should own a counter and be admitted, got ${JSON.stringify(body)}`,
+        );
+      }
+      const secondSource = await admit("198.51.100.2");
+      check(
+        secondSource.reason === "Wallet unavailable",
+        `source 2 should own the second counter, got ${JSON.stringify(secondSource)}`,
+      );
+      console.log("✅ Sources within the budget get their own counters.");
+
+      // The third and fourth sources must share one counter: two admissions
+      // between them, then a refusal.
+      for (let i = 1; i <= 2; i++) {
+        const body = await admit("198.51.100.3");
+        check(
+          body.reason === "Wallet unavailable",
+          `the shared counter should still admit request ${i}, got ${JSON.stringify(body)}`,
+        );
+      }
+      const overflow = await admit("198.51.100.4");
+      check(
+        /^Too many requests, retry in \d+s$/.test(overflow.reason ?? ""),
+        `a source past the budget must share the overflow counter, got ${JSON.stringify(overflow)}`,
+      );
+      console.log(`✅ Past the budget, new sources share one counter: "${overflow.reason}".`);
+
+      // The budget does not take an owner's counter away: source 2 still has
+      // its own second admission available.
+      const secondAgain = await admit("198.51.100.2");
+      check(
+        secondAgain.reason === "Wallet unavailable",
+        `an existing counter must keep working at the budget, got ${JSON.stringify(secondAgain)}`,
+      );
+      console.log("✅ An existing counter keeps its own budget.");
     });
   });
 }
