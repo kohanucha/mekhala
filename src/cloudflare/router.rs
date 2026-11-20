@@ -1,4 +1,5 @@
 use crate::auth::AuthError;
+use crate::cloudflare::admin;
 use crate::cloudflare::auth;
 use crate::cloudflare::config::CloudflareConfig;
 use crate::cloudflare::handler::LnAddressHandler;
@@ -9,6 +10,33 @@ pub async fn run(req: Request, env: Env) -> Result<Response> {
     let router = Router::new();
 
     router
+        // The admin routes are registered first so the literal paths always
+        // win over the `/:secret` relay-password route.
+        .get_async("/admin", |_req, ctx| async move {
+            admin::handle_page(&ctx.env).await
+        })
+        .get_async("/admin/", |_req, ctx| async move {
+            admin::handle_page(&ctx.env).await
+        })
+        .get_async("/admin/api/registrations", |req, ctx| async move {
+            admin::handle_list(&req, &ctx.env).await
+        })
+        .post_async("/admin/api/registrations", |req, ctx| async move {
+            admin::handle_create(req, &ctx.env).await
+        })
+        .delete_async(
+            "/admin/api/registrations/:username",
+            |req, ctx| async move {
+                let username = ctx
+                    .param("username")
+                    .ok_or_else(|| Error::from("Missing username"))?
+                    .to_owned();
+                admin::handle_delete(&req, &ctx.env, &username).await
+            },
+        )
+        .post_async("/admin/api/reseal", |req, ctx| async move {
+            admin::handle_reseal(&req, &ctx.env).await
+        })
         .get_async("/", handle_request)
         .get_async("/:secret", handle_request)
         .get_async("/.well-known/lnurlp/:username", |req, ctx| async move {

@@ -20,6 +20,7 @@ import {
   testLnAddressCounterBudget,
 } from "./lnaddress-limits.test.js";
 import { testLnAddressStorage } from "./lnaddress-storage.test.js";
+import { testAdminChannel } from "./admin.test.js";
 
 async function runAll() {
   try {
@@ -82,12 +83,14 @@ async function runAll() {
       await testLnAddressCallbackRateLimit();
       await testLnAddressCounterBudget();
       await testLnAddressStorage();
+      await testAdminChannel();
     } else {
       console.log("Skipping Max Connections test (remote — spawns local wrangler)...");
       console.log("Skipping connection limit tests (remote — spawn local wrangler)...");
       console.log("Skipping Restart Persistence test (remote — spawns local wrangler)...");
       console.log("Skipping Info Cache tests (remote — spawn local wrangler)...");
       console.log("Skipping LN address policy tests (remote — spawn local wrangler)...");
+      console.log("Skipping admin channel tests (remote — spawn local wrangler)...");
     }
     console.log("\nAll tests passed successfully! 🚀");
     process.exit(0);

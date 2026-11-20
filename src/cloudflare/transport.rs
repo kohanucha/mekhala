@@ -6,11 +6,14 @@ use crate::cloudflare::create_cors_response;
 use crate::cloudflare::identity::{self, ClientIdentity};
 use crate::cloudflare::kv::CloudflareKvStore;
 use crate::lnaddress::rate_limit::{self, CounterStore, WindowCounter};
+use crate::lnaddress::record::LnAddressRecord;
+use crate::lnaddress::registration;
 use crate::log_debug;
 use crate::log_error;
 use crate::log_info;
 use crate::log_warn;
 use crate::nostr::engine::{EngineResponse, NostrEngine};
+use crate::nostr::nip_47::NwcMethod;
 use crate::nostr::rpc_machine::{NwcRpcMachine, RpcState};
 use crate::nostr::wallet_registry::Storage;
 use crate::nostr::Limits;
@@ -27,8 +30,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use wasm_bindgen::JsValue;
 use worker::{
-    durable_object, Delay, DurableObject, Env, Error, ListOptions, Request, Response, Result,
-    ScheduledTime, State, WebSocket, WebSocketIncomingMessage, WebSocketPair,
+    durable_object, Delay, DurableObject, Env, Error, ListOptions, Method, Request, Response,
+    Result, ScheduledTime, State, WebSocket, WebSocketIncomingMessage, WebSocketPair,
 };
 
 /// How often a socket's attachment is refreshed with its last-seen time.
@@ -48,6 +51,10 @@ const RATE_SWEEP_LIMIT: usize = 128;
 
 /// Sentinel for "this isolate has not counted the rate counters yet".
 const RATE_KEYS_UNKNOWN: usize = usize::MAX;
+
+/// Path the Worker forwards an admin registration to. The Durable Object is
+/// the only place that can reach a wallet, so the scope check runs there.
+const ADMIN_REGISTER_PATH: &str = "/admin/register";
 
 pub struct CloudflareStorage {
     storage: worker::Storage,
@@ -114,6 +121,18 @@ impl Storage for CloudflareStorage {
         }
         entries
     }
+}
+
+/// Body of an admin registration, as the Worker forwards it.
+#[derive(serde::Deserialize)]
+struct AdminRegistration {
+    username: String,
+    nwc_uri: String,
+}
+
+/// Builds a JSON response with an explicit status.
+fn admin_json(status: u16, body: &serde_json::Value) -> Result<Response> {
+    Response::from_json(body).map(|response| response.with_status(status))
 }
 
 struct IdCounterState {
@@ -214,6 +233,13 @@ impl DurableObject for CloudflareTransport {
             // when no socket (and therefore no idle sweep) is holding it.
             self.ensure_rate_sweep_alarm().await;
             return response;
+        }
+
+        if path == ADMIN_REGISTER_PATH {
+            if req.method() != Method::Post {
+                return Response::error("Method Not Allowed", 405);
+            }
+            return self.admin_register(req).await;
         }
 
         let identity = identity::from_headers(&req);
@@ -495,6 +521,117 @@ impl CounterStore for CloudflareTransport {
 }
 
 impl CloudflareTransport {
+    /// Registers one Lightning Address after the wallet confirms its scope.
+    ///
+    /// The wallet is asked for `get_info` through the same NIP-47 machinery
+    /// invoices use, and the stored methods are what the wallet reported. A
+    /// wallet that does not grant `pay_invoice` is refused before anything is
+    /// written: an address whose invoice step is guaranteed to fail is worse
+    /// than no address at all.
+    async fn admin_register(&self, mut req: Request) -> Result<Response> {
+        let Some(kv) = self.kv.as_ref() else {
+            log_error!("admin registration requires the MEKHALA_NWC_KV binding");
+            return admin_json(
+                503,
+                &serde_json::json!({ "error": "storage is unavailable" }),
+            );
+        };
+        if !self.config.ln_address_keys.is_configured() {
+            log_error!("admin registration requires LN_ADDRESS_KEY");
+            return admin_json(
+                503,
+                &serde_json::json!({ "error": "LN address storage is not configured" }),
+            );
+        }
+
+        let body = req.text().await?;
+        if body.len() > registration::MAX_SUBMISSION_LEN {
+            return admin_json(
+                413,
+                &serde_json::json!({ "error": "request body is too large" }),
+            );
+        }
+        let submitted: AdminRegistration = match serde_json::from_str(&body) {
+            Ok(submitted) => submitted,
+            Err(_) => {
+                return admin_json(
+                    400,
+                    &serde_json::json!({ "error": "expected username and nwc_uri" }),
+                )
+            }
+        };
+        let parsed = match registration::parse(&submitted.username, &submitted.nwc_uri) {
+            Ok(parsed) => parsed,
+            Err(e) => return admin_json(400, &serde_json::json!({ "error": e.to_string() })),
+        };
+
+        // Replacing an existing address would silently point someone else's
+        // payments at the submitted wallet. The operator removes it first.
+        if kv.get_record(&parsed.username).await.is_some() {
+            return admin_json(
+                409,
+                &serde_json::json!({ "error": "a registration already exists for this username" }),
+            );
+        }
+
+        let session =
+            match crate::lnaddress::wallet_connector::NwcSession::new(self, &parsed.nwc_uri) {
+                Ok(session) => session,
+                // `parse` already proved the URI usable, so this is either a
+                // crypto failure or a change between the two calls.
+                Err(e) => {
+                    log_warn!(
+                        "admin: could not open a session for '{}': {}",
+                        parsed.username,
+                        e
+                    );
+                    return admin_json(
+                        400,
+                        &serde_json::json!({ "error": "connection string cannot be used" }),
+                    );
+                }
+            };
+
+        let result = match session
+            .call(NwcMethod::GetInfo, serde_json::json!({}))
+            .await
+        {
+            Ok(result) => result,
+            Err(e) => {
+                log_warn!(
+                    "admin: get_info for '{}' did not succeed: {}",
+                    parsed.username,
+                    e
+                );
+                return admin_json(
+                    502,
+                    &serde_json::json!({
+                        "error": "wallet did not answer get_info; connect it to this relay first"
+                    }),
+                );
+            }
+        };
+        let methods = match registration::granted_methods(&result) {
+            Ok(methods) => methods,
+            Err(e) => return admin_json(400, &serde_json::json!({ "error": e.to_string() })),
+        };
+
+        let record = LnAddressRecord::new(&parsed.username, &parsed.nwc_uri, Some(methods));
+        if let Err(e) = kv.put_record(&record).await {
+            log_error!(
+                "admin: could not store the registration for '{}': {}",
+                parsed.username,
+                e
+            );
+            return admin_json(
+                500,
+                &serde_json::json!({ "error": "could not store the registration" }),
+            );
+        }
+
+        admin_json(200, &registration::summary(&record))
+    }
+
     /// Keeps the cached wallet info family bounded and removes keys that no
     /// current code writes. Runs on the same alarm as the idle sweep: both
     /// keep storage bounded by time, and the cache is only read while sockets

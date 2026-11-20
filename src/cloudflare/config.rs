@@ -21,6 +21,9 @@ pub struct CloudflareConfig {
     pub callback_rate_limit_per_minute: u32,
     pub rate_limit_max_keys: usize,
     pub ln_address_keys: crate::lnaddress::LnAddressKeys,
+    pub admin_secret: Option<String>,
+    pub admin_access_aud: Option<String>,
+    pub admin_access_team_domain: Option<String>,
 }
 
 impl CloudflareConfig {
@@ -122,6 +125,26 @@ impl CloudflareConfig {
                     .ok()
                     .map(|v| v.to_string()),
             ),
+            admin_secret: env
+                .var("ADMIN_SECRET")
+                .ok()
+                .map(|v| v.to_string())
+                .filter(|s| !s.is_empty()),
+            admin_access_aud: env
+                .var("ADMIN_ACCESS_AUD")
+                .ok()
+                .map(|v| v.to_string())
+                .filter(|s| !s.is_empty()),
+            admin_access_team_domain: env
+                .var("ADMIN_ACCESS_TEAM_DOMAIN")
+                .ok()
+                .map(|v| v.to_string())
+                .filter(|s| !s.is_empty())
+                // Operators copy the domain from the dashboard; a pasted
+                // scheme or trailing slash would make the issuer and the
+                // key URL disagree with the token.
+                .map(|s| normalize_team_domain(&s))
+                .filter(|s| !s.is_empty()),
         }
     }
 
@@ -149,6 +172,16 @@ impl CloudflareConfig {
     fn parse_opt_u32(value: Option<String>, default: u32) -> u32 {
         value.and_then(|s| s.parse::<u32>().ok()).unwrap_or(default)
     }
+}
+
+/// Strips a pasted scheme and any trailing slash from a team domain.
+fn normalize_team_domain(value: &str) -> String {
+    let trimmed = value.trim();
+    let without_scheme = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))
+        .unwrap_or(trimmed);
+    without_scheme.trim_end_matches('/').to_string()
 }
 
 #[cfg(test)]
