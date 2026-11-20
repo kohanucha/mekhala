@@ -13,6 +13,7 @@
 
 examine_globs = [
   "src/auth.rs",
+  "src/auth/*.rs",
   "src/util/mod.rs",
   "src/nostr/*.rs",
   "src/lnaddress/*.rs",

@@ -83,6 +83,36 @@ fn test_open_with_the_previous_key_survives_rotation() {
 }
 
 #[test]
+fn test_a_record_sealed_with_the_current_key_needs_no_reseal() {
+    let keys = keys_with(0x7b);
+    let sealed = seal(&alice(), &keys).unwrap();
+    let opened = open_sealed_detailing(&sealed, "alice", &keys).unwrap();
+    assert_eq!(opened.record, alice());
+    assert!(!opened.needs_reseal);
+}
+
+#[test]
+fn test_a_record_sealed_with_the_previous_key_asks_for_a_reseal() {
+    let sealed = seal(&alice(), &keys_with(0x7c)).unwrap();
+    let rotating = keys(Some([0x7d; 32]), Some([0x7c; 32]));
+
+    let opened = open_sealed_detailing(&sealed, "alice", &rotating).unwrap();
+    assert_eq!(opened.record, alice());
+    assert!(opened.needs_reseal);
+}
+
+#[test]
+fn test_the_same_key_twice_opens_with_the_current_one() {
+    let sealed = seal(&alice(), &keys_with(0x7e)).unwrap();
+    let same = keys(Some([0x7e; 32]), Some([0x7e; 32]));
+    assert!(
+        !open_sealed_detailing(&sealed, "alice", &same)
+            .unwrap()
+            .needs_reseal
+    );
+}
+
+#[test]
 fn test_open_fails_under_a_key_that_did_not_write_it() {
     let sealed = seal(&alice(), &keys_with(0x79)).unwrap();
     assert!(matches!(

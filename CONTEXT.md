@@ -103,6 +103,12 @@ The NWC RPC orchestration loop lives directly in `CloudflareTransport::execute_n
 - **Seam:** the sealing format and key derivation are pure functions in `record.rs`, unit-tested without a worker runtime; `kv.rs` is only the Workers KV adapter.
 - **Called By:** `LnAddressHandler` through `UserStore`; `CloudflareConfig::ln_address_keys` supplies the keys.
 
+### 4d. Admin Channel
+**Module:** `AdminGuard` (`src/cloudflare/admin.rs`), `CloudflareKvStore` write/list paths (`src/cloudflare/kv.rs`), and the console document (`src/cloudflare/admin_page.rs`)
+- **Role:** Decides who may change registrations and serves the single-page console. Accepts `ADMIN_SECRET` as a bearer token, or a Cloudflare Access application token verified against the team's published keys (`src/auth/access.rs`). `RELAY_SECRET` is deliberately not accepted. With nothing configured the channel answers 404.
+- **Flow:** the Worker validates the submission, then forwards `POST /admin/register` to `CloudflareTransport`, which runs `get_info` through `NwcSession`, requires `pay_invoice`, and writes the sealed record. Listing, deletion, and re-sealing run in the Worker against `CloudflareKvStore`.
+- **Called By:** the `/admin*` routes in `src/cloudflare/router.rs`.
+
 ### The Data Flow
 1. A physical WebSocket wakes up from **WebSocket Hibernation** and sends text to `CloudflareTransport`.
 2. `CloudflareTransport` asks `NostrEngine` to handle the text.

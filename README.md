@@ -63,7 +63,47 @@ Configurable via `wrangler.toml` or environment variables:
 | `RATE_LIMIT_MAX_KEYS` | `1000` | How many sources may own a callback counter. New sources past it share one counter; `0` removes the cap. |
 | `LN_ADDRESS_KEY` | *None* | 64 hex characters (32 bytes) sealing the stored wallet connections. Required for LN address use; without it no address is served or stored. |
 | `LN_ADDRESS_KEY_PREVIOUS` | *None* | Previous sealing key, kept readable while rotating `LN_ADDRESS_KEY`. |
+| `ADMIN_SECRET` | *None* | Bearer secret for the admin console and registration API. Without it, and without Access below, `/admin` answers 404. Never set it to `RELAY_SECRET`. |
+| `ADMIN_ACCESS_AUD` | *None* | Cloudflare Access application audience tag. With `ADMIN_ACCESS_TEAM_DOMAIN`, an Access session can open the admin channel instead of a bearer secret. |
+| `ADMIN_ACCESS_TEAM_DOMAIN` | *None* | Access team domain, e.g. `yourteam.cloudflareaccess.com`, used to fetch the signing keys that Access tokens are verified against. |
 | `MAX_CONTENT_LENGTH` | `98304` | Max event `content` size in bytes. Covers the largest NIP-44 payload (87,472 base64 chars) plus the JSON envelope. |
+
+### Admin channel
+
+Registering a Lightning Address is an operator action, not something a client
+may do. It lives at `/admin`, behind a credential of its own:
+
+- `ADMIN_SECRET`, sent as `Authorization: Bearer <secret>`, or
+- a Cloudflare Access session, when `ADMIN_ACCESS_AUD` and
+  `ADMIN_ACCESS_TEAM_DOMAIN` are set. The token Access forwards is verified
+  against the team's published keys, plus `iss`, `aud`, `type`, `exp` and `nbf`.
+
+`RELAY_SECRET` is never an admin credential: it is handed to every connected
+client, so treating it as one would let any user register an address. With
+neither credential configured the whole channel answers 404, including the
+console, so an unused deployment does not advertise it.
+
+The console lists registrations (username, wallet public key, granted methods —
+never the connection string), adds one, removes one, and re-seals every row.
+
+Register the secret **before** deploying a build that expects it:
+
+```bash
+npx wrangler secret put ADMIN_SECRET
+```
+
+Adding an address asks the wallet for `get_info` and stores only what it
+reports, so the wallet must be connected to this relay and grant `pay_invoice`.
+The stored methods are attached to the record; a wallet without `pay_invoice`
+is refused before anything is written. Adding a username that already exists is
+refused too — remove the old row first, so a typo cannot silently move someone
+else's payments to another wallet.
+
+Rotating `LN_ADDRESS_KEY` is still two-step: set the new key in
+`LN_ADDRESS_KEY` and the old one in `LN_ADDRESS_KEY_PREVIOUS`, then either let
+addresses move as they are used or press **Re-seal all records**, which walks
+the namespace a page at a time. Once nothing is left under the old key, drop
+`LN_ADDRESS_KEY_PREVIOUS`.
 
 ---
 

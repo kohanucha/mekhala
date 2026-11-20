@@ -60,6 +60,12 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
   Lightning Address is served or stored (see "LN address storage" below)
 - `LN_ADDRESS_KEY_PREVIOUS` - optional: the previous `LN_ADDRESS_KEY` during a
   rotation, kept readable until every record has been re-sealed
+- `ADMIN_SECRET` - optional: bearer secret for `/admin` and `/admin/api/*`.
+  `RELAY_SECRET` is never accepted here (see "Admin channel" below)
+- `ADMIN_ACCESS_AUD` - optional: Cloudflare Access application audience tag;
+  needed with the next variable for Access sign-in to the admin channel
+- `ADMIN_ACCESS_TEAM_DOMAIN` - optional: Access team domain, e.g.
+  `yourteam.cloudflareaccess.com`; the scheme and trailing slash are stripped
 - `MAX_CONTENT_LENGTH` - default: 98304 (96 KB, covers the 87,472-character NIP-44 ceiling)
 
 ## Wrangler Config
@@ -238,6 +244,71 @@ Behavior that matters operationally:
   (in `.dev.vars` or as `--var LN_ADDRESS_KEY:<64 hex chars>`) answers every
   Lightning Address lookup with `User not found`; the integration suite passes
   one for exactly this reason.
+
+## Admin channel
+
+Registrations are an operator action. `src/cloudflare/admin.rs` guards
+`/admin` and `/admin/api/*`; `src/cloudflare/admin_page.rs` is the single HTML
+console shipped with the Worker (no build step, inline script and style allowed
+by a per-response CSP nonce).
+
+Two credentials are accepted, and `RELAY_SECRET` is deliberately not one of
+them: every client holds the relay password, so it cannot open a channel that
+adds wallet credentials.
+
+- `ADMIN_SECRET` as `Authorization: Bearer <secret>`, compared in constant
+  time. Any `Authorization` value that is not exactly this is ignored even if
+  it matches the relay password.
+- `Cf-Access-Jwt-Assertion`, verified in `src/auth/access.rs`: RS256 signature
+  against the team's `cdn-cgi/access/certs` keys (cached per isolate for an
+  hour, with the cached set used if a fetch fails or exceeds 5 s), plus `iss`,
+  `aud`, `type == "app"`, `exp` and `nbf`. Requires both
+  `ADMIN_ACCESS_AUD` and `ADMIN_ACCESS_TEAM_DOMAIN`; one without the other is
+  treated as not configured.
+
+With neither credential configured, both the console and the API answer 404 —
+the same answer as a missing relay route — so an unused deployment does not
+advertise an admin endpoint. A configured channel answers 401 to a missing or
+wrong credential. The console document itself is served without a credential:
+it holds no data, and every byte it shows comes from an authorized API call.
+Every admin response carries `Cache-Control: no-store`.
+
+Endpoints:
+
+- `GET /admin` — the console; `GET /admin/api/registrations` — list, returning
+  `{registrations, next_cursor}` and accepting `?cursor=` for the next page.
+- `POST /admin/api/registrations` — body `{"username","nwc_uri"}`. The Worker
+  validates the pair (`src/lnaddress/registration.rs`, capped by
+  `MAX_SUBMISSION_LEN`) and forwards `POST /admin/register` to the Durable
+  Object, the only place that can reach a wallet. It runs `get_info` through
+  `NwcSession`, requires `pay_invoice`, and stores the reported methods. An
+  existing username answers 409 rather than being replaced.
+- `DELETE /admin/api/registrations/:username` — removes both the sealed row and
+  any leftover plaintext row; 404 when there was nothing to remove.
+- `POST /admin/api/reseal` — rewrites rows still sealed under
+  `LN_ADDRESS_KEY_PREVIOUS` with the current key, returning
+  `{scanned, resealed, failed, next_cursor}` and accepting `?cursor=` to
+  continue where the previous call stopped.
+
+Reads re-seal automatically when only the previous key opens a row, guarded by
+a read-back compare so a concurrent delete is not resurrected; the endpoint is
+for the rows nobody reads. Listing and re-sealing read one page per request
+(`LIST_PAGE_SIZE` keys in `src/cloudflare/kv.rs`): every row costs a KV read on
+top of the listing, and a Worker request has a bounded operation budget, so a
+cap would leave rows past it unreachable instead of merely slow. Both endpoints
+take `?cursor=` and return `next_cursor`, which is `null` on the last page; the
+console offers **Load more** for the list and follows the cursor to the end for
+a re-seal. A cursor longer than `MAX_CURSOR_LEN` is refused with 400.
+
+Register the secret before deploying a build that expects it:
+`npx wrangler secret put ADMIN_SECRET`. A missing secret fails closed (404), so
+a deploy that forgets it is safe but has no admin channel.
+
+`test/admin.test.js` covers the channel end to end on port 8801: 404 while
+unconfigured, 401 for a wrong secret and for the relay password, refusal of a
+wallet without `pay_invoice` (and no stored row), a successful registration,
+listing without secrets, an oversized page cursor, delete, and re-seal across a
+key rotation.
 
 ## Common Gotchas
 

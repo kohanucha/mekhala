@@ -188,18 +188,49 @@ pub fn open_sealed(
     username: &str,
     keys: &LnAddressKeys,
 ) -> Result<LnAddressRecord, RecordError> {
+    open_sealed_detailing(value, username, keys).map(|opened| opened.record)
+}
+
+/// A record that opened, and how it was sealed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenedRecord {
+    /// The registration the payload carried.
+    pub record: LnAddressRecord,
+    /// True when only the previous key opened the payload, so the row should
+    /// be written again under the current key before the previous one is
+    /// retired.
+    pub needs_reseal: bool,
+}
+
+/// Opens `value` like [`open_sealed`] and also reports which key it used.
+///
+/// # Errors
+///
+/// The same failures as [`open_sealed`].
+pub fn open_sealed_detailing(
+    value: &str,
+    username: &str,
+    keys: &LnAddressKeys,
+) -> Result<OpenedRecord, RecordError> {
     let payload = value
         .strip_prefix(SEALED_PREFIX)
         .ok_or(RecordError::NotSealed)?;
 
     let mut failure = RecordError::MissingKey;
-    for secret in keys.candidates() {
+    // The current key is tried first, so an index past the start means the
+    // payload predates a rotation.
+    for (index, secret) in keys.candidates().enumerate() {
         let key = derive_key(secret)?;
         match decrypt_nip44(&key, payload) {
             // A payload that authenticates but names another user is refused
             // outright: trying the previous key instead would turn a moved
             // row into a silent credential swap.
-            Ok(json) => return parse_record(&json, username),
+            Ok(json) => {
+                return parse_record(&json, username).map(|record| OpenedRecord {
+                    record,
+                    needs_reseal: index > 0,
+                });
+            }
             Err(e) => failure = RecordError::Decrypt(e),
         }
     }

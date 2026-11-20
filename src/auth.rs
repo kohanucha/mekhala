@@ -1,4 +1,7 @@
-//! Access control: relay secret authentication via constant-time comparison.
+//! Access control: relay secret authentication via constant-time comparison,
+//! and Cloudflare Access token verification for the admin channel.
+
+pub(crate) mod access;
 
 use sha2::{Digest, Sha256};
 
@@ -57,7 +60,7 @@ impl AccessPolicy {
 
 /// Constant-time string comparison to prevent timing attacks.
 /// Hashes inputs to ensure comparison time is independent of input lengths.
-fn constant_time_eq(a: &str, b: &str) -> bool {
+pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
     let hash_a = Sha256::digest(a.as_bytes());
     let hash_b = Sha256::digest(b.as_bytes());
 

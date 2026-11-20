@@ -35,6 +35,7 @@ chacha20 = "0.10"
 hmac = "0.13"
 futures = { version = "0.3.32", features = ["thread-pool"] }
 thiserror = "2"
+rsa = { version = "0.10.0", default-features = false, features = ["pkcs1v15", "encoding", "std", "getrandom"] }
 
 [lints.rust]
 unsafe_code = "deny"

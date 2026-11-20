@@ -6,8 +6,9 @@ pub(crate) mod gateway;
 pub(crate) mod policy;
 pub(crate) mod rate_limit;
 pub(crate) mod record;
+pub(crate) mod registration;
 mod validation;
-mod wallet_connector;
+pub(crate) mod wallet_connector;
 
 pub(crate) use policy::LnAddressPolicy;
 pub(crate) use record::LnAddressKeys;

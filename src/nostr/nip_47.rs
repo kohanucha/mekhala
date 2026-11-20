@@ -41,6 +41,8 @@ fn get_shared_secret(secret_key_hex: &str, public_key_hex: &str) -> Result<Vec<u
 pub enum NwcMethod {
     /// Create an invoice (`make_invoice`).
     MakeInvoice,
+    /// Read the wallet's supported commands and alias (`get_info`).
+    GetInfo,
 }
 
 /// Encrypted JSON payload of an NIP-47 request event.
