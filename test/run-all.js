@@ -10,7 +10,7 @@ import { testMalformedEventProducesOK, testOversizedEventProducesOK, testTimesta
 import { testNip44AndFallback, testInfoEventCaching, testKind13194OK } from "./nip44.test.js";
 import { testLnAddressFlow, testLnAddressOffline, testLnAddressErrors } from "./lnaddress.test.js";
 import { testCloseNonExistentSub, testReplaceSubscription, testDuplicateEventPublish } from "./subscription-edge-cases.test.js";
-import { testPerAddressLimits, testIdleConnectionSweep, testConnectionEviction } from "./connection-limits.test.js";
+import { testPerAddressLimits, testIdleConnectionSweep, testConnectionEviction, testMessageBudget } from "./connection-limits.test.js";
 import { runSdkConformance } from "./conformance.test.js";
 import { testRestartPersistence } from "./restart-persistence.test.js";
 import { testInfoCacheCap, testInfoCacheExpiry } from "./info-cache.test.js";
@@ -75,6 +75,7 @@ async function runAll() {
       await testPerAddressLimits();
       await testIdleConnectionSweep();
       await testConnectionEviction();
+      await testMessageBudget();
       await testRestartPersistence();
       await testInfoCacheCap();
       await testInfoCacheExpiry();

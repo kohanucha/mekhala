@@ -2318,13 +2318,16 @@ fn test_prune_info_cache_is_a_noop_when_both_bounds_are_off() {
 
 // ── Info-cache bound: enforcement without a listing per publish ──
 
-/// `MockStorage` plus a count of `list_prefix("info:")` calls, so a test can
-/// assert that a publish path did *not* enumerate the cache. Every publish is
-/// attacker-controlled, so an enumeration per publish would be an
-/// amplification vector; the in-memory hint exists to avoid it.
+/// `MockStorage` plus counters for the calls a test cares about: how often the
+/// info cache was enumerated, and how many storage operations the registry
+/// issued at all. Every publish is attacker-controlled, so an enumeration per
+/// publish would be an amplification vector; the in-memory hint exists to
+/// avoid it. The operation counter is what proves a message that changes
+/// nothing issues no storage call.
 struct CountingStorage {
     inner: MockStorage,
     list_calls: std::rc::Rc<std::cell::Cell<usize>>,
+    ops: std::rc::Rc<std::cell::Cell<usize>>,
 }
 
 impl CountingStorage {
@@ -2332,29 +2335,42 @@ impl CountingStorage {
         Self {
             inner: MockStorage::new(),
             list_calls: std::rc::Rc::new(std::cell::Cell::new(0)),
+            ops: std::rc::Rc::new(std::cell::Cell::new(0)),
         }
     }
 
     fn info_list_calls(&self) -> usize {
         self.list_calls.get()
     }
+
+    fn reset_ops(&self) {
+        self.ops.set(0);
+    }
+
+    fn count_op(&self) {
+        self.ops.set(self.ops.get() + 1);
+    }
 }
 
 #[async_trait::async_trait(?Send)]
 impl Storage for CountingStorage {
     async fn get(&self, key: &str) -> Option<Value> {
+        self.count_op();
         self.inner.get(key).await
     }
     async fn put_batch(
         &self,
         entries: std::collections::HashMap<String, Value>,
     ) -> Result<(), StorageError> {
+        self.count_op();
         self.inner.put_batch(entries).await
     }
     async fn delete_batch(&self, keys: Vec<String>) {
+        self.count_op();
         self.inner.delete_batch(keys).await;
     }
     async fn list_prefix(&self, prefix: &str) -> Vec<(String, Value)> {
+        self.count_op();
         if prefix == "info:" {
             self.list_calls.set(self.list_calls.get() + 1);
         }
@@ -2480,5 +2496,43 @@ fn test_info_cache_hint_matches_the_stored_keys() {
             .await;
         assert_eq!(registry.info_count, Some(count_stored(&registry)));
         assert_eq!(registry.info_count, Some(3));
+    });
+}
+
+/// Counts the storage operations a registry issues, so a test can prove a
+/// message that changes nothing writes nothing.
+#[test]
+fn test_close_for_an_unknown_subscription_touches_no_storage() {
+    futures::executor::block_on(async {
+        let storage = CountingStorage::new();
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
+
+        registry
+            .subscribe(
+                1,
+                "known".into(),
+                vec![Filter {
+                    authors: Some(vec!["alice".into()]),
+                    ..Default::default()
+                }],
+            )
+            .await
+            .unwrap();
+
+        // A `CLOSE` for a subscription this connection never had changes
+        // nothing, so it must not rewrite the connection snapshot: repeating
+        // it is otherwise a cheap way to charge the whole routing index.
+        let ops = registry.storage.ops.clone();
+        registry.storage.reset_ops();
+        registry.unsubscribe(1, "missing".into()).await.unwrap();
+        assert_eq!(ops.get(), 0, "an unknown CLOSE must not touch storage");
+
+        // The counter does see real work: closing a subscription that exists
+        // rewrites the snapshot and prunes the index.
+        registry.unsubscribe(1, "known".into()).await.unwrap();
+        assert!(
+            ops.get() > 0,
+            "closing a live subscription must persist the change"
+        );
     });
 }

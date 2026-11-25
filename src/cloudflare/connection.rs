@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use worker::{State, WebSocket};
 
+use crate::lnaddress::rate_limit;
+
 pub enum ConnectionKind {
     External(WebSocket),
     Internal(oneshot::Sender<String>),
@@ -123,6 +125,8 @@ pub struct ConnectionRegistry {
     /// Attachment timestamps are refreshed at most once per interval, so the
     /// two are merged when deciding whether a connection is idle.
     last_seen: HashMap<u32, u64>,
+    /// Inbound message window for each connection.
+    message_windows: HashMap<u32, rate_limit::WindowCounter>,
 }
 
 impl ConnectionRegistry {
@@ -130,6 +134,7 @@ impl ConnectionRegistry {
         Self {
             connections: HashMap::new(),
             last_seen: HashMap::new(),
+            message_windows: HashMap::new(),
         }
     }
 
@@ -239,6 +244,28 @@ impl ConnectionRegistry {
     pub fn remove(&mut self, id: u32) {
         self.connections.remove(&id);
         self.last_seen.remove(&id);
+        self.message_windows.remove(&id);
+    }
+
+    /// Counts one inbound frame against the per-connection budget.
+    ///
+    /// The window lives in memory. Hibernation drops it, but a socket that
+    /// wakes has been silent long enough for a fresh window to be the right
+    /// answer, and persisting it would put a storage write in front of every
+    /// frame. A reconnect gets a new id and a fresh window, so the admission
+    /// caps (`MAX_CONNECTIONS_PER_IP` / `_PER_ASN`) are what bound how often a
+    /// client can start over.
+    ///
+    /// The caller decides what an exhausted budget means; this only answers.
+    pub fn admit_message(&mut self, id: u32, now: u64, limit: u32) -> rate_limit::Admission {
+        if limit == 0 {
+            return rate_limit::Admission::Admitted;
+        }
+
+        self.message_windows
+            .entry(id)
+            .or_insert_with(|| rate_limit::WindowCounter::new(now))
+            .admit(now, limit)
     }
 }
 

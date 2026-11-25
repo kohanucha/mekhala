@@ -19,6 +19,7 @@ pub struct CloudflareConfig {
     pub min_amount_msat: u64,
     pub max_amount_msat: u64,
     pub callback_rate_limit_per_minute: u32,
+    pub message_rate_limit_per_minute: u32,
     pub rate_limit_max_keys: usize,
     pub ln_address_keys: crate::lnaddress::LnAddressKeys,
 }
@@ -109,6 +110,12 @@ impl CloudflareConfig {
                     .ok()
                     .map(|v| v.to_string()),
                 10,
+            ),
+            message_rate_limit_per_minute: Self::parse_opt_u32(
+                env.var("MESSAGE_RATE_LIMIT_PER_MINUTE")
+                    .ok()
+                    .map(|v| v.to_string()),
+                120,
             ),
             rate_limit_max_keys: Self::parse_opt(
                 env.var("RATE_LIMIT_MAX_KEYS").ok().map(|v| v.to_string()),

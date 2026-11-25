@@ -133,3 +133,50 @@ export async function testConnectionEviction() {
     wallet.close();
   });
 }
+
+export async function testMessageBudget() {
+  console.log("\n--- Testing the per-connection message budget ---");
+
+  // Small enough to spend in a few frames, large enough to be legal traffic.
+  const vars = { MESSAGE_RATE_LIMIT_PER_MINUTE: 6 };
+
+  await withRelay({ port: 8802, vars }, async ({ wsURL }) => {
+    const client = await connect(wsURL);
+    const notices = [];
+    client.on("message", (data) => {
+      const message = JSON.parse(data.toString());
+      if (message[0] === "NOTICE") notices.push(message[1]);
+    });
+
+    // A `CLOSE` for a subscription that was never opened is the cheapest
+    // message a client can send, and it used to rewrite the whole connection
+    // snapshot. The budget has to count it all the same.
+    for (let i = 0; i < 6; i += 1) {
+      client.send(JSON.stringify(["CLOSE", `missing-${i}`]));
+    }
+    await wait(500);
+
+    client.send(JSON.stringify(["CLOSE", "one-too-many"]));
+    check(
+      await closedWithin(client, 5000),
+      "a connection over its message budget should have been closed",
+    );
+    check(
+      notices.some((notice) => notice.includes("rate limited")),
+      `the relay should say why it closed, got ${JSON.stringify(notices)}`,
+    );
+    console.log("✅ The message budget closed a client that kept sending.");
+
+    // The budget is per connection, so a reconnect does not inherit it. The
+    // connection caps are what bound how often a client can start over.
+    const fresh = await connect(wsURL);
+    fresh.send(JSON.stringify(["CLOSE", "fresh"]));
+    await wait(500);
+    check(
+      fresh.readyState === WebSocket.OPEN,
+      "a new connection must start with a fresh message budget",
+    );
+    fresh.close();
+    console.log("✅ A new connection starts with a fresh budget.");
+  });
+}

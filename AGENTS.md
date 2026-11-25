@@ -53,6 +53,8 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
   invoice amount, advertised and enforced
 - `CALLBACK_RATE_LIMIT_PER_MINUTE` - optional, default: 10, `0` disables (see
   "LN address callbacks" below)
+- `MESSAGE_RATE_LIMIT_PER_MINUTE` - optional, default: 120, `0` disables (see
+  "Inbound message budget" below)
 - `RATE_LIMIT_MAX_KEYS` - optional, default: 1000, `0` removes the cap: how many
   sources may own a counter before new ones share one
 - `LN_ADDRESS_KEY` - required to use Lightning Addresses: 64 hex characters
@@ -157,6 +159,40 @@ Keys written by the version that did index `p` tags (`info-p:`) are deleted by
 more, so the sweep is a one-way migration and its "already empty" case is a
 single `list_prefix`.
 
+## Inbound message budget
+
+Every WebSocket frame a client sends is charged against a per-connection budget
+(`MESSAGE_RATE_LIMIT_PER_MINUTE`, default 120) before it is parsed or allowed to
+touch storage. Past the budget the relay sends one `NOTICE` ("rate limited,
+retry in Ns") and closes with 1008; the caller stops there, so nothing is
+parsed, no signature is checked, and no storage operation is issued.
+
+The window lives in memory on the Durable Object
+(`ConnectionRegistry::admit_message`, reusing
+`lnaddress::rate_limit::WindowCounter`), not in storage: persisting it would put
+a write in front of every frame, and a socket that hibernates has been silent
+long enough for a fresh window to be the right answer. A reconnect gets a new
+id and a fresh window, so the admission caps — not this budget — are what bound
+how often a client can start over; the budget bounds what one connection can
+spend while it is here.
+
+Why it exists: one `REQ` re-reads and rewrites the connection's routing index
+(up to `MAX_ROUTING_KEYS_PER_CONNECTION` keys), an `EVENT` pays a Schnorr
+check, and every LN address callback is routed through the same Durable Object.
+Without a budget, one client could keep that object busy and starve the
+callbacks. Two smaller rules go with it:
+
+- A `CLOSE` for a subscription the connection does not have returns before
+  touching storage (`WalletRegistry::unsubscribe` checks
+  `WalletIndex::has_subscription` first), so repeating it costs only the
+  budget unit, not a snapshot rewrite.
+- A refused frame is not counted, so a client that backs off keeps the rest of
+  its window.
+
+Trade-off: the budget is per connection, and a client that reconnects starts a
+fresh one. That is delegated to the admission caps rather than adding
+per-address counters in storage, which would cost an operation per frame.
+
 ## LN address callbacks
 
 `GET /lnaddress/:username/callback?amount=<msat>` passes four gates, in this
@@ -200,6 +236,20 @@ most 128 keys because `delete_batch` issues one storage call per key, and the
 alarm re-arms itself while any counter remains, so the family drains after
 traffic stops even with no sockets. Setting `CONNECTION_SWEEP_SECONDS=0` turns
 sweeping off entirely, and then `rate:` keys linger until read again.
+
+## NIP-47 round trips
+
+A Lightning Address invoice is minted through an internal NWC round trip
+(`NwcRpcMachine` in `src/nostr/rpc_machine.rs`): open a subscription for the
+reply, publish the request, then wait for the wallet's response. The request
+is published to the relay, so its id is public — anyone who can read the relay
+can publish an event that references it. A reply therefore has to come from
+the wallet the request was addressed to: the response subscription carries
+`authors: [<wallet pubkey>]`, taken from the request's `p` tag, and the machine
+independently ignores an event from any other author and keeps waiting. Being
+fooled by a forged event would end the round trip on it and lose the real
+answer. A request with no `p` tag is addressed to nobody, so no reply can
+match it.
 
 ## LN address storage
 
