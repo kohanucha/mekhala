@@ -249,3 +249,40 @@ fn test_decode_rejects_garbage() {
     assert_eq!(decode(&serde_json::json!({"window_start": 1})), None);
     assert_eq!(decode(&serde_json::json!({})), None);
 }
+
+#[test]
+fn test_counter_admits_without_a_store() {
+    // The per-connection message budget keeps its counter in memory, so the
+    // decision has to live on `WindowCounter` itself.
+    let mut counter = WindowCounter::new(1_000);
+
+    assert_eq!(counter.admit(1_000, 2), Admission::Admitted);
+    assert_eq!(counter.admit(1_001, 2), Admission::Admitted);
+    assert_eq!(
+        counter.admit(1_002, 2),
+        Admission::Limited { retry_after: 58 }
+    );
+    assert_eq!(counter.count, 2, "a refusal must not consume a slot");
+}
+
+#[test]
+fn test_counter_admits_again_after_the_window_rolls() {
+    let mut counter = WindowCounter::new(1_000);
+    assert_eq!(counter.admit(1_000, 1), Admission::Admitted);
+    assert_eq!(
+        counter.admit(1_059, 1),
+        Admission::Limited { retry_after: 1 }
+    );
+    assert_eq!(counter.admit(1_060, 1), Admission::Admitted);
+    assert_eq!(counter.window_start, 1_060);
+    assert_eq!(counter.count, 1);
+}
+
+#[test]
+fn test_counter_with_no_limit_never_counts() {
+    let mut counter = WindowCounter::new(1_000);
+    for _ in 0..10 {
+        assert_eq!(counter.admit(1_000, 0), Admission::Admitted);
+    }
+    assert_eq!(counter.count, 0);
+}

@@ -487,6 +487,15 @@ impl<S: Storage> WalletRegistry<S> {
     /// Also drops the connection from any `pk:`/`eid:`/`etag:` key that no
     /// remaining subscription references.
     pub async fn unsubscribe(&mut self, conn_id: u32, sub_id: String) -> crate::nostr::Result<()> {
+        // A `CLOSE` for a subscription this connection does not have changes
+        // nothing, so there is no state to persist. Rewriting the snapshot
+        // anyway would charge the connection's whole routing index — up to
+        // `max_routing_keys_per_connection` reads — for a message that did not
+        // ask for anything, which is exactly the loop a client can repeat.
+        if !self.index.has_subscription(conn_id, &sub_id) {
+            return Ok(());
+        }
+
         let before = referenced_keys(&self.index.get_subscriptions(conn_id));
         self.index.unsubscribe(conn_id, sub_id.clone());
         let after = referenced_keys(&self.index.get_subscriptions(conn_id));

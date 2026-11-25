@@ -244,6 +244,9 @@ impl DurableObject for CloudflareTransport {
         message: WebSocketIncomingMessage,
     ) -> Result<()> {
         log_debug!("→ websocket_message handler invoked");
+        if !self.admit_incoming_frame(&websocket) {
+            return Ok(());
+        }
         if let WebSocketIncomingMessage::String(text) = message {
             if text.len() > 131072 {
                 log_warn!("message too large: {} bytes", text.len());
@@ -495,6 +498,44 @@ impl CounterStore for CloudflareTransport {
 }
 
 impl CloudflareTransport {
+    /// Charges one inbound frame against the connection's message budget.
+    ///
+    /// Every frame costs something once it is handled: a `REQ` re-reads and
+    /// rewrites the connection's routing index (up to
+    /// `MAX_ROUTING_KEYS_PER_CONNECTION` keys), an `EVENT` pays a signature
+    /// check, and a `CLOSE` used to rewrite the whole snapshot even when it
+    /// named a subscription that was not there. Without a budget one client can
+    /// spend the single Durable Object's time on any of those, and every LN
+    /// address callback shares that object.
+    ///
+    /// Returns `false` when the budget is spent and the socket has been asked
+    /// to close, so the caller stops before parsing or storage work.
+    fn admit_incoming_frame(&self, websocket: &WebSocket) -> bool {
+        let Some(id) = self.connections.borrow().identify(websocket) else {
+            return true;
+        };
+        let decision = self.connections.borrow_mut().admit_message(
+            id,
+            crate::util::now(),
+            self.config.message_rate_limit_per_minute,
+        );
+        let rate_limit::Admission::Limited { retry_after } = decision else {
+            return true;
+        };
+
+        log_warn!(
+            "conn={} exceeded {} messages in a window; closing it",
+            id,
+            self.config.message_rate_limit_per_minute
+        );
+        let _ = websocket.send_with_str(
+            crate::nostr::RelayMessage::Notice(format!("rate limited, retry in {retry_after}s"))
+                .to_json(),
+        );
+        let _ = websocket.close(Some(1008), Some("message rate limit"));
+        false
+    }
+
     /// Keeps the cached wallet info family bounded and removes keys that no
     /// current code writes. Runs on the same alarm as the idle sweep: both
     /// keep storage bounded by time, and the cache is only read while sockets

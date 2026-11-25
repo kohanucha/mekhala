@@ -61,6 +61,28 @@ impl WindowCounter {
             .saturating_sub(now.saturating_sub(self.window_start))
             .max(1)
     }
+
+    /// Counts one request against `limit` inside this window.
+    ///
+    /// A `limit` of `0` admits everything without counting, which is how both
+    /// the callback limiter and the per-connection message budget are switched
+    /// off. A refused request does not consume a slot, so a client that backs
+    /// off still has the remainder of its budget when the window rolls.
+    pub fn admit(&mut self, now: u64, limit: u32) -> Admission {
+        if limit == 0 {
+            return Admission::Admitted;
+        }
+
+        self.roll(now);
+        if self.count >= limit {
+            return Admission::Limited {
+                retry_after: self.retry_after(now),
+            };
+        }
+
+        self.count += 1;
+        Admission::Admitted
+    }
 }
 
 /// One admission decision.
@@ -110,7 +132,8 @@ pub fn decode(value: &serde_json::Value) -> Option<WindowCounter> {
 /// Counts one request against `limit` for `key`.
 ///
 /// A `limit` of `0` admits everything without touching storage, which is how
-/// the limiter is disabled.
+/// the limiter is disabled. Only an admitted request is written back: a source
+/// that has spent its window costs one read per request and no writes.
 pub async fn admit<S: CounterStore>(store: &S, key: &str, now: u64, limit: u32) -> Admission {
     if limit == 0 {
         return Admission::Admitted;
@@ -120,17 +143,11 @@ pub async fn admit<S: CounterStore>(store: &S, key: &str, now: u64, limit: u32) 
         .load(key)
         .await
         .unwrap_or_else(|| WindowCounter::new(now));
-    counter.roll(now);
-
-    if counter.count >= limit {
-        return Admission::Limited {
-            retry_after: counter.retry_after(now),
-        };
+    let admission = counter.admit(now, limit);
+    if admission == Admission::Admitted {
+        store.save(key, &counter).await;
     }
-
-    counter.count += 1;
-    store.save(key, &counter).await;
-    Admission::Admitted
+    admission
 }
 
 #[cfg(test)]

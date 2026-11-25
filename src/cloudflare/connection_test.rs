@@ -232,3 +232,71 @@ fn test_registry_forgets_activity_on_remove() {
     reg.remove(5);
     assert_eq!(reg.last_seen(5), None);
 }
+
+#[test]
+fn test_message_budget_is_per_connection() {
+    let mut reg = ConnectionRegistry::new();
+    assert_eq!(
+        reg.admit_message(1, 1_000, 2),
+        rate_limit::Admission::Admitted
+    );
+    assert_eq!(
+        reg.admit_message(1, 1_000, 2),
+        rate_limit::Admission::Admitted
+    );
+    assert_eq!(
+        reg.admit_message(1, 1_000, 2),
+        rate_limit::Admission::Limited { retry_after: 60 }
+    );
+
+    // Another connection has not spent anything.
+    assert_eq!(
+        reg.admit_message(2, 1_000, 2),
+        rate_limit::Admission::Admitted
+    );
+}
+
+#[test]
+fn test_message_budget_with_no_limit_admits_everything() {
+    let mut reg = ConnectionRegistry::new();
+    for _ in 0..50 {
+        assert_eq!(
+            reg.admit_message(1, 1_000, 0),
+            rate_limit::Admission::Admitted
+        );
+    }
+}
+
+#[test]
+fn test_message_budget_resets_when_the_window_rolls() {
+    let mut reg = ConnectionRegistry::new();
+    assert_eq!(
+        reg.admit_message(1, 1_000, 1),
+        rate_limit::Admission::Admitted
+    );
+    assert_eq!(
+        reg.admit_message(1, 1_030, 1),
+        rate_limit::Admission::Limited { retry_after: 30 }
+    );
+    assert_eq!(
+        reg.admit_message(1, 1_060, 1),
+        rate_limit::Admission::Admitted
+    );
+}
+
+#[test]
+fn test_registry_forgets_the_message_budget_on_remove() {
+    // A new connection id must not inherit a spent window, and the map must
+    // not grow with connections that are gone.
+    let mut reg = ConnectionRegistry::new();
+    assert_eq!(
+        reg.admit_message(7, 1_000, 1),
+        rate_limit::Admission::Admitted
+    );
+    reg.remove(7);
+    assert_eq!(
+        reg.admit_message(7, 1_000, 1),
+        rate_limit::Admission::Admitted
+    );
+    assert_eq!(reg.message_windows.len(), 1);
+}
