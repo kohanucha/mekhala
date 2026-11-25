@@ -153,12 +153,24 @@ pub enum NwcUriError {
 
 /// Parsed contents of a NIP-47 connection URI: the wallet's public key and
 /// the shared secret entered by the user.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NwcUri {
     /// Wallet service public key (hex, host part of the URI).
     pub wallet_pubkey: String,
     /// Pairing secret from the `secret` query parameter (hex).
     pub secret: String,
+}
+
+impl std::fmt::Debug for NwcUri {
+    /// Prints the wallet key but never the pairing secret: the secret is the
+    /// half that spends from the wallet, and a URI reaches log lines on the
+    /// parse-failure paths.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NwcUri")
+            .field("wallet_pubkey", &self.wallet_pubkey)
+            .field("secret", &"<redacted>")
+            .finish()
+    }
 }
 
 impl NwcUri {

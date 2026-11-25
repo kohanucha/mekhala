@@ -237,6 +237,20 @@ alarm re-arms itself while any counter remains, so the family drains after
 traffic stops even with no sockets. Setting `CONNECTION_SWEEP_SECONDS=0` turns
 sweeping off entirely, and then `rate:` keys linger until read again.
 
+## NIP-47 round trips
+
+A Lightning Address invoice is minted through an internal NWC round trip
+(`NwcRpcMachine` in `src/nostr/rpc_machine.rs`): open a subscription for the
+reply, publish the request, then wait for the wallet's response. The request
+is published to the relay, so its id is public — anyone who can read the relay
+can publish an event that references it. A reply therefore has to come from
+the wallet the request was addressed to: the response subscription carries
+`authors: [<wallet pubkey>]`, taken from the request's `p` tag, and the machine
+independently ignores an event from any other author and keeps waiting. Being
+fooled by a forged event would end the round trip on it and lose the real
+answer. A request with no `p` tag is addressed to nobody, so no reply can
+match it.
+
 ## LN address storage
 
 A stored NWC URI can spend from the user's wallet, so it is never kept in

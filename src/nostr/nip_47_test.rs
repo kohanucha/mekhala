@@ -413,3 +413,14 @@ fn test_parse_response_event_rejects_non_json_payload() {
         .expect_err("non-JSON body must be rejected");
     assert!(matches!(err, RelayError::SerializationError(_)), "{err}");
 }
+
+#[test]
+fn test_debug_hides_the_pairing_secret() {
+    // The wallet key identifies the service; the secret is the half that
+    // spends from the wallet, so only the key may appear in a log line.
+    let nwc_uri = NwcUri::from_uri(TEST_NWC_URI).unwrap();
+    let debug = format!("{nwc_uri:?}");
+    assert!(debug.contains("<redacted>"));
+    assert!(debug.contains(TEST_WALLET_PK));
+    assert!(!debug.contains(TEST_WALLET_SK));
+}
