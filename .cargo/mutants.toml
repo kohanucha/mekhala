@@ -16,7 +16,15 @@ examine_globs = [
   "src/util/mod.rs",
   "src/nostr/*.rs",
   "src/lnaddress/*.rs",
+  "crates/nostr-core/src/*.rs",
 ]
+
+# Protocol code moved into `crates/nostr-core`, but relay tests still exercise
+# it (the engine drives events, filters and NIP-47 end to end). Running every
+# package's tests keeps a mutant there from surviving just because its own
+# crate's tests miss it. `scripts/mutants.sh` passes `--workspace` so mutants
+# are generated in every member, not only the root package.
+test_workspace = true
 
 # Mutants that cannot change observable behaviour (equivalent), plus mutations
 # in code the native test build never compiles.

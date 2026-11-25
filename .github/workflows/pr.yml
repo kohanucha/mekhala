@@ -69,9 +69,11 @@ jobs:
       # Production code only: `cloudflare/` needs a live workerd (the integration
       # suite exercises it instead), and `*_test.rs` would otherwise count its
       # own ~99% coverage into the denominator and mask gaps in the source.
+      # `--workspace`: without it only the root package is measured and
+      # `crates/nostr-core` drops out of the report while the gate still passes.
       - name: Coverage gate
         run: >-
-          cargo llvm-cov --locked
+          cargo llvm-cov --workspace --locked
           --ignore-filename-regex '(cloudflare/|_test\.rs$)'
           --fail-under-lines 95 --fail-under-regions 90 --fail-under-functions 80
 

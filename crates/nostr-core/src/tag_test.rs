@@ -138,7 +138,7 @@ fn test_tags_in_event_json() {
             "sig": "sig1"
         }"#;
 
-    let event: crate::nostr::Event = serde_json::from_str(event_json).unwrap();
+    let event: crate::Event = serde_json::from_str(event_json).unwrap();
     assert_eq!(event.tags.len(), 3);
     assert_eq!(event.tags[0], Tag::P("wallet_pk".into(), vec![]));
     assert_eq!(event.tags[1], Tag::E("event1".into(), vec![]));

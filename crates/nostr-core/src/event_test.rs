@@ -218,8 +218,8 @@ fn test_verify_kind_23196_with_p_tag_passes_kind_check() {
 
 #[test]
 fn test_verify_valid_signature() {
-    let sk_hex = crate::common::test_helpers::TEST_WALLET_SK;
-    let pk_hex = crate::common::test_helpers::TEST_WALLET_PK;
+    let sk_hex = crate::test_helpers::TEST_WALLET_SK;
+    let pk_hex = crate::test_helpers::TEST_WALLET_PK;
     let sk_bytes = hex::decode(sk_hex).unwrap();
     let sk_arr: [u8; 32] = sk_bytes.try_into().unwrap();
     let sk = SigningKey::from_slice(&sk_arr).unwrap();
@@ -284,7 +284,7 @@ fn test_verify_pubkey_not_hex() {
 
 #[test]
 fn test_verify_sig_not_hex() {
-    let id_pk = crate::common::test_helpers::TEST_WALLET_PK;
+    let id_pk = crate::test_helpers::TEST_WALLET_PK;
     let (id, _) = Event::compute_id(id_pk, 1_700_000_000, 13194, &[], "").unwrap();
     let event = Event {
         id,
@@ -323,7 +323,7 @@ fn test_verify_pubkey_wrong_length() {
 
 #[test]
 fn test_verify_signature_wrong_length() {
-    let pk = crate::common::test_helpers::TEST_WALLET_PK;
+    let pk = crate::test_helpers::TEST_WALLET_PK;
     let (id, _) = Event::compute_id(pk, 1_700_000_000, 13194, &[], "").unwrap();
     let event = Event {
         id,
@@ -345,7 +345,7 @@ fn test_compute_id_matches_nip01_golden_vector() {
     // sha256 of `[0,pubkey,created_at,kind,tags,content]`, pinned so a change
     // in serialization cannot silently change every event id.
     let (id, id_bytes) = Event::compute_id(
-        crate::common::test_helpers::TEST_WALLET_PK,
+        crate::test_helpers::TEST_WALLET_PK,
         1_700_000_000,
         23194,
         &[],
@@ -362,7 +362,7 @@ fn test_compute_id_matches_nip01_golden_vector() {
 #[test]
 fn test_compute_id_covers_tags_and_content() {
     let (id, _) = Event::compute_id(
-        crate::common::test_helpers::TEST_WALLET_PK,
+        crate::test_helpers::TEST_WALLET_PK,
         1_700_000_000,
         23194,
         &[Tag::p("abc")],

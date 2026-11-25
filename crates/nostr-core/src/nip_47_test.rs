@@ -1,5 +1,5 @@
 use super::*;
-use crate::common::test_helpers::{TEST_NWC_URI, TEST_WALLET_PK, TEST_WALLET_SK};
+use crate::test_helpers::{TEST_NWC_URI, TEST_WALLET_PK, TEST_WALLET_SK};
 
 #[test]
 fn test_nwc_uri_from_uri() {
@@ -31,7 +31,7 @@ fn test_nwc_client_roundtrip() {
     let resp_event = Event {
         id: "resp_id".into(),
         pubkey: client.wallet_pubkey.clone(),
-        created_at: crate::util::now(),
+        created_at: crate::clock::now(),
         kind: 23195,
         tags: vec![
             Tag::E(request_id.clone(), vec![]),
@@ -189,7 +189,7 @@ fn other_signing_key() -> SigningKey {
 }
 
 fn signed_event(pubkey: &str, sk: &SigningKey, kind: u64, tags: Vec<Tag>, content: &str) -> Event {
-    let created_at = crate::util::now();
+    let created_at = crate::clock::now();
     let (id, id_bytes) = Event::compute_id(pubkey, created_at, kind, &tags, content).unwrap();
     let sig = hex::encode(sk.sign_prehash(&id_bytes).unwrap().to_bytes());
     Event {
@@ -398,8 +398,7 @@ fn test_parse_response_event_rejects_non_json_payload() {
     let client = NwcClient::new(nwc_uri).unwrap();
     // Encrypt a raw non-JSON body, which `NwcClient::encrypt` cannot produce
     // because it always serializes a `Value` first.
-    let content =
-        crate::nostr::nip_04::encrypt_nip04(&client.shared_secret, "not json at all").unwrap();
+    let content = crate::nip_04::encrypt_nip04(&client.shared_secret, "not json at all").unwrap();
     let event = signed_event(
         &client.wallet_pubkey,
         &wallet_signing_key(),

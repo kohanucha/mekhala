@@ -1,6 +1,6 @@
-use crate::nostr::Event;
-use crate::nostr::Tag;
-use crate::nostr::{Limits, RelayError, Result};
+use crate::Event;
+use crate::Tag;
+use crate::{Limits, RelayError, Result};
 use k256::schnorr::{signature::hazmat::PrehashSigner, SigningKey};
 use k256::{PublicKey as K256PublicKey, SecretKey as K256SecretKey};
 use serde::{Deserialize, Serialize};
@@ -108,7 +108,7 @@ pub struct WalletInfo {
 /// Extracts the advertised encryption algorithms from a wallet's info
 /// document event, falling back to [`EncryptionMethod::Nip04`] when no
 /// `encryption` tag is present (older wallets).
-pub fn parse_wallet_info(event: &crate::nostr::Event) -> WalletInfo {
+pub fn parse_wallet_info(event: &crate::Event) -> WalletInfo {
     let mut encryption = Vec::new();
     let mut has_encryption_tag = false;
 
@@ -255,33 +255,41 @@ impl NwcClient {
             signing_key,
             my_pubkey,
             encryption_method: EncryptionMethod::Nip04,
-            clock: crate::util::now,
+            clock: crate::clock::now,
         })
     }
 
     /// Encrypts the request payload with the negotiated scheme
     /// (see [`EncryptionMethod`]).
+    ///
+    /// # Errors
+    ///
+    /// Propagates the scheme's encryption error (see
+    /// [`encrypt_nip04`](crate::nip_04::encrypt_nip04) and
+    /// [`encrypt_nip44`](crate::nip_44::encrypt_nip44)).
     pub fn encrypt(&self, payload: &Value) -> Result<String> {
         match self.encryption_method {
             EncryptionMethod::Nip04 => {
-                crate::nostr::nip_04::encrypt_nip04(&self.shared_secret, &payload.to_string())
+                crate::nip_04::encrypt_nip04(&self.shared_secret, &payload.to_string())
             }
             EncryptionMethod::Nip44 => {
-                crate::nostr::nip_44::encrypt_nip44(&self.shared_secret, &payload.to_string())
+                crate::nip_44::encrypt_nip44(&self.shared_secret, &payload.to_string())
             }
         }
     }
 
     /// Decrypts event content with the negotiated scheme
     /// (see [`EncryptionMethod`]).
+    ///
+    /// # Errors
+    ///
+    /// Propagates the scheme's decryption error (see
+    /// [`decrypt_nip04`](crate::nip_04::decrypt_nip04) and
+    /// [`decrypt_nip44`](crate::nip_44::decrypt_nip44)).
     pub fn decrypt(&self, encrypted: &str) -> Result<String> {
         match self.encryption_method {
-            EncryptionMethod::Nip04 => {
-                crate::nostr::nip_04::decrypt_nip04(&self.shared_secret, encrypted)
-            }
-            EncryptionMethod::Nip44 => {
-                crate::nostr::nip_44::decrypt_nip44(&self.shared_secret, encrypted)
-            }
+            EncryptionMethod::Nip04 => crate::nip_04::decrypt_nip04(&self.shared_secret, encrypted),
+            EncryptionMethod::Nip44 => crate::nip_44::decrypt_nip44(&self.shared_secret, encrypted),
         }
     }
 

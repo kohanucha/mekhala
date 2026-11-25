@@ -8,7 +8,15 @@ license = "MIT"
 [lib]
 crate-type = ["cdylib"]
 
+# The relay Worker stays the root package so `wrangler` and `worker-build`
+# keep building from the repository root. Shared protocol code lives in
+# `crates/`, and plain `cargo` commands cover every member.
+[workspace]
+members = [".", "crates/nostr-core"]
+default-members = [".", "crates/nostr-core"]
+
 [dependencies]
+nostr-core = { path = "crates/nostr-core" }
 worker = "0.8.7"
 worker-sys = "0.8.7"
 serde = { version = "1.0", features = ["derive"] }
@@ -20,26 +28,21 @@ getrandom = { version = "0.4", features = ["wasm_js"] }
 console_error_panic_hook = "0.1.7"
 async-trait = "0.1"
 futures-util = "0.3"
-aes = "0.9"
-cbc = "0.2"
-block-padding = "0.4"
-cipher = "0.5"
-base64 = "0.22"
 url = "2.5"
-rand = "0.10"
 js-sys = "0.3"
 wasm-bindgen = "0.2"
 serde-wasm-bindgen = "0.6"
 hkdf = "0.13"
-chacha20 = "0.10"
-hmac = "0.13"
 futures = { version = "0.3.32", features = ["thread-pool"] }
 thiserror = "2"
 
-[lints.rust]
+[lints]
+workspace = true
+
+[workspace.lints.rust]
 unsafe_code = "deny"
 
-[lints.clippy]
+[workspace.lints.clippy]
 # Curated lints promoted to errors by CI's `-D warnings`. Declared here so
 # they apply to every target (lib, tests) locally and in CI instead of
 # living only in the workflow command.

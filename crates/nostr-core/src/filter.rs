@@ -1,4 +1,4 @@
-use crate::nostr::{Event, Limits};
+use crate::{Event, Limits};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, Hash)]

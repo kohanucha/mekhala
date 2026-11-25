@@ -21,7 +21,19 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 
 ## Architecture
 - **Durable Object**: `CloudflareTransport` (`src/cloudflare/transport.rs`; wrangler `class_name = "CloudflareTransport"`)
-- **Modules**: auth.rs, lib.rs, cloudflare/, lnaddress/, nostr/, util/
+- **Cargo workspace**: the relay Worker is the root package (so `wrangler` and
+  `worker-build` still build from the repository root); shared crates live in
+  `crates/`. `default-members` lists every member, so plain `cargo test`,
+  `cargo clippy` and `cargo doc` cover them all. `cargo llvm-cov` and
+  `cargo mutants` do not follow `default-members` and need `--workspace`.
+- **`crates/nostr-core`**: Nostr protocol types shared with NWC clients — event,
+  tag, filter, limits, NIP-01 messages, NIP-04/44 encryption, NIP-47 and
+  `NwcRpcMachine`. It has no `worker` dependency and builds for wasm32 and
+  native; `clock::now()` reads the JavaScript clock on wasm32. The relay
+  re-exports it from `src/nostr/mod.rs`, so relay code keeps using
+  `crate::nostr::*`.
+- **Relay modules**: auth.rs, lib.rs, cloudflare/, lnaddress/, nostr/ (engine,
+  wallet_registry), util/
 
 ## Critical Dependencies
 - `worker` 0.8.x runtime
@@ -240,7 +252,7 @@ sweeping off entirely, and then `rate:` keys linger until read again.
 ## NIP-47 round trips
 
 A Lightning Address invoice is minted through an internal NWC round trip
-(`NwcRpcMachine` in `src/nostr/rpc_machine.rs`): open a subscription for the
+(`NwcRpcMachine` in `crates/nostr-core/src/rpc_machine.rs`): open a subscription for the
 reply, publish the request, then wait for the wallet's response. The request
 is published to the relay, so its id is public — anyone who can read the relay
 can publish an event that references it. A reply therefore has to come from
@@ -325,6 +337,9 @@ Single-context layout. See `docs/agents/domain.md`.
 ### Shared test utilities
 - `MockStorage`, `simulate_hibernation`, and similar cross-module test helpers live in `src/common/test_helpers.rs`.
 - Import with `use crate::common::test_helpers::*;`.
+- `crates/nostr-core` keeps its own fixtures in `crates/nostr-core/src/test_helpers.rs`
+  (`use crate::test_helpers::*;`): `cfg(test)` items are not visible across
+  crates, so the few shared constants are duplicated rather than exported.
 
 ### Async tests
 - Use `futures::executor::block_on(async { ... })` inside `#[test]` functions.
@@ -369,11 +384,13 @@ Single-context layout. See `docs/agents/domain.md`.
 - Thresholds: **95% lines / 90% regions / 80% functions**
 - Run:
   ```
-  cargo llvm-cov --locked --ignore-filename-regex '(cloudflare/|_test\.rs$)' \
+  cargo llvm-cov --workspace --locked --ignore-filename-regex '(cloudflare/|_test\.rs$)' \
     --fail-under-lines 95 --fail-under-regions 90 --fail-under-functions 80
   ```
+  Without `--workspace` only the root package is measured: `crates/nostr-core`
+  silently drops out of the report and the gate still passes.
 
-> All worker-dependent modules live under `cloudflare/`. The core relay logic (`nostr/*`, `auth.rs`, `lnaddress/*`) has zero `worker` crate dependency and is fully testable.
+> All worker-dependent modules live under `cloudflare/`. The core relay logic (`nostr/*`, `auth.rs`, `lnaddress/*`) and `crates/nostr-core` have zero `worker` crate dependency and are fully testable.
 
 ## Mutation Testing
 - Coverage says the code was *executed*; mutation testing proves the tests

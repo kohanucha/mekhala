@@ -1,8 +1,8 @@
 use super::*;
-use crate::nostr::Tag;
+use crate::Tag;
 
 fn make_event(id: &str, pubkey: &str, kind: u64, tags: Vec<Tag>, created_at: u64) -> Event {
-    crate::common::test_helpers::test_event(id, pubkey, kind, tags, created_at)
+    crate::test_helpers::test_event(id, pubkey, kind, tags, created_at)
 }
 
 #[test]

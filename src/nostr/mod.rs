@@ -1,32 +1,21 @@
 //! Nostr protocol machinery of the relay.
 //!
-//! - [`event`], [`tag`], [`filter`]: NIP-01 core types (event validation,
-//!   typed tag decoding, subscription filters)
-//! - [`nip_01`]: wire messages between client and relay
-//! - [`nip_04`], [`nip_44`]: content encryption schemes
-//! - [`nip_47`]: NWC request/response construction and parsing
+//! The protocol types themselves live in the `nostr-core` crate, shared with
+//! NWC clients; they are re-exported here so relay code keeps one path.
+//!
 //! - [`engine`]: relay state machine on top of the [`wallet_registry`]
 //! - [`wallet_registry`]: subscription registry with DO-storage persistence
-//! - [`rpc_machine`]: NWC RPC request/response state machine
-//! - [`error`], [`limits`]: shared error type and relay ceilings
+//! - everything else: re-exported from `nostr_core`
 
 pub mod engine;
-pub mod error;
-pub mod event;
-pub mod filter;
-pub mod limits;
-pub mod nip_01;
-pub mod nip_04;
-pub mod nip_44;
-pub mod nip_47;
-pub mod rpc_machine;
-pub mod tag;
 pub mod wallet_registry;
 
-pub use error::{RelayError, Result, StorageError};
-pub use event::Event;
-pub use filter::Filter;
-pub use limits::Limits;
-pub use nip_01::{ClientMessage, RelayMessage};
-pub use nip_47::WalletInfo;
-pub use tag::Tag;
+pub use nostr_core::{limits, nip_01, nip_44, nip_47, rpc_machine};
+pub use nostr_core::{
+    ClientMessage, Event, Filter, Limits, RelayError, RelayMessage, Result, WalletInfo,
+};
+pub use wallet_registry::StorageError;
+
+// Only the relay's tests build tags directly.
+#[cfg(test)]
+pub use nostr_core::Tag;

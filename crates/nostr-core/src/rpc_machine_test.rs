@@ -16,7 +16,7 @@ fn mock_event(id: &str, pubkey: &str) -> Event {
 /// `create_request_event` builds one.
 fn mock_request(id: &str, client: &str, wallet: &str) -> Event {
     let mut event = mock_event(id, client);
-    event.tags = vec![crate::nostr::Tag::p(wallet)];
+    event.tags = vec![crate::Tag::p(wallet)];
     event
 }
 
@@ -24,7 +24,7 @@ fn mock_request(id: &str, client: &str, wallet: &str) -> Event {
 fn mock_reply(id: &str, author: &str, request_id: &str) -> Event {
     let mut event = mock_event(id, author);
     event.kind = 23195;
-    event.tags = vec![crate::nostr::Tag::E(request_id.to_string(), vec![])];
+    event.tags = vec![crate::Tag::E(request_id.to_string(), vec![])];
     event
 }
 

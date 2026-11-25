@@ -139,11 +139,11 @@ fn test_nip44_decoded_too_large() {
 
 #[test]
 fn test_nip44_unpad_too_short() {
-    let result = crate::nostr::nip_44::unpad(&[]);
+    let result = crate::nip_44::unpad(&[]);
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().to_string(), "error: Invalid padding");
 
-    let result = crate::nostr::nip_44::unpad(&[0x00]);
+    let result = crate::nip_44::unpad(&[0x00]);
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().to_string(), "error: Invalid padding");
 }
@@ -151,7 +151,7 @@ fn test_nip44_unpad_too_short() {
 #[test]
 fn test_nip44_unpad_invalid_length() {
     let padded = vec![0x00, 0x05, 0x01, 0x02]; // claims 5 bytes but only 2 available
-    let result = crate::nostr::nip_44::unpad(&padded);
+    let result = crate::nip_44::unpad(&padded);
     assert!(result.is_err());
     assert_eq!(
         result.unwrap_err().to_string(),

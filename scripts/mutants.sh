@@ -79,7 +79,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-ARGS=(-j "$JOBS" -t "$TIMEOUT")
+# `--workspace`: without it cargo-mutants only generates mutants in the root
+# package and silently skips `crates/nostr-core`.
+ARGS=(--workspace -j "$JOBS" -t "$TIMEOUT")
 if [[ ${#ITERATE[@]} -gt 0 ]]; then
     ARGS+=("${ITERATE[@]}")
 fi
@@ -107,7 +109,7 @@ if [[ -n "$UNTRACKED" ]]; then
 fi
 
 git diff "$MERGE_BASE" > "$DIFF_FILE"
-if ! COUNT="$(cargo mutants --list --in-diff "$DIFF_FILE" | wc -l | tr -d ' ')"; then
+if ! COUNT="$(cargo mutants --list --workspace --in-diff "$DIFF_FILE" | wc -l | tr -d ' ')"; then
     echo "cargo mutants --list failed; see the error above" >&2
     exit 1
 fi

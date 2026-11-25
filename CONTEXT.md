@@ -62,7 +62,7 @@ Mekhala provides an LN Address bridge, allowing users to pay to an LN Address (e
   - `WalletRegistry` to find the recipients for a verified **NWC Event**.
 
 ### 2a. NWC Client Layer
-**Module:** `NwcClient` (`src/nostr/nip_47.rs`)
+**Module:** `NwcClient` (`crates/nostr-core/src/nip_47.rs`)
 - **Role:** Creates and parses NWC request/response events (encryption, signing, expiration tags).
 - **Seams:** `clock: fn() -> u64` (injected for deterministic event creation and verification timestamps).
 - **Production adapter:** `crate::util::now` (default in `NwcClient::new`).

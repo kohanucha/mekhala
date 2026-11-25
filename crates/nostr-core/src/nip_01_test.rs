@@ -45,7 +45,7 @@ fn test_relay_message_serialization() {
 
 #[test]
 fn test_relay_message_event_serialization() {
-    let event = crate::nostr::Event {
+    let event = crate::Event {
         id: "test_id".into(),
         pubkey: "test_pubkey".into(),
         created_at: 1234567890,

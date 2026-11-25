@@ -1,4 +1,4 @@
-use crate::nostr::{RelayError, Result};
+use crate::{RelayError, Result};
 use base64::{engine::general_purpose, Engine as _};
 use chacha20::cipher::KeyIvInit as _;
 use chacha20::cipher::StreamCipher;
@@ -10,6 +10,11 @@ use sha2::Sha256;
 
 /// Encrypts plaintext as a NIP-44 v2 payload: padded, ChaCha20-encrypted,
 /// HMAC-SHA256 authenticated, version byte `0x02`, base64.
+///
+/// # Errors
+///
+/// Returns [`RelayError::CryptoError`] when the derived keys cannot
+/// initialise the cipher or the MAC.
 pub fn encrypt_nip44(shared_secret: &[u8], plaintext: &str) -> Result<String> {
     let conversation_key = derive_conversation_key(shared_secret);
     let mut nonce = [0u8; 32];
@@ -40,6 +45,14 @@ pub fn encrypt_nip44(shared_secret: &[u8], plaintext: &str) -> Result<String> {
 
 /// Decrypts and verifies a NIP-44 v2 payload, enforcing the protocol size
 /// ceilings (base64 length and decoded length).
+///
+/// # Errors
+///
+/// Returns [`RelayError::Generic`] for an oversized payload, an unsupported
+/// version, a wrong payload length or invalid padding,
+/// [`RelayError::Base64Error`] for invalid base64, [`RelayError::CryptoError`]
+/// for a MAC mismatch or a cipher that cannot be initialised, and
+/// [`RelayError::Utf8Error`] when the plaintext is not UTF-8.
 pub fn decrypt_nip44(shared_secret: &[u8], encrypted_content: &str) -> Result<String> {
     if encrypted_content.len() > 87472 {
         return Err(RelayError::Generic("NIP-44 payload too large".into()));
@@ -146,9 +159,9 @@ pub fn pad(plaintext: &str) -> Vec<u8> {
 ///
 /// # Errors
 ///
-/// Returns [`RelayError::Generic`](crate::nostr::RelayError::Generic) for a
+/// Returns [`RelayError::Generic`] for a
 /// truncated/invalid prefix and
-/// [`RelayError::Utf8Error`](crate::nostr::RelayError::Utf8Error) when the
+/// [`RelayError::Utf8Error`] when the
 /// payload is not valid UTF-8.
 pub fn unpad(padded: &[u8]) -> Result<String> {
     if padded.len() < 2 {

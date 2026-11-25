@@ -1,4 +1,4 @@
-use crate::nostr::{RelayError, Result};
+use crate::{RelayError, Result};
 use aes::Aes256;
 use base64::{engine::general_purpose, Engine as _};
 use block_padding::Pkcs7;
@@ -8,6 +8,11 @@ use rand::Rng;
 
 /// Encrypts UTF-8 plaintext with AES-256-CBC (NIP-04); returns
 /// `<base64(ciphertext)>?iv=<base64(iv)>` with a fresh random IV.
+///
+/// # Errors
+///
+/// Returns [`RelayError::CryptoError`] when `shared_secret` is not a valid
+/// AES-256 key.
 pub fn encrypt_nip04(shared_secret: &[u8], plaintext: &str) -> Result<String> {
     let mut iv = [0u8; 16];
     rand::rng().fill_bytes(&mut iv);
@@ -30,6 +35,12 @@ pub fn encrypt_nip04(shared_secret: &[u8], plaintext: &str) -> Result<String> {
 
 /// Decrypts the NIP-04 `content` format (ciphertext and IV, both base64,
 /// separated by `?iv=`).
+///
+/// # Errors
+///
+/// Returns [`RelayError::Generic`] when the `?iv=` separator is missing,
+/// [`RelayError::Base64Error`] when either half is not base64, and
+/// [`RelayError::CryptoError`] for a bad key, IV or padding.
 pub fn decrypt_nip04(shared_secret: &[u8], encrypted_content: &str) -> Result<String> {
     let parts: Vec<&str> = encrypted_content.split("?iv=").collect();
     if parts.len() != 2 {

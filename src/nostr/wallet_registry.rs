@@ -2,7 +2,7 @@ use crate::log_debug;
 use crate::log_error;
 use crate::log_info;
 use crate::log_warn;
-use crate::nostr::{Event, Filter, Limits, StorageError};
+use crate::nostr::{Event, Filter, Limits};
 use crate::util::short;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -15,6 +15,25 @@ use std::collections::{HashMap, HashSet};
 /// hold thousands. Bounding one pass keeps the Durable Object alarm short; the
 /// next alarm continues where this one stopped.
 const LEGACY_ALIAS_SWEEP_LIMIT: usize = 128;
+
+/// Failure reported by a [`Storage`](crate::wallet_registry::Storage)
+/// implementation. The payload is the backend's own message — there is no
+/// portable error taxonomy across Durable Object storage and test mocks.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct StorageError(pub String);
+
+impl From<String> for StorageError {
+    fn from(message: String) -> Self {
+        Self(message)
+    }
+}
+
+impl From<&str> for StorageError {
+    fn from(message: &str) -> Self {
+        Self(message.to_string())
+    }
+}
 
 /// Persistence boundary of the registry: a key/value store backed by Durable
 /// Object storage in production (see `cloudflare`) and `MockStorage` in

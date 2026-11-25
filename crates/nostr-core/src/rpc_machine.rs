@@ -1,4 +1,4 @@
-use crate::nostr::{Event, Filter, RelayMessage};
+use crate::{Event, Filter, RelayMessage};
 
 /// Result of one NWC RPC round trip through the relay.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -108,7 +108,7 @@ impl NwcRpcMachine {
                 let references_request = event
                     .tags
                     .iter()
-                    .any(|t| matches!(t, crate::nostr::Tag::E(eid, _) if eid == &self.request.id));
+                    .any(|t| matches!(t, crate::Tag::E(eid, _) if eid == &self.request.id));
 
                 if references_request {
                     self.state = RpcState::Success(event);

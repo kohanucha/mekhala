@@ -634,23 +634,16 @@ checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 name = "mekhala"
 version = "0.1.0"
 dependencies = [
- "aes",
  "async-trait",
- "base64",
- "block-padding",
- "cbc",
- "chacha20",
- "cipher",
  "console_error_panic_hook",
  "futures",
  "futures-util",
  "getrandom",
  "hex",
  "hkdf",
- "hmac",
  "js-sys",
  "k256",
- "rand",
+ "nostr-core",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
@@ -667,6 +660,30 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "nostr-core"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "base64",
+ "block-padding",
+ "cbc",
+ "chacha20",
+ "cipher",
+ "getrandom",
+ "hex",
+ "hkdf",
+ "hmac",
+ "js-sys",
+ "k256",
+ "rand",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "url",
+]
 
 [[package]]
 name = "num-traits"

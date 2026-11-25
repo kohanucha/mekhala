@@ -1,4 +1,4 @@
-use crate::nostr::{Event, Filter};
+use crate::{Event, Filter};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 
@@ -92,7 +92,7 @@ pub enum RelayMessage {
     /// `OK` — acknowledgment of an accepted/rejected event.
     Ok(String, bool, String),
     /// `EVENT` — an event delivered for a subscription.
-    Event(String, crate::nostr::Event),
+    Event(String, crate::Event),
     /// `EOSE` — end of stored events for a subscription.
     Eose(String),
     /// `NOTICE` — human-readable relay notice.
@@ -128,7 +128,7 @@ impl RelayMessage {
             "EVENT" if arr.len() >= 3 => {
                 let sub_id: String =
                     serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
-                let event: crate::nostr::Event =
+                let event: crate::Event =
                     serde_json::from_str(arr[2].get()).map_err(|e| e.to_string())?;
                 Ok(Self::Event(sub_id, event))
             }

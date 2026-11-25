@@ -1,4 +1,4 @@
-use crate::nostr::{Limits, RelayError, Tag};
+use crate::{Limits, RelayError, Tag};
 use k256::schnorr::signature::hazmat::PrehashVerifier;
 use k256::schnorr::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
