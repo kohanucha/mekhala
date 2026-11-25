@@ -55,6 +55,11 @@ jobs:
       - name: Clippy check
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
+      # The host run above never compiles code behind
+      # `cfg(target_arch = "wasm32")`, which is what the Worker actually ships.
+      - name: Clippy check (wasm32)
+        run: cargo clippy --target wasm32-unknown-unknown --lib --all-features --locked -- -D warnings
+
       - name: Rustdoc check
         run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
 

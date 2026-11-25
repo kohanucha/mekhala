@@ -8,7 +8,7 @@
 pub fn now() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        (worker::Date::now().as_millis() / 1000) as u64
+        worker::Date::now().as_millis() / 1000
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
