@@ -19,6 +19,7 @@ Mekhala is a specialized, ephemeral Nostr relay built in Rust and compiled to We
 - **Plain NWC only:** Connections are the standard `nostr+walletconnect://` kind, where the client already knows the wallet pubkey (Alby Go ↔ Alby Hub, or any app that accepts an NWC connection string). The wallet-auth / one-click Nostr flow, where a wallet announces itself to an app through a `p` tag on its info event, is not served: a `{kinds:[13194], "#p":[<app>]}` `REQ` replays no events. (A live publish still routes like any NIP-01 event; only the replay path is missing.)
 - **WebSocket Hibernation:** Uses Cloudflare Durable Objects to hibernate idle connections, waking up seamlessly when new events arrive to save resources.
 - **Strictly Specialized:** Only handles NWC-related event kinds (`5` for deleting cached wallet info, `13194`, `23194-23197`). Social and generic Nostr events are rejected.
+- **Relay only:** It checks signatures and routes by tags, but never decrypts NIP-47 content and stores no wallet connection strings. A Lightning Address service that mints invoices through NWC runs separately and connects to the relay like any other NWC client.
 
 ---
 
@@ -35,9 +36,6 @@ Mekhala is a specialized, ephemeral Nostr relay built in Rust and compiled to We
    - `wrangler.toml` deploys with `workers_dev = false` and `preview_urls = false`, so the Worker is **not** reachable on `<worker>.<account>.workers.dev`. Set `workers_dev = true` if you cannot attach a domain yet.
 4. **Connect Your Wallet:**
    - **Your Relay URL:** `wss://relay.example.com/<your-secret-path>`
-
-> [!WARNING]
-> **Lightning Address Bridge (Experimental):** The feature to bridge Lightning Addresses (e.g., `you@domain.com`) to NWC is highly experimental, under development, and not yet ready for production or general use.
 
 ---
 
@@ -57,13 +55,7 @@ Configurable via `wrangler.toml` or environment variables:
 | `EVICT_MIN_IDLE_SECONDS` | `10` | Minimum idle time before a subscription-less connection may be closed to free a slot. |
 | `MAX_INFO_EVENTS` | `1000` | Max cached wallet info events (each also costs an `infoid:` key and one alias per `p` tag); `0` disables. |
 | `INFO_TTL_SECONDS` | `2592000` | How long a cached wallet info event is served, measured from its `created_at`; `0` disables. |
-| `MIN_AMOUNT_MSAT` | `1000` | Lowest accepted LN address invoice amount; also advertised as `minSendable`. |
-| `MAX_AMOUNT_MSAT` | `100000000` | Highest accepted LN address invoice amount; also advertised as `maxSendable`. |
-| `CALLBACK_RATE_LIMIT_PER_MINUTE` | `10` | LN address callbacks admitted per source per minute; `0` disables. |
 | `MESSAGE_RATE_LIMIT_PER_MINUTE` | `120` | Frames a connection may send per minute before it is closed with a `NOTICE`; `0` disables. |
-| `RATE_LIMIT_MAX_KEYS` | `1000` | How many sources may own a callback counter. New sources past it share one counter; `0` removes the cap. |
-| `LN_ADDRESS_KEY` | *None* | 64 hex characters (32 bytes) sealing the stored wallet connections. Required for LN address use; without it no address is served or stored. |
-| `LN_ADDRESS_KEY_PREVIOUS` | *None* | Previous sealing key, kept readable while rotating `LN_ADDRESS_KEY`. |
 | `MAX_CONTENT_LENGTH` | `98304` | Max event `content` size in bytes. Covers the largest NIP-44 payload (87,472 base64 chars) plus the JSON envelope. |
 
 ---

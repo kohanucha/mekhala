@@ -1,8 +1,57 @@
-use super::super::Tag;
+use super::super::{ClientMessage, Tag};
 use super::*;
 use crate::common::test_helpers::{
     new_test_engine, set_test_time, test_limits, test_now, MockStorage,
 };
+
+/// Drives the engine the way `CloudflareTransport::websocket_message` does:
+/// an `EVENT` is validated, acknowledged with `OK`, then routed; `REQ` and
+/// `CLOSE` go straight to the engine. Tests use it so they exercise the same
+/// path as production.
+async fn handle_typed(
+    engine: &mut NostrEngine<MockStorage>,
+    id: u32,
+    message: ClientMessage,
+) -> Vec<EngineResponse> {
+    match message {
+        ClientMessage::Event(event) => match engine.validate_event(&event) {
+            Ok(()) => {
+                let mut responses = vec![EngineResponse::send(
+                    id,
+                    RelayMessage::Ok(event.id.clone(), true, String::new()),
+                )];
+                responses.extend(engine.route_verified_event(id, event).await);
+                responses
+            }
+            Err((event_id, error)) => vec![EngineResponse::send(
+                id,
+                RelayMessage::Ok(event_id, false, error),
+            )],
+        },
+        ClientMessage::Req(sub_id, filters) => engine.handle_req(id, sub_id, filters).await,
+        ClientMessage::Close(sub_id) => engine.process_close(id, sub_id).await,
+    }
+}
+
+/// Acknowledges and routes `event` without verifying it, for tests that only
+/// care about routing and use unsigned fixtures.
+async fn route_verified(
+    engine: &mut NostrEngine<MockStorage>,
+    id: u32,
+    event: Event,
+) -> Vec<EngineResponse> {
+    let mut responses = vec![EngineResponse::send(
+        id,
+        RelayMessage::Ok(event.id.clone(), true, String::new()),
+    )];
+    responses.extend(engine.route_verified_event(id, event).await);
+    responses
+}
+
+/// Whether a wallet info event is cached for `pubkey`.
+async fn has_info(engine: &mut NostrEngine<MockStorage>, pubkey: &str) -> bool {
+    engine.registry.get_info(pubkey).await.is_some()
+}
 
 #[test]
 fn test_engine_req_storage() {
@@ -12,7 +61,7 @@ fn test_engine_req_storage() {
 
         let req = r#"["REQ", "sub1", {"kinds": [23194], "authors": ["pk1"]}]"#;
         let msg = ClientMessage::from_json(req).unwrap();
-        let responses = engine.handle_typed(1, msg).await;
+        let responses = handle_typed(&mut engine, 1, msg).await;
 
         assert!(responses.iter().any(|r| {
             if let EngineResponse::Send { message, .. } = r {
@@ -42,7 +91,7 @@ fn test_engine_info_event_routing() {
 
         engine.process_info_event(event).await;
 
-        assert!(engine.get_wallet_info("pk1").await.is_some());
+        assert!(has_info(&mut engine, "pk1").await);
     });
 }
 
@@ -50,170 +99,7 @@ fn test_engine_info_event_routing() {
 fn test_get_wallet_info_none() {
     let mut engine = new_test_engine();
     futures::executor::block_on(async {
-        assert!(engine.get_wallet_info("pk1").await.is_none());
-    });
-}
-
-#[test]
-fn test_engine_get_wallet_info_with_encryption_tag() {
-    futures::executor::block_on(async {
-        let mut engine = new_test_engine();
-        let event = Event {
-            id: "id1".into(),
-            pubkey: "pk1".into(),
-            created_at: 1000,
-            kind: 13194,
-            tags: vec![super::super::Tag::encryption("nip44_v2 nip04")],
-            content: String::new(),
-            sig: "sig1".into(),
-        };
-        engine.process_info_event(event).await;
-
-        let info = engine.get_wallet_info("pk1").await.unwrap();
-        assert!(info
-            .encryption_algorithms
-            .contains(&super::super::nip_47::EncryptionMethod::Nip44));
-        assert!(info
-            .encryption_algorithms
-            .contains(&super::super::nip_47::EncryptionMethod::Nip04));
-    });
-}
-
-#[test]
-fn test_engine_get_wallet_info_default_nip04() {
-    futures::executor::block_on(async {
-        let mut engine = new_test_engine();
-        let event = Event {
-            id: "id1".into(),
-            pubkey: "pk1".into(),
-            created_at: 1000,
-            kind: 13194,
-            tags: vec![],
-            content: String::new(),
-            sig: "sig1".into(),
-        };
-        engine.process_info_event(event).await;
-
-        let info = engine.get_wallet_info("pk1").await.unwrap();
-        assert_eq!(
-            info.encryption_algorithms,
-            vec![super::super::nip_47::EncryptionMethod::Nip04]
-        );
-    });
-}
-
-#[test]
-fn test_bridge_signaling() {
-    futures::executor::block_on(async {
-        set_test_time(crate::util::now());
-        let mut engine = new_test_engine();
-        engine.on_connect(1).await;
-        let wallet_pk = "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f";
-        let _ = engine
-            .process_req(
-                1,
-                "sub1".into(),
-                vec![Filter {
-                    kinds: Some(vec![23194]),
-                    p_tags: Some(vec![wallet_pk.into()]),
-                    ..Default::default()
-                }],
-            )
-            .await;
-
-        let bridge_id = 100;
-        let bridge_sk = "0202020202020202020202020202020202020202020202020202020202020202";
-
-        // Create a valid signed event for the bridge
-        let uri = crate::nostr::nip_47::NwcUri {
-            wallet_pubkey: wallet_pk.to_string(),
-            secret: bridge_sk.to_string(),
-        };
-        let client = crate::nostr::nip_47::NwcClient::new(uri).unwrap();
-
-        let bridge_req =
-            serde_json::json!(["REQ", "sub_bridge", {"kinds": [23194], "#p": [client.my_pubkey]}])
-                .to_string();
-        let msg = ClientMessage::from_json(&bridge_req).unwrap();
-        let responses = engine.handle_typed(bridge_id, msg).await;
-
-        // REQ should return EOSE Send
-        assert!(responses.iter().any(|r| matches!(
-            r,
-            EngineResponse::Send {
-                recipient_id: 100,
-                message: RelayMessage::Eose(_)
-            }
-        )));
-
-        // Create a valid signed event for the bridge
-        let uri = crate::nostr::nip_47::NwcUri {
-            wallet_pubkey: wallet_pk.to_string(),
-            secret: bridge_sk.to_string(),
-        };
-        let client = crate::nostr::nip_47::NwcClient::new(uri).unwrap();
-        let (bridge_event, _) = client
-            .create_request_event(
-                crate::nostr::nip_47::NwcMethod::MakeInvoice,
-                serde_json::json!({}),
-                vec![],
-            )
-            .unwrap();
-
-        let bridge_event_json = serde_json::json!(["EVENT", bridge_event]).to_string();
-
-        let msg = ClientMessage::from_json(&bridge_event_json).unwrap();
-        let responses = engine.handle_typed(bridge_id, msg).await;
-
-        // Event should be routed to connection 1 as Send
-        assert!(responses.iter().any(|r| matches!(
-            r,
-            EngineResponse::Send {
-                recipient_id: 1,
-                ..
-            }
-        )));
-        // EVENT should return OK Send
-        assert!(responses.iter().any(|r| matches!(
-            r,
-            EngineResponse::Send {
-                recipient_id: 100,
-                message: RelayMessage::Ok(_, true, _)
-            }
-        )));
-
-        let wallet_response_event: Event = serde_json::from_value(serde_json::json!({
-            "id": "resp1",
-            "pubkey": "wallet_pk",
-            "created_at": test_now(),
-            "kind": 23194,
-            "tags": [["p", "bridge"], ["e", "event1"]],
-            "content": "",
-            "sig": "dummy_sig"
-        }))
-        .unwrap();
-
-        let mut wallet_response_event = wallet_response_event;
-        wallet_response_event.tags = vec![
-            super::super::Tag::p(&client.my_pubkey),
-            super::super::Tag::E(bridge_event.id.clone(), vec![]),
-        ];
-
-        // Wallet response comes from connection 1
-        let responses = engine.process_event(1, wallet_response_event).await;
-
-        // Routed EVENT SHOULD go to connection 100 as Send
-        assert!(responses.iter().any(|r| {
-            if let EngineResponse::Send {
-                recipient_id,
-                message: RelayMessage::Event(_, event),
-            } = r
-            {
-                *recipient_id == 100 && event.id == "resp1"
-            } else {
-                false
-            }
-        }));
+        assert!(!has_info(&mut engine, "pk1").await);
     });
 }
 
@@ -246,7 +132,7 @@ fn test_virtual_connection_lifecycle() {
             sig: "sig".into(),
         };
 
-        let responses = engine.process_event(2, event).await;
+        let responses = route_verified(&mut engine, 2, event).await;
 
         assert!(responses.iter().any(|r| {
             if let EngineResponse::Send {
@@ -261,20 +147,20 @@ fn test_virtual_connection_lifecycle() {
         }));
 
         engine.process_close(id, "sub1".into()).await;
-        let responses_after = engine
-            .process_event(
-                2,
-                Event {
-                    id: "event2".into(),
-                    pubkey: "alice".into(),
-                    created_at: test_now(),
-                    kind: 23194,
-                    tags: vec![],
-                    content: "test".into(),
-                    sig: "sig".into(),
-                },
-            )
-            .await;
+        let responses_after = route_verified(
+            &mut engine,
+            2,
+            Event {
+                id: "event2".into(),
+                pubkey: "alice".into(),
+                created_at: test_now(),
+                kind: 23194,
+                tags: vec![],
+                content: "test".into(),
+                sig: "sig".into(),
+            },
+        )
+        .await;
         assert!(
             !responses_after.iter().any(|r| {
                 matches!(r, EngineResponse::Send { recipient_id, .. } if *recipient_id == id)
@@ -312,12 +198,12 @@ fn test_engine_wakeup_logic() {
             pubkey: pk.into(),
             created_at: test_now(),
             kind: 23194,
-            tags: vec![super::super::Tag::p(pk)],
+            tags: vec![super::super::Tag::P(String::from(pk), vec![])],
             content: "wake up!".into(),
             sig: "sig".into(),
         };
 
-        let responses = engine.process_event(99, event).await;
+        let responses = route_verified(&mut engine, 99, event).await;
 
         // 3. Verify that a WakeUp response was returned
         assert!(responses
@@ -355,7 +241,7 @@ fn test_engine_uses_clock_for_event_verification() {
         .to_string();
 
         let msg = ClientMessage::from_json(&event_json).unwrap();
-        let responses = engine.handle_typed(1, msg).await;
+        let responses = handle_typed(&mut engine, 1, msg).await;
 
         let ok_response = responses.iter().find_map(|r| {
             if let EngineResponse::Send {
@@ -390,7 +276,7 @@ fn test_engine_uses_clock_for_event_verification() {
         .to_string();
 
         let msg = ClientMessage::from_json(&event_json_recent).unwrap();
-        let responses = engine.handle_typed(1, msg).await;
+        let responses = handle_typed(&mut engine, 1, msg).await;
 
         let ok_response = responses.iter().find_map(|r| {
             if let EngineResponse::Send {
@@ -431,7 +317,7 @@ fn test_kind_5_deletion_with_e_tag() {
             sig: "sig1".into(),
         };
         engine.process_info_event(info_event.clone()).await;
-        assert!(engine.get_wallet_info("alice").await.is_some());
+        assert!(has_info(&mut engine, "alice").await);
 
         // Delete it via kind 5 with e-tag referencing the info event
         let deletion_event = Event {
@@ -446,7 +332,7 @@ fn test_kind_5_deletion_with_e_tag() {
         engine.process_deletion_event(&deletion_event).await;
 
         // Info should be gone
-        assert!(engine.get_wallet_info("alice").await.is_none());
+        assert!(!has_info(&mut engine, "alice").await);
     });
 }
 
@@ -467,7 +353,7 @@ fn test_kind_5_deletion_unauthorized() {
             sig: "sig1".into(),
         };
         engine.process_info_event(info_event.clone()).await;
-        assert!(engine.get_wallet_info("alice").await.is_some());
+        assert!(has_info(&mut engine, "alice").await);
 
         // Try to delete with wrong pubkey (bob)
         let deletion_event = Event {
@@ -482,7 +368,7 @@ fn test_kind_5_deletion_unauthorized() {
         engine.process_deletion_event(&deletion_event).await;
 
         // Info should still be there (bob can't delete alice's info)
-        assert!(engine.get_wallet_info("alice").await.is_some());
+        assert!(has_info(&mut engine, "alice").await);
     });
 }
 
@@ -502,9 +388,9 @@ fn test_kind_5_deletion_with_e_tag_after_hibernation() {
 
         let sk = wallet_sk();
         let pk = crate::common::test_helpers::TEST_WALLET_PK;
-        let info = signed_event(&sk, 13194, vec![Tag::p("app")], "{}");
+        let info = signed_event(&sk, 13194, vec![Tag::P(String::from("app"), vec![])], "{}");
         engine.process_info_event(info.clone()).await;
-        assert!(engine.get_wallet_info(pk).await.is_some());
+        assert!(has_info(&mut engine, pk).await);
         assert!(
             !data.lock().unwrap().contains_key("info-p:app"),
             "caching a p-tagged info event must not write an alias"
@@ -521,7 +407,7 @@ fn test_kind_5_deletion_with_e_tag_after_hibernation() {
         let deletion = signed_event(&sk, 5, vec![Tag::E(info.id.clone(), vec![])], "");
         restarted.process_deletion_event(&deletion).await;
 
-        assert!(restarted.get_wallet_info(pk).await.is_none());
+        assert!(!has_info(&mut restarted, pk).await);
     });
 }
 
@@ -563,7 +449,7 @@ fn test_kind_5_deletion_with_e_tag_after_hibernation_unauthorized() {
         };
         restarted.process_deletion_event(&attacker).await;
 
-        assert!(restarted.get_wallet_info(pk).await.is_some());
+        assert!(has_info(&mut restarted, pk).await);
     });
 }
 
@@ -602,7 +488,7 @@ fn test_kind_5_deletion_by_old_e_tag_keeps_republished_info() {
         restarted.process_deletion_event(&deletion).await;
 
         assert!(
-            restarted.get_wallet_info(pk).await.is_some(),
+            has_info(&mut restarted, pk).await,
             "the newer info event must survive deletion of the old id"
         );
     });
@@ -624,7 +510,7 @@ fn test_kind_5_deletion_with_k_tag() {
             sig: "sig1".into(),
         };
         engine.process_info_event(info_event.clone()).await;
-        assert!(engine.get_wallet_info("alice").await.is_some());
+        assert!(has_info(&mut engine, "alice").await);
 
         // Delete via k=13194 tag without e-tag
         let deletion_event = Event {
@@ -638,7 +524,7 @@ fn test_kind_5_deletion_with_k_tag() {
         };
         engine.process_deletion_event(&deletion_event).await;
 
-        assert!(engine.get_wallet_info("alice").await.is_none());
+        assert!(!has_info(&mut engine, "alice").await);
     });
 }
 
@@ -696,7 +582,7 @@ fn test_route_verified_event_with_info_kind() {
         let _ = engine.route_verified_event(1, info_event.clone()).await;
         // route_verified_event does NOT send OK (caller's job) — just caches + routes
         // Verify info was cached
-        assert!(engine.get_wallet_info("alice").await.is_some());
+        assert!(has_info(&mut engine, "alice").await);
     });
 }
 
@@ -707,7 +593,7 @@ fn test_handle_close_removes_subscription() {
         engine.on_connect(1).await;
 
         let msg = ClientMessage::Close("sub1".into());
-        let responses = engine.handle_typed(1, msg).await;
+        let responses = handle_typed(&mut engine, 1, msg).await;
         // Close should not produce any responses
         assert!(responses.is_empty());
     });
@@ -731,20 +617,20 @@ fn test_on_terminate_removes_state() {
             .await;
 
         engine.on_terminate(1).await;
-        let responses_after = engine
-            .process_event(
-                2,
-                Event {
-                    id: "event2".into(),
-                    pubkey: "alice".into(),
-                    created_at: test_now(),
-                    kind: 23194,
-                    tags: vec![],
-                    content: "test".into(),
-                    sig: "sig".into(),
-                },
-            )
-            .await;
+        let responses_after = route_verified(
+            &mut engine,
+            2,
+            Event {
+                id: "event2".into(),
+                pubkey: "alice".into(),
+                created_at: test_now(),
+                kind: 23194,
+                tags: vec![],
+                content: "test".into(),
+                sig: "sig".into(),
+            },
+        )
+        .await;
         assert!(
             !responses_after.iter().any(|r| {
                 matches!(r, EngineResponse::Send { recipient_id, .. } if *recipient_id == 1)
@@ -765,7 +651,7 @@ fn test_internal_rpc_session_terminate_leaves_no_state() {
 
         engine.on_connect(42).await;
         let _ = engine
-            .handle_req_internal(
+            .handle_req(
                 42,
                 "rpc_sub".to_string(),
                 vec![Filter {
@@ -781,15 +667,11 @@ fn test_internal_rpc_session_terminate_leaves_no_state() {
         let keys: Vec<String> = data.lock().unwrap().keys().cloned().collect();
         assert!(
             keys.is_empty(),
-            "internal RPC session leaked persisted state: {keys:?}"
+            "terminated session leaked persisted state: {keys:?}"
         );
         assert!(
             !engine.load(42).await,
             "terminated session must not restore"
-        );
-        assert!(
-            engine.load_by_pubkey("app-pk").await.is_empty(),
-            "terminated session must not be resurrected"
         );
     });
 }
@@ -804,7 +686,7 @@ fn test_close_prunes_internal_rpc_indexes() {
 
         engine.on_connect(7).await;
         let _ = engine
-            .handle_req_internal(
+            .handle_req(
                 7,
                 "rpc_sub".to_string(),
                 vec![Filter {
@@ -823,7 +705,6 @@ fn test_close_prunes_internal_rpc_indexes() {
             "CLOSE left persisted state behind: {keys:?}"
         );
         assert!(!engine.load(7).await);
-        assert!(engine.load_by_pubkey("app-pk").await.is_empty());
     });
 }
 
@@ -834,7 +715,7 @@ fn test_req_filter_too_broad() {
         engine.on_connect(1).await;
 
         let msg = ClientMessage::Req("sub1".into(), vec![Filter::default()]);
-        let responses = engine.handle_typed(1, msg).await;
+        let responses = handle_typed(&mut engine, 1, msg).await;
         assert!(responses.iter().any(|r| {
             if let EngineResponse::Send { message, .. } = r {
                 matches!(message, RelayMessage::Closed(_, _))
@@ -905,7 +786,7 @@ fn test_handle_req_internal_returns_closed_on_storage_failure() {
         engine.on_connect(1).await;
 
         let responses = engine
-            .handle_req_internal(
+            .handle_req(
                 1,
                 "sub1".into(),
                 vec![Filter {
@@ -955,7 +836,7 @@ fn test_kind_5_deletion_no_tags() {
             sig: "sig1".into(),
         };
         engine.process_info_event(info_event.clone()).await;
-        assert!(engine.get_wallet_info("alice").await.is_some());
+        assert!(has_info(&mut engine, "alice").await);
 
         // Delete with no e/k tags (delete all events by this author)
         let deletion_event = Event {
@@ -969,7 +850,7 @@ fn test_kind_5_deletion_no_tags() {
         };
         engine.process_deletion_event(&deletion_event).await;
 
-        assert!(engine.get_wallet_info("alice").await.is_none());
+        assert!(!has_info(&mut engine, "alice").await);
     });
 }
 
@@ -1017,17 +898,18 @@ fn test_handle_typed_caches_info_event() {
         let mut engine = new_test_engine();
         engine.on_connect(1).await;
 
-        let event = signed_event(&wallet_sk(), 13194, vec![Tag::encryption("nip44_v2")], "{}");
-        let responses = engine.handle_typed(1, ClientMessage::Event(event)).await;
+        let event = signed_event(
+            &wallet_sk(),
+            13194,
+            vec![Tag::Encryption("nip44_v2".into())],
+            "{}",
+        );
+        let responses = handle_typed(&mut engine, 1, ClientMessage::Event(event)).await;
 
         assert!(ok_response(&responses).0);
-        let info = engine
-            .get_wallet_info(crate::common::test_helpers::TEST_WALLET_PK)
-            .await
-            .expect("info event must be cached");
-        assert_eq!(
-            info.encryption_algorithms,
-            vec![super::super::nip_47::EncryptionMethod::Nip44]
+        assert!(
+            has_info(&mut engine, crate::common::test_helpers::TEST_WALLET_PK).await,
+            "info event must be cached"
         );
     });
 }
@@ -1043,13 +925,13 @@ fn test_handle_typed_deletion_removes_cached_info() {
 
         let info = signed_event(&sk, 13194, vec![], "{}");
         engine.process_info_event(info.clone()).await;
-        assert!(engine.get_wallet_info(pk).await.is_some());
+        assert!(has_info(&mut engine, pk).await);
 
         let deletion = signed_event(&sk, 5, vec![Tag::E(info.id, vec![])], "");
-        let responses = engine.handle_typed(1, ClientMessage::Event(deletion)).await;
+        let responses = handle_typed(&mut engine, 1, ClientMessage::Event(deletion)).await;
 
         assert!(ok_response(&responses).0);
-        assert!(engine.get_wallet_info(pk).await.is_none());
+        assert!(!has_info(&mut engine, pk).await);
     });
 }
 
@@ -1062,7 +944,7 @@ fn test_handle_typed_blocks_disallowed_kind() {
 
         // A correctly signed kind 1 event is still rejected by the allow list.
         let event = signed_event(&wallet_sk(), 1, vec![], "text");
-        let responses = engine.handle_typed(1, ClientMessage::Event(event)).await;
+        let responses = handle_typed(&mut engine, 1, ClientMessage::Event(event)).await;
         let (success, msg) = ok_response(&responses);
         assert!(!success);
         assert!(msg.contains("kind not allowed"), "{msg}");
@@ -1071,7 +953,7 @@ fn test_handle_typed_blocks_disallowed_kind() {
         // rejection, because the kind check runs before verification.
         let mut broken = signed_event(&wallet_sk(), 1, vec![], "text");
         broken.id = "tampered".into();
-        let responses = engine.handle_typed(1, ClientMessage::Event(broken)).await;
+        let responses = handle_typed(&mut engine, 1, ClientMessage::Event(broken)).await;
         let (success, msg) = ok_response(&responses);
         assert!(!success);
         assert!(msg.contains("kind not allowed"), "{msg}");
@@ -1100,7 +982,7 @@ fn test_route_verified_event_deletion_removes_cached_info() {
                 ..
             }
         )));
-        assert!(engine.get_wallet_info(pk).await.is_none());
+        assert!(!has_info(&mut engine, pk).await);
     });
 }
 
@@ -1112,8 +994,11 @@ fn test_validate_event_accepts_nwc_kinds() {
 
     for kind in [23194u64, 23195, 23196, 23197] {
         let tags = match kind {
-            23195 => vec![Tag::p("recipient"), Tag::E("event".into(), vec![])],
-            23196 | 23197 => vec![Tag::p("recipient")],
+            23195 => vec![
+                Tag::P(String::from("recipient"), vec![]),
+                Tag::E("event".into(), vec![]),
+            ],
+            23196 | 23197 => vec![Tag::P(String::from("recipient"), vec![])],
             _ => vec![],
         };
         let event = signed_event(&sk, kind, tags, "");
@@ -1130,19 +1015,19 @@ fn test_route_verified_event_delivers_to_subscriber() {
         engine.on_connect(2).await;
         let pk = crate::common::test_helpers::TEST_WALLET_PK;
 
-        let responses = engine
-            .handle_typed(
-                2,
-                ClientMessage::Req(
-                    "sub1".into(),
-                    vec![Filter {
-                        kinds: Some(vec![23194]),
-                        authors: Some(vec![pk.into()]),
-                        ..Default::default()
-                    }],
-                ),
-            )
-            .await;
+        let responses = handle_typed(
+            &mut engine,
+            2,
+            ClientMessage::Req(
+                "sub1".into(),
+                vec![Filter {
+                    kinds: Some(vec![23194]),
+                    authors: Some(vec![pk.into()]),
+                    ..Default::default()
+                }],
+            ),
+        )
+        .await;
         assert!(responses.iter().any(|r| matches!(
             r,
             EngineResponse::Send {
@@ -1317,20 +1202,20 @@ fn test_engine_add_connection_and_load() {
         engine.add_connection(9, subs).await;
         assert!(engine.load(9).await);
 
-        let responses = engine
-            .process_event(
-                1,
-                Event {
-                    id: "e1".into(),
-                    pubkey: "alice".into(),
-                    created_at: test_now(),
-                    kind: 23194,
-                    tags: vec![],
-                    content: String::new(),
-                    sig: "sig".into(),
-                },
-            )
-            .await;
+        let responses = route_verified(
+            &mut engine,
+            1,
+            Event {
+                id: "e1".into(),
+                pubkey: "alice".into(),
+                created_at: test_now(),
+                kind: 23194,
+                tags: vec![],
+                content: String::new(),
+                sig: "sig".into(),
+            },
+        )
+        .await;
         assert!(responses.iter().any(|r| matches!(
             r,
             EngineResponse::Send {
@@ -1338,27 +1223,6 @@ fn test_engine_add_connection_and_load() {
                 ..
             }
         )));
-    });
-}
-
-#[test]
-fn test_engine_load_by_pubkey() {
-    futures::executor::block_on(async {
-        let mut engine = new_test_engine();
-        engine.on_connect(5).await;
-        let _ = engine
-            .process_req(
-                5,
-                "sub1".into(),
-                vec![Filter {
-                    p_tags: Some(vec!["wallet_pk".into()]),
-                    ..Default::default()
-                }],
-            )
-            .await;
-
-        assert_eq!(engine.load_by_pubkey("wallet_pk").await, vec![5]);
-        assert!(engine.load_by_pubkey("unknown_pk").await.is_empty());
     });
 }
 
@@ -1388,7 +1252,7 @@ fn test_kind_5_deletion_with_unknown_e_tag() {
         };
         engine.process_deletion_event(&deletion).await;
 
-        assert!(engine.get_wallet_info("alice").await.is_some());
+        assert!(has_info(&mut engine, "alice").await);
     });
 }
 
@@ -1418,7 +1282,7 @@ fn test_kind_5_deletion_with_unrelated_k_tag() {
         };
         engine.process_deletion_event(&deletion).await;
 
-        assert!(engine.get_wallet_info("alice").await.is_some());
+        assert!(has_info(&mut engine, "alice").await);
     });
 }
 
@@ -1466,7 +1330,10 @@ fn test_req_does_not_replay_info_for_a_p_tag_scoped_app() {
         let mut engine = new_test_engine();
         engine.on_connect(1).await;
         engine
-            .process_info_event(info_event_for("info1", vec![Tag::p("app")]))
+            .process_info_event(info_event_for(
+                "info1",
+                vec![Tag::P(String::from("app"), vec![])],
+            ))
             .await;
 
         // A wallet announcing itself to an app through a `p` tag is not a
@@ -1474,7 +1341,7 @@ fn test_req_does_not_replay_info_for_a_p_tag_scoped_app() {
         // author only, so an app-scoped REQ gets EOSE and nothing else.
         let msg =
             ClientMessage::from_json(r##"["REQ","nwa",{"kinds":[13194],"#p":["app"]}]"##).unwrap();
-        let responses = engine.handle_typed(1, msg).await;
+        let responses = handle_typed(&mut engine, 1, msg).await;
 
         assert!(replay_events(&responses).is_empty());
         assert!(responses.iter().any(|r| matches!(
@@ -1490,7 +1357,7 @@ fn test_req_does_not_replay_info_for_a_p_tag_scoped_app() {
             r##"["REQ","author",{"kinds":[13194],"authors":["wallet"]}]"##,
         )
         .unwrap();
-        let responses = engine.handle_typed(1, msg).await;
+        let responses = handle_typed(&mut engine, 1, msg).await;
         assert_eq!(
             replay_events(&responses),
             vec![("author".to_string(), "info1".to_string())]
@@ -1506,14 +1373,17 @@ fn test_req_replays_info_once_when_author_and_p_tag_match() {
         // Both filter values resolve to the same cached event, so the replay
         // must deduplicate them.
         engine
-            .process_info_event(info_event_for("info1", vec![Tag::p("wallet")]))
+            .process_info_event(info_event_for(
+                "info1",
+                vec![Tag::P(String::from("wallet"), vec![])],
+            ))
             .await;
 
         let msg = ClientMessage::from_json(
             r##"["REQ","both",{"kinds":[13194],"authors":["wallet"],"#p":["wallet"]}]"##,
         )
         .unwrap();
-        let responses = engine.handle_typed(1, msg).await;
+        let responses = handle_typed(&mut engine, 1, msg).await;
 
         assert_eq!(
             replay_events(&responses).len(),
@@ -1532,20 +1402,21 @@ fn test_e_tag_only_subscription_receives_event() {
 
         let msg = ClientMessage::from_json(r##"["REQ","sub-e",{"kinds":[23195],"#e":["req1"]}]"##)
             .unwrap();
-        let _ = engine.handle_typed(1, msg).await;
+        let _ = handle_typed(&mut engine, 1, msg).await;
 
         let event = signed_event(
             &wallet_sk(),
             23195,
             vec![
-                Tag::p(crate::common::test_helpers::TEST_WALLET_PK),
+                Tag::P(
+                    String::from(crate::common::test_helpers::TEST_WALLET_PK),
+                    vec![],
+                ),
                 Tag::E("req1".into(), vec![]),
             ],
             "ciphertext",
         );
-        let responses = engine
-            .handle_typed(1, ClientMessage::Event(event.clone()))
-            .await;
+        let responses = handle_typed(&mut engine, 1, ClientMessage::Event(event.clone())).await;
 
         assert!(ok_response(&responses).0, "event must be accepted");
         assert_eq!(
@@ -1566,7 +1437,10 @@ fn test_ids_only_subscription_receives_event() {
             &wallet_sk(),
             23195,
             vec![
-                Tag::p(crate::common::test_helpers::TEST_WALLET_PK),
+                Tag::P(
+                    String::from(crate::common::test_helpers::TEST_WALLET_PK),
+                    vec![],
+                ),
                 Tag::E("req1".into(), vec![]),
             ],
             "ciphertext",
@@ -1574,11 +1448,9 @@ fn test_ids_only_subscription_receives_event() {
         let msg =
             ClientMessage::from_json(&format!(r#"["REQ","sub-id",{{"ids":["{}"]}}]"#, event.id))
                 .unwrap();
-        let _ = engine.handle_typed(1, msg).await;
+        let _ = handle_typed(&mut engine, 1, msg).await;
 
-        let responses = engine
-            .handle_typed(1, ClientMessage::Event(event.clone()))
-            .await;
+        let responses = handle_typed(&mut engine, 1, ClientMessage::Event(event.clone())).await;
 
         assert_eq!(
             replay_events(&responses),
@@ -1810,12 +1682,12 @@ fn test_engine_has_subscriptions_tracks_req_and_close() {
 
         let req = r#"["REQ", "sub1", {"kinds": [23194], "authors": ["pk1"]}]"#;
         let msg = ClientMessage::from_json(req).unwrap();
-        engine.handle_typed(1, msg).await;
+        handle_typed(&mut engine, 1, msg).await;
         assert!(engine.has_subscriptions(1).await);
 
         let close = r#"["CLOSE", "sub1"]"#;
         let msg = ClientMessage::from_json(close).unwrap();
-        engine.handle_typed(1, msg).await;
+        handle_typed(&mut engine, 1, msg).await;
         assert!(!engine.has_subscriptions(1).await);
     });
 }
@@ -1842,18 +1714,18 @@ fn test_engine_prune_info_cache_removes_expired_events() {
                 sig: "sig".into(),
             })
             .await;
-        assert!(engine.get_wallet_info("wallet").await.is_some());
+        assert!(has_info(&mut engine, "wallet").await);
 
         set_test_time(1_000_100);
         assert_eq!(engine.prune_info_cache().await, 1);
-        assert!(engine.get_wallet_info("wallet").await.is_none());
+        assert!(!has_info(&mut engine, "wallet").await);
 
         set_test_time(1_700_000_000);
     });
 }
 
 #[test]
-fn test_engine_prune_legacy_info_aliases_removes_stale_keys() {
+fn test_engine_prune_retired_keys_removes_stale_keys() {
     futures::executor::block_on(async {
         use std::collections::HashMap;
         use std::sync::{Arc, Mutex};
@@ -1872,7 +1744,7 @@ fn test_engine_prune_legacy_info_aliases_removes_stale_keys() {
             data.insert("info-p:other".to_string(), serde_json::json!("wallet2"));
         }
 
-        assert_eq!(engine.prune_legacy_info_aliases().await, 2);
+        assert_eq!(engine.prune_retired_keys().await, 2);
 
         {
             let data = data.lock().unwrap();
@@ -1881,6 +1753,6 @@ fn test_engine_prune_legacy_info_aliases_removes_stale_keys() {
         }
 
         // Nothing left to sweep.
-        assert_eq!(engine.prune_legacy_info_aliases().await, 0);
+        assert_eq!(engine.prune_retired_keys().await, 0);
     });
 }

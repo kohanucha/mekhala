@@ -37,15 +37,6 @@ cleanup() {
     # Port 8793/8794 cleanup (from info-cache tests in JS)
     lsof -ti :8793 2>/dev/null | xargs kill -9 2>/dev/null || true
     lsof -ti :8794 2>/dev/null | xargs kill -9 2>/dev/null || true
-    # Port 8795/8796 cleanup (from LN address policy tests in JS)
-    lsof -ti :8795 2>/dev/null | xargs kill -9 2>/dev/null || true
-    lsof -ti :8796 2>/dev/null | xargs kill -9 2>/dev/null || true
-    # Port 8797/8798/8799 cleanup (from LN address storage tests in JS)
-    lsof -ti :8797 2>/dev/null | xargs kill -9 2>/dev/null || true
-    lsof -ti :8798 2>/dev/null | xargs kill -9 2>/dev/null || true
-    lsof -ti :8799 2>/dev/null | xargs kill -9 2>/dev/null || true
-    # Port 8800 cleanup (from the LN address counter budget test in JS)
-    lsof -ti :8800 2>/dev/null | xargs kill -9 2>/dev/null || true
     # Port 8802 cleanup (from the message budget test in JS)
     lsof -ti :8802 2>/dev/null | xargs kill -9 2>/dev/null || true
     echo "Cleanup complete."
@@ -119,17 +110,11 @@ echo "Step 3: Starting local relay on port $PORT..."
 # hold sockets open while waiting, so the gate would refuse healthy traffic.
 # Each gate has a dedicated test that starts its own relay — see
 # test/connection-limits.test.js.
-#
-# LN_ADDRESS_KEY seals the stored NWC URIs; the suite seeds plaintext rows and
-# relies on the lazy migration path, so it needs a valid key of its own.
-LN_ADDRESS_KEY="5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
 npx wrangler dev --port $PORT --ip 127.0.0.1 \
     --var MAX_CONNECTIONS_PER_IP:0 \
     --var MAX_CONNECTIONS_PER_ASN:0 \
     --var IDLE_TIMEOUT_SECONDS:0 \
-    --var CONNECTION_SWEEP_SECONDS:0 \
-    --var CALLBACK_RATE_LIMIT_PER_MINUTE:0 \
-    --var LN_ADDRESS_KEY:$LN_ADDRESS_KEY > "$LOG_FILE" 2>&1 &
+    --var CONNECTION_SWEEP_SECONDS:0 > "$LOG_FILE" 2>&1 &
 WRANGLER_PID=$!
 
 # 4. Wait for Relay to be Ready

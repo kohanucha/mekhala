@@ -26,16 +26,13 @@ The relay acts as an ephemeral "routing engine" between Lightning wallet applica
     - `server.rs`: Main router and HTTP handlers.
     - `auth.rs`: Authentication logic.
     - `cloudflare/`: Cloudflare-specific logic (DO, Hibernation, WebSocket, ConnectionState).
-    - `lnaddress/`: LN Address to NWC bridging logic.
     - `nostr/`: Nostr protocol implementation (NIPs, Event, Filter, Limits, RelayError).
     - `util/`: Shared utility functions.
 - `test/`: Integration tests.
-    - `setup-kv.js`: Utility to seed KV for testing LN Addresses.
     - `test-relay.js`: Comprehensive integration tests using `nostr-tools`.
 - `scripts/`: Shell scripts for development and CI.
     - `build.sh`: Build script for compiling Rust to Wasm.
     - `generate_secret.sh`: Utility to generate a secure relay secret.
-    - `setup-kv.sh`: Script to initialize KV for local testing.
     - `test.sh`: Main entry point for running the full test suite.
 - `wrangler.toml`: Main configuration and security limits.
 
@@ -46,7 +43,6 @@ Mekhala is highly configurable via `wrangler.toml`:
 - `MAX_EVENT_TAGS`: Max tags allowed per event (Default: 10 - NWC events are functional).
 - `MAX_CONTENT_LENGTH`: Max event content size in bytes (Default: 98304 - covers the 87472-character NIP-44 payload ceiling).
 - `RELAY_SECRET`: Optional secret path for private relay mode.
-- `MEKHALA_NWC_KV`: KV namespace binding for LN Address mapping.
 
 ## Building and Running
 
@@ -75,6 +71,6 @@ Mekhala is highly configurable via `wrangler.toml`:
   - **Short-Lived State**: Flush critical state to storage frequently to avoid losing data if an isolate crashes.
 
 ### Testing Practices
-- **100% Coverage**: Core business logic in `nostr/event.rs` and `nostr/nip_47.rs` must have full unit test coverage.
+- **100% Coverage**: Core business logic in `nostr/event.rs` and `nostr/engine.rs` must have full unit test coverage.
 - **Integration**: Every new feature or protocol restriction must be verified with `test-relay.js`.
 - **Reproducibility**: Bug fixes must include a failing test case in `cargo test` or `test-relay.js` before the fix is applied.

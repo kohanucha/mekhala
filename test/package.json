@@ -4,9 +4,7 @@
   "main": "test-relay.js",
   "type": "module",
   "scripts": {
-    "test": "node run-all.js",
-    "setup-test": "node setup-kv.js",
-    "pretest": "npm run setup-test"
+    "test": "node run-all.js"
   },
   "dependencies": {
     "@getalby/sdk": "9.0.0",

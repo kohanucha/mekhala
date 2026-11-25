@@ -1,5 +1,4 @@
 use super::*;
-use futures::channel::oneshot;
 
 fn attachment(id: u32, ip_tag: Option<&str>, asn: Option<u32>) -> Attachment {
     Attachment {
@@ -19,66 +18,15 @@ fn limits(max_connections: usize, max_per_ip: usize, max_per_asn: usize) -> Admi
 }
 
 #[test]
-fn test_send_internal_delivers() {
-    let mut reg = ConnectionRegistry::new();
-    let (tx, rx) = oneshot::channel();
-    reg.add_internal(1, tx);
-
-    let sent = reg.send(1, "hello".into());
-    assert!(sent);
-    assert_eq!(futures::executor::block_on(rx), Ok("hello".into()));
-}
-
-#[test]
 fn test_send_unknown_id() {
-    let mut reg = ConnectionRegistry::new();
-    assert!(!reg.send(42, "msg".into()));
-}
-
-#[test]
-fn test_remove_internal() {
-    let mut reg = ConnectionRegistry::new();
-    let (tx, rx) = oneshot::channel::<String>();
-    reg.add_internal(1, tx);
-
-    reg.remove(1);
-    assert!(!reg.send(1, "msg".into()));
-    // Receiver should be dropped since sender was removed
-    assert!(futures::executor::block_on(rx).is_err());
-}
-
-#[test]
-fn test_send_internal_consumes_entry() {
-    let mut reg = ConnectionRegistry::new();
-    let (tx, _rx) = oneshot::channel();
-    reg.add_internal(1, tx);
-
-    assert!(reg.send(1, "first".into()));
-    assert!(!reg.send(1, "second".into()));
+    let reg = ConnectionRegistry::new();
+    assert!(!reg.send(42, "msg"));
 }
 
 #[test]
 fn test_new_registry_empty() {
     let reg = ConnectionRegistry::new();
-    let (tx, rx) = oneshot::channel::<String>();
-    // Even though we have a sender, it's not in the registry
-    assert!(reg.connections.keys().next().is_none());
-    drop(tx);
-    futures::executor::block_on(async {
-        let result = rx.await;
-        assert!(result.is_err());
-    });
-}
-
-#[test]
-fn test_send_external_tracks_after_send() {
-    // For External connections, send should not remove the entry
-    // (WebSocket send can fail, but the connection should remain tracked).
-    // We can't construct a real WebSocket, but we verify the code path
-    // by checking that send returns true (the ws.send_with_str error is ignored)
-    // and the entry remains after send for unknown IDs.
-    let mut reg = ConnectionRegistry::new();
-    assert!(!reg.send(99, "msg".into()));
+    assert!(reg.connections.is_empty());
 }
 
 #[test]
@@ -236,52 +184,34 @@ fn test_registry_forgets_activity_on_remove() {
 #[test]
 fn test_message_budget_is_per_connection() {
     let mut reg = ConnectionRegistry::new();
+    assert_eq!(reg.admit_message(1, 1_000, 2), window::Admission::Admitted);
+    assert_eq!(reg.admit_message(1, 1_000, 2), window::Admission::Admitted);
     assert_eq!(
         reg.admit_message(1, 1_000, 2),
-        rate_limit::Admission::Admitted
-    );
-    assert_eq!(
-        reg.admit_message(1, 1_000, 2),
-        rate_limit::Admission::Admitted
-    );
-    assert_eq!(
-        reg.admit_message(1, 1_000, 2),
-        rate_limit::Admission::Limited { retry_after: 60 }
+        window::Admission::Limited { retry_after: 60 }
     );
 
     // Another connection has not spent anything.
-    assert_eq!(
-        reg.admit_message(2, 1_000, 2),
-        rate_limit::Admission::Admitted
-    );
+    assert_eq!(reg.admit_message(2, 1_000, 2), window::Admission::Admitted);
 }
 
 #[test]
 fn test_message_budget_with_no_limit_admits_everything() {
     let mut reg = ConnectionRegistry::new();
     for _ in 0..50 {
-        assert_eq!(
-            reg.admit_message(1, 1_000, 0),
-            rate_limit::Admission::Admitted
-        );
+        assert_eq!(reg.admit_message(1, 1_000, 0), window::Admission::Admitted);
     }
 }
 
 #[test]
 fn test_message_budget_resets_when_the_window_rolls() {
     let mut reg = ConnectionRegistry::new();
-    assert_eq!(
-        reg.admit_message(1, 1_000, 1),
-        rate_limit::Admission::Admitted
-    );
+    assert_eq!(reg.admit_message(1, 1_000, 1), window::Admission::Admitted);
     assert_eq!(
         reg.admit_message(1, 1_030, 1),
-        rate_limit::Admission::Limited { retry_after: 30 }
+        window::Admission::Limited { retry_after: 30 }
     );
-    assert_eq!(
-        reg.admit_message(1, 1_060, 1),
-        rate_limit::Admission::Admitted
-    );
+    assert_eq!(reg.admit_message(1, 1_060, 1), window::Admission::Admitted);
 }
 
 #[test]
@@ -289,14 +219,8 @@ fn test_registry_forgets_the_message_budget_on_remove() {
     // A new connection id must not inherit a spent window, and the map must
     // not grow with connections that are gone.
     let mut reg = ConnectionRegistry::new();
-    assert_eq!(
-        reg.admit_message(7, 1_000, 1),
-        rate_limit::Admission::Admitted
-    );
+    assert_eq!(reg.admit_message(7, 1_000, 1), window::Admission::Admitted);
     reg.remove(7);
-    assert_eq!(
-        reg.admit_message(7, 1_000, 1),
-        rate_limit::Admission::Admitted
-    );
+    assert_eq!(reg.admit_message(7, 1_000, 1), window::Admission::Admitted);
     assert_eq!(reg.message_windows.len(), 1);
 }

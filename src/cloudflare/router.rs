@@ -1,9 +1,8 @@
 use crate::auth::AuthError;
 use crate::cloudflare::auth;
 use crate::cloudflare::config::CloudflareConfig;
-use crate::cloudflare::handler::LnAddressHandler;
-use crate::cloudflare::{apply_security_headers, create_cors_response, CloudflareKvStore};
-use worker::{Env, Error, Method, Request, Response, Result, RouteContext, Router};
+use crate::cloudflare::{apply_security_headers, create_cors_response};
+use worker::{Env, Method, Request, Response, Result, RouteContext, Router};
 
 pub async fn run(req: Request, env: Env) -> Result<Response> {
     let router = Router::new();
@@ -11,34 +10,6 @@ pub async fn run(req: Request, env: Env) -> Result<Response> {
     router
         .get_async("/", handle_request)
         .get_async("/:secret", handle_request)
-        .get_async("/.well-known/lnurlp/:username", |req, ctx| async move {
-            let kv = ctx.env.kv("MEKHALA_NWC_KV")?;
-            let config = CloudflareConfig::from_env(&ctx.env);
-            let kv_store = CloudflareKvStore::new(kv, config.ln_address_keys);
-            let handler = LnAddressHandler::new(&kv_store, config.lnaddress_policy());
-            let username = ctx
-                .param("username")
-                .ok_or_else(|| Error::from("Missing username"))?;
-            if !crate::lnaddress::is_valid_username(username) {
-                return create_cors_response(
-                    Response::from_json(
-                        &serde_json::json!({ "status": "ERROR", "reason": "Not Found" }),
-                    )?
-                    .with_status(404),
-                );
-            }
-            match handler.handle_pay_request(req, username).await {
-                Ok(resp) => Ok(resp),
-                Err(e) => {
-                    let error_body =
-                        serde_json::json!({ "status": "ERROR", "reason": e.to_string() });
-                    create_cors_response(Response::from_json(&error_body)?.with_status(200))
-                }
-            }
-        })
-        .get_async("/lnaddress/:username/callback", |req, ctx| async move {
-            crate::cloudflare::transport::connect(req, &ctx.env).await
-        })
         .run(req, env)
         .await
 }

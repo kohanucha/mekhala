@@ -28,12 +28,3 @@ console.log(`  WebSocket: ${RELAY_URL}`);
 console.log(`  HTTP:      ${HTTP_URL}\n`);
 
 export { baseURL, httpProtocol, relaySecret };
-
-export async function setupTempKV(username, nwcUri) {
-  const { execSync } = await import("child_process");
-  execSync(`npx wrangler kv key put --binding MEKHALA_NWC_KV --local --config ../wrangler.toml "${username}" "${nwcUri}"`);
-}
-
-export function hex(bytes) {
-  return Buffer.from(bytes).toString("hex");
-}

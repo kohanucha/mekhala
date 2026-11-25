@@ -25,8 +25,8 @@ fn test_target_pubkeys_with_p_tags() {
         created_at: 0,
         kind: 1,
         tags: vec![
-            Tag::p("recipient1"),
-            Tag::p("recipient2"),
+            Tag::P(String::from("recipient1"), vec![]),
+            Tag::P(String::from("recipient2"), vec![]),
             Tag::E("event_id".into(), vec![]),
         ],
         content: String::new(),
@@ -48,7 +48,7 @@ fn test_target_pubkeys_deduplication() {
         kind: 1,
         tags: vec![
             Tag::P("pk1".into(), vec![]),
-            Tag::p("pk2"),
+            Tag::P(String::from("pk2"), vec![]),
             Tag::P("pk2".into(), vec![]),
         ],
         content: String::new(),
@@ -189,7 +189,7 @@ fn test_verify_kind_23195_missing_e_tag() {
         pubkey: "pk1".into(),
         created_at: 1700000000,
         kind: 23195,
-        tags: vec![Tag::p("pk2")],
+        tags: vec![Tag::P(String::from("pk2"), vec![])],
         content: String::new(),
         sig: "sig".into(),
     };
@@ -204,7 +204,7 @@ fn test_verify_kind_23196_with_p_tag_passes_kind_check() {
         pubkey: "pk1".into(),
         created_at: 1700000000,
         kind: 23196,
-        tags: vec![Tag::p("pk2")],
+        tags: vec![Tag::P(String::from("pk2"), vec![])],
         content: String::new(),
         sig: "badsig".into(),
     };
@@ -365,7 +365,7 @@ fn test_compute_id_covers_tags_and_content() {
         crate::common::test_helpers::TEST_WALLET_PK,
         1_700_000_000,
         23194,
-        &[Tag::p("abc")],
+        &[Tag::P(String::from("abc"), vec![])],
         "",
     )
     .unwrap();
@@ -417,7 +417,10 @@ fn test_verify_tag_count_boundary() {
         pubkey: "pk".into(),
         created_at: 1_700_000_000,
         kind: 13194,
-        tags: vec![Tag::p("a"), Tag::p("b")],
+        tags: vec![
+            Tag::P(String::from("a"), vec![]),
+            Tag::P(String::from("b"), vec![]),
+        ],
         content: String::new(),
         sig: "sig".into(),
     };
@@ -431,7 +434,11 @@ fn test_verify_tag_count_boundary() {
     );
 
     let over = Event {
-        tags: vec![Tag::p("a"), Tag::p("b"), Tag::p("c")],
+        tags: vec![
+            Tag::P(String::from("a"), vec![]),
+            Tag::P(String::from("b"), vec![]),
+            Tag::P(String::from("c"), vec![]),
+        ],
         ..event
     };
     match over.verify(1_700_000_000, &limits) {

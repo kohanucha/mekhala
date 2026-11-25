@@ -4,6 +4,22 @@ use crate::common::test_helpers::{
 };
 use crate::nostr::Tag;
 
+/// Connections the persisted `pk:` index wakes for an event authored by
+/// `pubkey` — the storage half of `match_event`, which is how the relay finds
+/// hibernated subscribers.
+async fn woken_by(registry: &mut WalletRegistry<MockStorage>, pubkey: &str) -> Vec<u32> {
+    let event = crate::common::test_helpers::test_event("probe", pubkey, 23194, vec![], 1_000);
+    registry
+        .match_event(&event)
+        .await
+        .into_iter()
+        .filter_map(|response| match response {
+            RegistryResponse::WakeUp(id) => Some(id),
+            RegistryResponse::Send { .. } => None,
+        })
+        .collect()
+}
+
 fn has_subscription(registry: &WalletRegistry<MockStorage>, conn_id: u32, sub_id: &str) -> bool {
     registry
         .index
@@ -239,7 +255,7 @@ fn test_registry_match_routing() {
             pubkey: "app_pk".into(),
             created_at: 1000,
             kind: 23194,
-            tags: vec![Tag::p(wallet_pk)],
+            tags: vec![Tag::P(String::from(wallet_pk), vec![])],
             content: "test".into(),
             sig: "sig".into(),
         };
@@ -279,7 +295,7 @@ fn test_registry_lazy_load() {
             pubkey: "app_pk".into(),
             created_at: 1000,
             kind: 23194,
-            tags: vec![Tag::p(wallet_pk)],
+            tags: vec![Tag::P(String::from(wallet_pk), vec![])],
             content: "test".into(),
             sig: "sig".into(),
         };
@@ -560,7 +576,7 @@ fn test_unsubscribe_prunes_persisted_routing_indexes() {
             "unsubscribe left persisted state behind: {keys:?}"
         );
         assert!(!registry.load(1).await);
-        assert!(registry.load_by_pubkey("app-pk").await.is_empty());
+        assert!(woken_by(&mut registry, "app-pk").await.is_empty());
     });
 }
 
@@ -609,7 +625,7 @@ fn test_registry_lazy_deletion() {
 
         let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
 
-        let result = registry.load_by_pubkey("stale").await;
+        let result = woken_by(&mut registry, "stale").await;
         assert!(result.is_empty());
 
         let data = registry.storage.data.lock().unwrap();
@@ -731,7 +747,7 @@ fn test_delete_info_for_nonexistent_pubkey() {
 }
 
 #[test]
-fn test_load_by_pubkey_with_number_value() {
+fn test_wake_up_reads_a_numeric_pk_index() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
         let mut entries = HashMap::new();
@@ -748,13 +764,13 @@ fn test_load_by_pubkey_with_number_value() {
         storage.put_batch(entries).await.unwrap();
 
         let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
-        let ids = registry.load_by_pubkey("single").await;
+        let ids = woken_by(&mut registry, "single").await;
         assert!(ids.contains(&42));
     });
 }
 
 #[test]
-fn test_load_by_pubkey_with_unknown_value_type() {
+fn test_wake_up_ignores_an_unreadable_pk_index() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
         let mut entries = HashMap::new();
@@ -762,7 +778,7 @@ fn test_load_by_pubkey_with_unknown_value_type() {
         storage.put_batch(entries).await.unwrap();
 
         let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
-        let ids = registry.load_by_pubkey("weird").await;
+        let ids = woken_by(&mut registry, "weird").await;
         assert!(ids.is_empty());
     });
 }
@@ -822,7 +838,7 @@ fn test_two_connections_same_pubkey_different_filters() {
                 pubkey: "app_pk".into(),
                 created_at: 1000,
                 kind: 23194,
-                tags: vec![Tag::p(shared_pk)],
+                tags: vec![Tag::P(String::from(shared_pk), vec![])],
                 content: "pay invoice".into(),
                 sig: "sig".into(),
             };
@@ -848,7 +864,7 @@ fn test_two_connections_same_pubkey_different_filters() {
                 pubkey: shared_pk.into(),
                 created_at: 1000,
                 kind: 23195,
-                tags: vec![Tag::p("app_pk")],
+                tags: vec![Tag::P(String::from("app_pk"), vec![])],
                 content: "paid".into(),
                 sig: "sig".into(),
             };
@@ -1086,33 +1102,6 @@ fn test_subscribe_rejects_routing_key_budget_overrun() {
 }
 
 #[test]
-fn test_load_by_pubkey_falls_back_to_live_connection() {
-    futures::executor::block_on(async {
-        let storage = MockStorage::new();
-        let data = storage.data.clone();
-        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
-
-        registry
-            .subscribe(3, "s1".into(), vec![authors_filter("pk")])
-            .await
-            .unwrap();
-        registry
-            .subscribe(5, "s2".into(), vec![authors_filter("pk")])
-            .await
-            .unwrap();
-        // Drop the persisted index so the in-memory fallback is used.
-        data.lock().unwrap().remove("pk:pk");
-
-        assert_eq!(
-            registry.load_by_pubkey("pk").await,
-            vec![5],
-            "highest connection id must win"
-        );
-        assert!(registry.load_by_pubkey("other").await.is_empty());
-    });
-}
-
-#[test]
 fn test_saved_connection_state_has_no_info_event_copy() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
@@ -1171,7 +1160,7 @@ fn test_hibernation_does_not_resurrect_stale_info_event() {
 }
 
 #[test]
-fn test_load_by_pubkey_prunes_stale_ids() {
+fn test_wake_up_prunes_stale_ids() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
         let data = storage.data.clone();
@@ -1182,7 +1171,7 @@ fn test_load_by_pubkey_prunes_stale_ids() {
             .insert("pk:pk".into(), serde_json::json!([7, 99]));
 
         let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
-        assert_eq!(registry.load_by_pubkey("pk").await, vec![7]);
+        assert_eq!(woken_by(&mut registry, "pk").await, vec![7]);
         assert_eq!(data.lock().unwrap()["pk:pk"], serde_json::json!([7]));
     });
 }
@@ -1362,31 +1351,6 @@ fn test_delete_info_keeps_pk_index_while_subscriptions_remain() {
 }
 
 #[test]
-fn test_get_connection_id_picks_highest_connection() {
-    futures::executor::block_on(async {
-        // Two distinct subscriptions give the entry multiple candidates, so a
-        // max-reduction that just takes the last iterated id is exposed.
-        for _ in 0..32 {
-            let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
-            registry
-                .subscribe(1, "s1".into(), vec![authors_filter("pk")])
-                .await
-                .unwrap();
-            registry
-                .subscribe(2, "s1".into(), vec![authors_filter("pk")])
-                .await
-                .unwrap();
-            registry
-                .subscribe(3, "s2".into(), vec![authors_filter("pk")])
-                .await
-                .unwrap();
-
-            assert_eq!(registry.index.get_connection_id("pk"), Some(3));
-        }
-    });
-}
-
-#[test]
 fn test_on_terminate_keeps_numeric_pk_index_for_other_connections() {
     futures::executor::block_on(async {
         let storage = MockStorage::new();
@@ -1416,7 +1380,10 @@ fn info_with_p_tags(id: &str, author: &str, p_tags: &[&str]) -> Event {
         id,
         author,
         13194,
-        p_tags.iter().map(|pk| Tag::p(*pk)).collect(),
+        p_tags
+            .iter()
+            .map(|pk| Tag::P(String::from(*pk), vec![]))
+            .collect(),
         1000,
     )
 }
@@ -1475,39 +1442,45 @@ fn test_app_p_tag_does_not_resolve_after_hibernation() {
 }
 
 #[test]
-fn test_prune_legacy_info_aliases_removes_only_p_tag_keys() {
+fn test_prune_retired_keys_removes_only_retired_families() {
     futures::executor::block_on(async {
         let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
             .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
             .await;
 
-        // State written by a version that indexed `p` tags.
+        // State written by a version that indexed `p` tags, and by the
+        // Lightning Address callback limiter that used to live here.
         let mut entries = std::collections::HashMap::new();
         entries.insert("info-p:app".to_string(), serde_json::json!("wallet"));
         entries.insert("info-p:other".to_string(), serde_json::json!("wallet2"));
+        entries.insert(
+            "rate:abc".to_string(),
+            serde_json::json!({"window_start": 1, "count": 1}),
+        );
         registry.storage.put_batch(entries).await.unwrap();
 
-        assert_eq!(registry.prune_legacy_info_aliases().await, 2);
+        assert_eq!(registry.prune_retired_keys().await, 3);
 
         let keys = stored_keys(&registry);
         assert!(!keys.contains(&"info-p:app".to_string()));
         assert!(!keys.contains(&"info-p:other".to_string()));
+        assert!(!keys.contains(&"rate:abc".to_string()));
         assert!(keys.contains(&"info:wallet".to_string()));
         assert!(keys.contains(&"infoid:info1".to_string()));
 
         // Already clean: a second pass is a no-op.
-        assert_eq!(registry.prune_legacy_info_aliases().await, 0);
+        assert_eq!(registry.prune_retired_keys().await, 0);
     });
 }
 
 #[test]
-fn test_prune_legacy_info_aliases_drains_in_bounded_batches() {
+fn test_prune_retired_keys_drains_in_bounded_batches() {
     futures::executor::block_on(async {
         let registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         // More keys than one pass may delete: the sweep has to keep going on
         // the next alarm instead of dropping the rest.
-        let seeded = LEGACY_ALIAS_SWEEP_LIMIT + 2;
+        let seeded = RETIRED_KEY_SWEEP_LIMIT + 2;
         let mut entries = std::collections::HashMap::new();
         for i in 0..seeded {
             entries.insert(format!("info-p:app{i}"), serde_json::json!("wallet"));
@@ -1515,14 +1488,14 @@ fn test_prune_legacy_info_aliases_drains_in_bounded_batches() {
         registry.storage.put_batch(entries).await.unwrap();
 
         let mut passes = 0usize;
-        let mut removed = registry.prune_legacy_info_aliases().await;
+        let mut removed = registry.prune_retired_keys().await;
         assert_eq!(
-            removed, LEGACY_ALIAS_SWEEP_LIMIT,
+            removed, RETIRED_KEY_SWEEP_LIMIT,
             "one pass must stop at the limit"
         );
         passes += 1;
         while removed > 0 {
-            removed = registry.prune_legacy_info_aliases().await;
+            removed = registry.prune_retired_keys().await;
             if removed > 0 {
                 passes += 1;
             }
@@ -1534,6 +1507,34 @@ fn test_prune_legacy_info_aliases_drains_in_bounded_batches() {
             keys.iter().all(|key| !key.starts_with("info-p:")),
             "the sweep must drain every legacy key: {keys:?}"
         );
+    });
+}
+
+#[test]
+fn test_prune_retired_keys_shares_one_budget_across_families() {
+    futures::executor::block_on(async {
+        let registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
+        // A full pass of `info-p:` keys plus two `rate:` keys: the first pass
+        // must stop at the limit instead of deleting both families' keys.
+        let mut entries = std::collections::HashMap::new();
+        for i in 0..RETIRED_KEY_SWEEP_LIMIT {
+            entries.insert(format!("info-p:app{i}"), serde_json::json!("wallet"));
+        }
+        entries.insert("rate:a".to_string(), serde_json::json!({}));
+        entries.insert("rate:b".to_string(), serde_json::json!({}));
+        registry.storage.put_batch(entries).await.unwrap();
+
+        assert_eq!(registry.prune_retired_keys().await, RETIRED_KEY_SWEEP_LIMIT);
+        let keys = stored_keys(&registry);
+        assert!(keys.iter().all(|key| !key.starts_with("info-p:")));
+        assert_eq!(
+            keys.iter().filter(|key| key.starts_with("rate:")).count(),
+            2,
+            "the second family waits for the next pass: {keys:?}"
+        );
+
+        assert_eq!(registry.prune_retired_keys().await, 2);
+        assert_eq!(registry.prune_retired_keys().await, 0);
     });
 }
 
@@ -1559,7 +1560,10 @@ fn response_event(id: &str, e_tag: &str) -> Event {
         id,
         "wallet",
         23195,
-        vec![Tag::p("app"), Tag::E(e_tag.into(), vec![])],
+        vec![
+            Tag::P(String::from("app"), vec![]),
+            Tag::E(e_tag.into(), vec![]),
+        ],
         1000,
     )
 }

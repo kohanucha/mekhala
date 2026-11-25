@@ -16,12 +16,7 @@ pub struct CloudflareConfig {
     pub info_ttl_seconds: u64,
     pub wallet_region: Option<String>,
     pub relay_secret: Option<String>,
-    pub min_amount_msat: u64,
-    pub max_amount_msat: u64,
-    pub callback_rate_limit_per_minute: u32,
     pub message_rate_limit_per_minute: u32,
-    pub rate_limit_max_keys: usize,
-    pub ln_address_keys: crate::lnaddress::LnAddressKeys,
 }
 
 impl CloudflareConfig {
@@ -97,50 +92,13 @@ impl CloudflareConfig {
                 .map(|v| v.to_string())
                 .filter(|s| !s.is_empty()),
             relay_secret: env.var("RELAY_SECRET").ok().map(|v| v.to_string()),
-            min_amount_msat: Self::parse_opt_u64(
-                env.var("MIN_AMOUNT_MSAT").ok().map(|v| v.to_string()),
-                crate::lnaddress::policy::DEFAULT_MIN_SENDABLE_MSAT,
-            ),
-            max_amount_msat: Self::parse_opt_u64(
-                env.var("MAX_AMOUNT_MSAT").ok().map(|v| v.to_string()),
-                crate::lnaddress::policy::DEFAULT_MAX_SENDABLE_MSAT,
-            ),
-            callback_rate_limit_per_minute: Self::parse_opt_u32(
-                env.var("CALLBACK_RATE_LIMIT_PER_MINUTE")
-                    .ok()
-                    .map(|v| v.to_string()),
-                10,
-            ),
             message_rate_limit_per_minute: Self::parse_opt_u32(
                 env.var("MESSAGE_RATE_LIMIT_PER_MINUTE")
                     .ok()
                     .map(|v| v.to_string()),
                 120,
             ),
-            rate_limit_max_keys: Self::parse_opt(
-                env.var("RATE_LIMIT_MAX_KEYS").ok().map(|v| v.to_string()),
-                1_000,
-            ),
-            ln_address_keys: crate::lnaddress::LnAddressKeys::from_hex(
-                env.var(crate::lnaddress::record::KEY_ENV)
-                    .ok()
-                    .map(|v| v.to_string()),
-                env.var(crate::lnaddress::record::PREVIOUS_KEY_ENV)
-                    .ok()
-                    .map(|v| v.to_string()),
-            ),
         }
-    }
-
-    /// The LN address sendable range and callback rate limit. Both the
-    /// advertised `payRequest` and the callback read this, so the range a
-    /// client is shown is the range that is enforced.
-    pub fn lnaddress_policy(&self) -> crate::lnaddress::LnAddressPolicy {
-        crate::lnaddress::LnAddressPolicy::new(
-            self.min_amount_msat,
-            self.max_amount_msat,
-            self.callback_rate_limit_per_minute,
-        )
     }
 
     fn parse_opt(value: Option<String>, default: usize) -> usize {

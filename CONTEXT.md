@@ -16,8 +16,8 @@ A Cloudflare Workers feature where Durable Objects can release memory while keep
 ### Connection State
 The data attached to a WebSocket connection, including active subscriptions and security limits. This state is serialized and restored during hibernation/wake-up.
 
-### LN Address Bridging
-Mekhala provides an LN Address bridge, allowing users to pay to an LN Address (e.g., `user@relay.com`) which then triggers an NWC request to the user's wallet.
+### Out of scope: wallet-side work
+Mekhala never decrypts NIP-47 content, never sends NWC requests of its own, and stores no wallet connection strings. Lightning Address (LNURL-pay) and anything else that needs a wallet's secret runs in a separate service that connects to the relay as an ordinary NWC client.
 
 ## Domain Language
 
@@ -30,15 +30,9 @@ Mekhala provides an LN Address bridge, allowing users to pay to an LN Address (e
 - **WalletRegistry**: A deep module that manages NWC subscription indexing and event routing. It encapsulates the subscription index (filters → connection IDs), the routing index families (pubkey → subscriptions + info event, event id → subscriptions, `#e` tag → subscriptions), and coordinates with an asynchronous storage layer to persist and restore connection state.
 - **Routing index family**: One of the persisted key spaces that map an event attribute to the connections interested in it: `pk:` (`authors`, `#p`), `eid:` (`ids`) and `etag:` (`#e`). All three are written by `sync()`, read lazily by `load_indexed()` when an event arrives, and cleaned by `on_terminate()`. A subscription whose filter only references an event id still routes correctly, including after hibernation.
 - **Info cache** (`info:<author>`, `infoid:<event id>`): The two keys a cached `13194` event occupies. Lookup is by author only: a `p` tag on an info event names the app the wallet announced itself to and is not indexed, so `{kinds:[13194], "#p":[<app>]}` replays nothing. The wallet-auth / one-click Nostr discovery flow is out of scope.
-- **InternalConnection**: A connection tracked by WalletRegistry that has subscriptions but no backing WebSocket. Used by the LN Address bridge and RPC flow to receive routed NWC responses via oneshot channels instead of WebSocket delivery.
-- **NwcRpcMachine**: A pure state machine that drives the NWC RPC request-response cycle (subscribe → wait for response → success/failure). It is used internally by `CloudflareTransport::execute_nwc_rpc`. The `NwcTransport` trait is the public seam for RPC, with `CloudflareTransport` as the production adapter and `MockTransport` as the test double.
-- **RpcReceiveError**: The error type for the `receive_response` seam — `Timeout` or `ChannelClosed`, both representable without Cloudflare-specific types.
-- **Clock seam**: Both `NostrEngine` and `NwcClient` accept `fn() -> u64` as a clock parameter, defaulting to `crate::util::now`. No domain module calls `now()` directly — all timestamps flow through the injected seam.
-- **UserStore**: A `?Send` trait for looking up NWC connection URIs by username. `CloudflareKvStore` implements it over Workers KV, opening sealed records and migrating plaintext rows from earlier versions on first read. The seam enables unit-testing the LN Address handler without a worker runtime.
-- **LnAddressRecord** (`src/lnaddress/record.rs`): The stored registration — version, username, NWC URI, and optionally the verified methods — sealed as a NIP-44 v2 payload under an HKDF-SHA256 key derived from `LN_ADDRESS_KEY` (info `lnaddr:v1`). The username is checked after opening, so a record moved to another username's key is refused. A missing or malformed key fails closed: no record is served, and none is written.
-- **LnAddressHandler<S>**: A struct generic over `UserStore` that orchestrates LNURL-pay requests and callbacks. It resolves usernames to NWC URIs via the `UserStore` seam and delegates invoice creation to `LnAddressGateway` and `NwcSession` via the `NwcTransport` seam. The callback runs its gates in a fixed order — amount present, amount in range, per-source rate limit, store lookup, invoice — so a refusal costs neither a storage write nor a wallet round trip.
-- **SendableLimits** (`src/lnaddress/policy.rs`): The inclusive invoice amount range, in millisatoshis. One value feeds both the `.well-known` advertisement and the callback check, so the range a client is shown is the range that is enforced. A zero or inverted range falls back to the defaults and warns once; the check is never disabled.
-- **WindowCounter** (`src/lnaddress/rate_limit.rs`): A fixed 60-second admission window per source, persisted through the `CounterStore` seam (`CloudflareTransport` in production) under `rate:<ip-tag>`. `CounterStore::key_for_source` lets a store choose the key: the Durable Object gives each source its own while under `RATE_LIMIT_MAX_KEYS`, then folds new sources onto `rate:overflow`, so rotating addresses cannot grow storage without bound. Counters are only written when a request is admitted, stale ones (two windows old) are removed by the alarm sweep at most 128 per pass, and a limit of `0` admits everything without touching storage.
+- **Clock seam**: `NostrEngine` accepts `fn() -> u64` as a clock parameter, `crate::util::now` in production. No domain module calls `now()` directly — all timestamps flow through the injected seam.
+- **WindowCounter** (`src/util/window.rs`): A fixed 60-second admission window. The Durable Object keeps one per connection, in memory, to budget inbound WebSocket frames (`MESSAGE_RATE_LIMIT_PER_MINUTE`); a refused frame consumes no slot, and a limit of `0` admits everything.
+- **Retired key families** (`info-p:`, `rate:`): Storage keys earlier versions wrote and nothing current reads. `WalletRegistry::prune_retired_keys` deletes them on the alarm, at most 128 per pass across all families.
 
 ## Architecture Map
 
@@ -47,8 +41,7 @@ Mekhala provides an LN Address bridge, allowing users to pay to an LN Address (e
 - **Role:** The entry point living on Cloudflare's edge. It manages the Durable Object lifecycle, physical WebSockets, and **WebSocket Hibernation**. It translates raw incoming HTTP/WebSocket traffic into domain events.
 - **Provides:** `CloudflareStorage`, a concrete adapter for the `Storage` trait, interacting with the Durable Object's internal KV.
 - **Composed of:**
-  - `WebSocketRegistry`: manages physical WebSocket connections and hibernation recovery.
-  - `InternalConnectionMap`: manages oneshot channels for RPC responses (InternalConnections).
+  - `ConnectionRegistry`: manages physical WebSocket connections, hibernation recovery and the per-connection message budget.
 - **Calls Down To:**
   - `NostrEngine` to process incoming messages.
   - `WalletRegistry` (via the engine) to proactively wake up hibernating WebSockets when an incoming event targets an offline **Subscription**.
@@ -61,47 +54,12 @@ Mekhala provides an LN Address bridge, allowing users to pay to an LN Address (e
   - Protocol parsers (`Event`, `Filter`, `ClientMessage`).
   - `WalletRegistry` to find the recipients for a verified **NWC Event**.
 
-### 2a. NWC Client Layer
-**Module:** `NwcClient` (`src/nostr/nip_47.rs`)
-- **Role:** Creates and parses NWC request/response events (encryption, signing, expiration tags).
-- **Seams:** `clock: fn() -> u64` (injected for deterministic event creation and verification timestamps).
-- **Production adapter:** `crate::util::now` (default in `NwcClient::new`).
-- **Test double:** `test_now` / custom clock function.
-
-### 2b. RPC Orchestration (inside CloudflareTransport)
-The NWC RPC orchestration loop lives directly in `CloudflareTransport::execute_nwc_rpc` (the `NwcTransport` impl). It uses `NwcRpcMachine` for pure state transitions and owns the oneshot-channel receive loop. The only public seam is `NwcTransport` with its single method `execute_nwc_rpc`.  
-- **Production Adapter:** `CloudflareTransport` (inlines the receive loop with oneshot channels + Delay timers + engine locks).  
-- **Test Double:** `MockTransport` in `wallet_connector.rs` and `gateway.rs` tests (pre-configured response construction).
-
 ### 3. State & Indexing Layer
 **Module:** `WalletRegistry` (`src/nostr/wallet_registry.rs`)
 - **Role:** A deep module that manages the state of the relay. It encapsulates two major concerns:
   1.  **Asynchronous Persistence:** It takes the `Storage` trait and automatically synchronizes **SavedState** (subscriptions and cached info events) to disk when changes occur. It also handles hydrating state back into memory when an offline user receives an event.
   2.  **Synchronous Indexing (`WalletIndex`):** An internal, pure data structure containing the `HashMap`s needed to quickly resolve a pubkey or event tag to a specific connection ID.
 - **Called By:** `NostrEngine`.
-
-### 4. Integration Layer (The Bridge)
-**Module:** `LnAddressHandler<S: UserStore>` (`src/cloudflare/handler.rs`)
-- **Role:** Orchestrates LNURL-pay requests and callbacks using domain logic (`LnAddressGateway`, `NwcSession`) accessed through seams (`UserStore`, `NwcTransport`, `CounterStore`).
-- **Seams:** `UserStore` (username → NWC URI lookup), `NwcTransport` (existing, for RPC), `CounterStore` (per-source callback counters).
-- **Production Adapter:** `CloudflareKvStore` wraps `worker::KvStore` for Workers KV; `CloudflareTransport` implements `CounterStore` over Durable Object storage.
-- **Test Double:** `MockUserStore` (HashMap-backed), `MockStore` in `rate_limit_test.rs`.
-
-### 4a. LN Address Policy
-**Module:** `LnAddressPolicy` / `SendableLimits` (`src/lnaddress/policy.rs`) and `WindowCounter` (`src/lnaddress/rate_limit.rs`)
-- **Role:** Pure policy for LN address callbacks: the invoice amount range (advertised and enforced from the same value) and the fixed-window per-source rate limit (`admit`). Storage is reached only through the `CounterStore` seam, so both are unit-testable without a worker runtime.
-- **Called By:** `LnAddressHandler`; `CloudflareConfig::lnaddress_policy()` builds it from the environment.
-
-### 4b. LN Address Domain Logic
-**Module:** `LnAddressGateway` (`src/lnaddress/gateway.rs`)
-- **Role:** Pure domain logic for LNURL-pay metadata generation, callback URL construction, and description hashing. No infrastructure dependencies.
-- **Called By:** `LnAddressHandler`.
-
-### 4c. LN Address Storage
-**Module:** `CloudflareKvStore` (`src/cloudflare/kv.rs`) and `LnAddressRecord` (`src/lnaddress/record.rs`)
-- **Role:** Keeps each registration under `lnaddr:<username>` as `v1:<NIP-44 payload>`, sealed with a key derived from `LN_ADDRESS_KEY` (previous key accepted during rotation). Reads move plaintext rows left by earlier versions to the sealed layout before deleting them; a missing or malformed key serves and writes nothing.
-- **Seam:** the sealing format and key derivation are pure functions in `record.rs`, unit-tested without a worker runtime; `kv.rs` is only the Workers KV adapter.
-- **Called By:** `LnAddressHandler` through `UserStore`; `CloudflareConfig::ln_address_keys` supplies the keys.
 
 ### The Data Flow
 1. A physical WebSocket wakes up from **WebSocket Hibernation** and sends text to `CloudflareTransport`.
@@ -111,12 +69,4 @@ The NWC RPC orchestration loop lives directly in `CloudflareTransport::execute_n
 5. `WalletRegistry` updates its pure in-memory `WalletIndex` and async-flushes a **SavedState** via `Storage`.
 6. If it's an **NWC Event** to be broadcast, the engine asks `WalletRegistry` for matching connection IDs.
 7. `NostrEngine` returns an array of `EngineResponse::Send` commands back up to `CloudflareTransport`.
-8. `CloudflareTransport` delivers the bytes to the physical WebSockets (via `WebSocketRegistry`) or to internal RPC callers (via `InternalConnectionMap`).
-
-### The RPC Flow (LN Address Bridge / programmatic NWC)
-1. An HTTP callback arrives for LN Address bridging (or a programmatic NWC call is made).
-2. The caller invokes `NwcTransport::execute_nwc_rpc`.
-3. `CloudflareTransport::execute_nwc_rpc` allocates an InternalConnection, starts `NwcRpcMachine` (subscribe + publish), and enters the receive loop.
-4. When the wallet's response arrives via WebSocket, `CloudflareTransport.route_send` delivers it to the `InternalConnectionMap` oneshot channel.
-5. The receive loop picks up the response, transitions the machine, and returns the result event (or times out / fails).
-6. The function always disconnects the InternalConnection and cleans up before returning (unified cleanup).
+8. `CloudflareTransport` delivers the bytes to the physical WebSockets (via `ConnectionRegistry`).

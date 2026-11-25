@@ -4,23 +4,14 @@ pub mod auth;
 pub mod config;
 pub mod connection;
 pub mod durable_object;
-pub mod handler;
 pub mod identity;
-pub mod kv;
 pub mod router;
 pub mod transport;
 
 pub use durable_object::get_durable_stub;
-pub use kv::CloudflareKvStore;
 pub use transport::CloudflareTransport;
 
-use worker::{Error, Response, Result};
-
-impl From<crate::common::NwcError> for Error {
-    fn from(e: crate::common::NwcError) -> Self {
-        Self::from(e.to_string())
-    }
-}
+use worker::{Response, Result};
 
 pub fn apply_security_headers(response: Response) -> Result<Response> {
     let headers = response.headers().clone();

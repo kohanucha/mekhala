@@ -67,10 +67,22 @@ fn test_filter_matches_p_tags() {
         p_tags: Some(vec!["pubkey1".into()]),
         ..Default::default()
     };
-    let event = make_event("id1", "author1", 1, vec![Tag::p("pubkey1")], 1000);
+    let event = make_event(
+        "id1",
+        "author1",
+        1,
+        vec![Tag::P(String::from("pubkey1"), vec![])],
+        1000,
+    );
     assert!(filter.matches(&event));
 
-    let event = make_event("id1", "author1", 1, vec![Tag::p("pubkey2")], 1000);
+    let event = make_event(
+        "id1",
+        "author1",
+        1,
+        vec![Tag::P(String::from("pubkey2"), vec![])],
+        1000,
+    );
     assert!(!filter.matches(&event));
 }
 
