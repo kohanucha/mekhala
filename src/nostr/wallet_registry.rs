@@ -434,7 +434,9 @@ impl<S: Storage> WalletRegistry<S> {
     /// `limits.max_subscriptions_per_connection` or
     /// `limits.max_routing_keys_per_connection`, or when persistence fails. A
     /// `REQ` that reuses an existing `sub_id` replaces that subscription
-    /// (NIP-01), so it is allowed at the limit.
+    /// (NIP-01), so it is allowed at the limit, and the connection is taken
+    /// out of every `pk:`/`eid:`/`etag:` key that only the replaced filters
+    /// used.
     pub async fn subscribe(
         &mut self,
         conn_id: u32,
@@ -453,8 +455,10 @@ impl<S: Storage> WalletRegistry<S> {
         // `sync()` reads and rewrites every routing key of the connection, so
         // the budget is checked against the whole connection, not this filter.
         let mut prospective = self.index.get_subscriptions(conn_id);
+        let before = referenced_keys(&prospective);
         prospective.insert(sub_id.clone(), filters.clone());
-        let keys = referenced_keys(&prospective).len();
+        let after = referenced_keys(&prospective);
+        let keys = after.len();
         if keys > self.limits.max_routing_keys_per_connection {
             return Err(crate::nostr::RelayError::Generic(format!(
                 "too many routing keys: {keys} (max {})",
@@ -466,6 +470,10 @@ impl<S: Storage> WalletRegistry<S> {
         self.sync(conn_id)
             .await
             .map_err(|e| crate::nostr::RelayError::Generic(format!("persist failed: {e}")))?;
+
+        // Only after a successful save, so the old keys still match `conn:`
+        // if it fails.
+        self.leave_dropped_keys(conn_id, &before, &after).await;
         Ok(())
     }
 
@@ -487,9 +495,7 @@ impl<S: Storage> WalletRegistry<S> {
         let before = referenced_keys(&self.index.get_subscriptions(conn_id));
         self.index.unsubscribe(conn_id, sub_id.clone());
         let after = referenced_keys(&self.index.get_subscriptions(conn_id));
-        for key in before.difference(&after) {
-            self.remove_conn_from_index(key.clone(), conn_id).await;
-        }
+        self.leave_dropped_keys(conn_id, &before, &after).await;
         if let Err(e) = self.sync(conn_id).await {
             log_error!(
                 "unsubscribe sync failed: conn={} sub={} err={}",
@@ -961,6 +967,19 @@ impl<S: Storage> WalletRegistry<S> {
             ids.push(conn_id);
         }
         entries.insert(key, serde_json::json!(ids));
+    }
+
+    /// Takes `conn_id` out of the routing keys in `before` that `after` no
+    /// longer references. `sync()` only ever adds, so this is the removal half.
+    async fn leave_dropped_keys(
+        &self,
+        conn_id: u32,
+        before: &HashSet<String>,
+        after: &HashSet<String>,
+    ) {
+        for key in before.difference(after) {
+            self.remove_conn_from_index(key.clone(), conn_id).await;
+        }
     }
 
     /// Removes `conn_id` from the persisted connection list under `key`.
