@@ -61,7 +61,7 @@ Mekhala is highly configurable via `wrangler.toml`:
 - **Strict NWC Enforcement**: Reject any event or subscription not matching NWC kinds (13194, 23194-23197).
 - **Security-Hardened Limits**: Use restrictive limits (20 connections, 10 tags, 16KB content) optimized for personal NWC use to reduce attack surface and DO memory pressure.
 - **Mandatory Filter Narrowing**: All `REQ` filters must include at least one criterion (`ids`, `authors`, `#p`, `#e`) to prevent broad snooping.
-- **Security First**: Use constant-time comparisons for secrets and random 16-byte IVs for NIP-04 encryption.
+- **Security First**: Use constant-time comparisons for secrets.
 
 - **Performance Focused**: Use `serde_json::to_string(&(0, ...))` for fast NIP-01 ID verification.
 - **Panic = Abort Resilience**: Since the project is compiled with `panic = "abort"`, any panic terminates the WebAssembly isolate and drops all concurrent requests. To prevent this:

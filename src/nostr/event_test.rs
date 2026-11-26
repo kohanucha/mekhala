@@ -547,3 +547,45 @@ fn test_verify_size_limit_applies_only_to_info_events() {
         Err(RelayError::LimitExceeded(_))
     ));
 }
+
+/// An event whose id the client computed over tags the relay would rewrite
+/// (a numeric `expiration`, extra `encryption` values) must still verify.
+#[test]
+fn test_verify_uses_tags_exactly_as_signed() {
+    let pk_hex = crate::common::test_helpers::TEST_WALLET_PK;
+    let sk_bytes: [u8; 32] = hex::decode(crate::common::test_helpers::TEST_WALLET_SK)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let sk = SigningKey::from_slice(&sk_bytes).unwrap();
+
+    // Computed the way a client does: over the JSON it sends, not over `Tag`.
+    let tags = serde_json::json!([
+        ["p", pk_hex],
+        ["expiration", 1_700_000_600u64],
+        ["encryption", "nip44_v2", "extra"]
+    ]);
+    let preimage = serde_json::to_string(&serde_json::json!([
+        0,
+        pk_hex,
+        1_700_000_000u64,
+        23194,
+        tags,
+        "x"
+    ]))
+    .unwrap();
+    let id_bytes: [u8; 32] = Sha256::digest(preimage.as_bytes()).into();
+    let sig = hex::encode(sk.sign_prehash(&id_bytes).unwrap().to_bytes());
+
+    let event: Event = serde_json::from_value(serde_json::json!({
+        "id": hex::encode(id_bytes),
+        "pubkey": pk_hex,
+        "created_at": 1_700_000_000u64,
+        "kind": 23194,
+        "tags": tags,
+        "content": "x",
+        "sig": sig,
+    }))
+    .unwrap();
+    assert_eq!(event.verify(1_700_000_000, &Limits::default()), Ok(()));
+}

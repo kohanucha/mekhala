@@ -901,7 +901,10 @@ fn test_handle_typed_caches_info_event() {
         let event = signed_event(
             &wallet_sk(),
             13194,
-            vec![Tag::Encryption("nip44_v2".into())],
+            vec![Tag::Other(
+                "encryption".into(),
+                vec![serde_json::json!("nip44_v2")],
+            )],
             "{}",
         );
         let responses = handle_typed(&mut engine, 1, ClientMessage::Event(event)).await;

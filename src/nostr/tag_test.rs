@@ -49,35 +49,6 @@ fn test_tag_e_roundtrip() {
 }
 
 #[test]
-fn test_tag_encryption_roundtrip() {
-    let tag = Tag::Encryption("nip44_v2 nip04".into());
-    let json = serde_json::to_value(&tag).unwrap();
-    assert_eq!(json, serde_json::json!(["encryption", "nip44_v2 nip04"]));
-
-    let deserialized: Tag = serde_json::from_value(json).unwrap();
-    assert_eq!(deserialized, Tag::Encryption("nip44_v2 nip04".into()));
-}
-
-#[test]
-fn test_tag_expiration_roundtrip() {
-    let tag = Tag::Expiration("1234567890".into());
-    let json = serde_json::to_value(&tag).unwrap();
-    assert_eq!(json, serde_json::json!(["expiration", "1234567890"]));
-
-    let deserialized: Tag = serde_json::from_value(json).unwrap();
-    assert_eq!(deserialized, Tag::Expiration("1234567890".into()));
-}
-
-#[test]
-fn test_tag_expiration_numeric_json() {
-    let json = serde_json::json!(["expiration", 1234567890u64]);
-    let deserialized: Tag = serde_json::from_value(json).unwrap();
-    assert_eq!(deserialized, Tag::Expiration("1234567890".into()));
-    let serialized = serde_json::to_value(&deserialized).unwrap();
-    assert_eq!(serialized, serde_json::json!(["expiration", "1234567890"]));
-}
-
-#[test]
 fn test_tag_other_roundtrip() {
     let tag = Tag::Other(
         "custom".into(),
@@ -116,12 +87,10 @@ fn test_tag_accessors() {
     assert_eq!(e.event_id(), Some("eid1"));
     assert_eq!(e.pubkey(), None);
 
-    let enc = Tag::Encryption("nip04".into());
-    assert_eq!(enc.pubkey(), None);
-
-    let exp = Tag::Expiration("999".into());
-    assert_eq!(exp.pubkey(), None);
-    assert_eq!(exp.event_id(), None);
+    let other = Tag::Other("expiration".into(), vec![Value::String("999".into())]);
+    assert!(!other.is_p() && !other.is_e());
+    assert_eq!(other.pubkey(), None);
+    assert_eq!(other.event_id(), None);
 }
 
 #[test]
@@ -140,7 +109,13 @@ fn test_tags_in_event_json() {
     assert_eq!(event.tags.len(), 3);
     assert_eq!(event.tags[0], Tag::P("wallet_pk".into(), vec![]));
     assert_eq!(event.tags[1], Tag::E("event1".into(), vec![]));
-    assert_eq!(event.tags[2], Tag::Encryption("nip44_v2 nip04".into()));
+    assert_eq!(
+        event.tags[2],
+        Tag::Other(
+            "encryption".into(),
+            vec![Value::String("nip44_v2 nip04".into())]
+        )
+    );
 }
 
 #[test]
@@ -159,15 +134,6 @@ fn test_tag_preserves_non_string_values() {
     );
     let serialized = serde_json::to_value(&tag).unwrap();
     assert_eq!(serialized, json);
-}
-
-#[test]
-fn test_expiration_tag_preserves_string_form() {
-    let json_in = serde_json::json!(["expiration", "1700000000"]);
-    let tag: Tag = serde_json::from_value(json_in.clone()).unwrap();
-    assert_eq!(tag, Tag::Expiration("1700000000".into()));
-    let json_out = serde_json::to_value(&tag).unwrap();
-    assert_eq!(json_out, json_in);
 }
 
 #[test]
@@ -237,60 +203,28 @@ fn test_tag_deserialize_e_without_value() {
 }
 
 #[test]
-fn test_tag_deserialize_encryption_without_scheme() {
-    for json in [
-        serde_json::json!(["encryption"]),
-        serde_json::json!(["encryption", 44]),
-    ] {
-        let result: Result<Tag, _> = serde_json::from_value(json);
-        let err = result.expect_err("encryption tag needs a scheme");
-        assert!(
-            err.to_string()
-                .contains("encryption-tag requires a scheme value"),
-            "{err}"
-        );
-    }
-}
-
-#[test]
-fn test_tag_deserialize_expiration_without_value() {
-    let result: Result<Tag, _> = serde_json::from_value(serde_json::json!(["expiration"]));
-    let err = result.expect_err("expiration tag needs a timestamp");
-    assert!(
-        err.to_string()
-            .contains("expiration-tag requires a timestamp value"),
-        "{err}"
-    );
-}
-
-#[test]
-fn test_tag_deserialize_expiration_non_numeric_value() {
-    for json in [
-        serde_json::json!(["expiration", true]),
-        serde_json::json!(["expiration", 1.5]),
-        serde_json::json!(["expiration", null]),
-    ] {
-        let result: Result<Tag, _> = serde_json::from_value(json);
-        let err = result.expect_err("expiration must be a number or numeric string");
-        assert!(
-            err.to_string()
-                .contains("must be a number or numeric string"),
-            "{err}"
-        );
-    }
-}
-
-#[test]
-fn test_tag_deserialize_expiration_non_numeric_string() {
-    let result: Result<Tag, _> = serde_json::from_value(serde_json::json!(["expiration", "abc"]));
-    let err = result.expect_err("expiration string must parse as u64");
-    assert!(err.to_string().contains("must be a number"), "{err}");
-}
-
-#[test]
 fn test_tag_kind_value_ignores_non_k_tags() {
     // Only the `k` tag carries a kind; a numeric value in any other tag must
     // not be misread as one (it would delete the wrong events).
     let tag = Tag::Other("expiration".into(), vec![serde_json::json!(23194u64)]);
     assert_eq!(tag.kind_value(), None);
+}
+
+/// The relay recomputes an event's id from its parsed tags, so every tag must
+/// serialize back exactly as the client signed it, and no tag the relay does
+/// not use may make it refuse the event.
+#[test]
+fn test_tags_serialize_back_unchanged() {
+    for json in [
+        serde_json::json!(["expiration", 1_700_000_000u64]),
+        serde_json::json!(["expiration", "1700000000"]),
+        serde_json::json!(["expiration", "not-a-number"]),
+        serde_json::json!(["expiration"]),
+        serde_json::json!(["encryption", "nip44_v2", "extra"]),
+        serde_json::json!(["encryption", "nip44_v2 nip04"]),
+        serde_json::json!(["encryption"]),
+    ] {
+        let tag: Tag = serde_json::from_value(json.clone()).expect("tag must parse");
+        assert_eq!(serde_json::to_value(&tag).unwrap(), json);
+    }
 }

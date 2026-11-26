@@ -1,15 +1,15 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-/// A NIP-01 event tag, decoded from its wire form into typed variants used
-/// by relay validation and NIP-47 routing (`p`, `e`, `encryption`,
-/// `expiration`, and everything else).
+/// A NIP-01 event tag. `p` and `e` are typed because routing reads them;
+/// every other tag is kept as received.
+///
+/// The event id is recomputed from these tags, so each variant must serialize
+/// back exactly as the client signed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tag {
     P(String, Vec<Value>),
     E(String, Vec<Value>),
-    Encryption(String),
-    Expiration(String),
     Other(String, Vec<Value>),
 }
 
@@ -66,18 +66,6 @@ impl Serialize for Tag {
                 v.extend(extras.iter().cloned());
                 v
             }
-            Self::Encryption(scheme) => {
-                vec![
-                    Value::String("encryption".into()),
-                    Value::String(scheme.clone()),
-                ]
-            }
-            Self::Expiration(ts) => {
-                vec![
-                    Value::String("expiration".into()),
-                    Value::String(ts.clone()),
-                ]
-            }
             Self::Other(name, values) => {
                 let mut v = vec![Value::String(name.clone())];
                 v.extend(values.iter().cloned());
@@ -118,36 +106,6 @@ impl<'de> Deserialize<'de> for Tag {
                     .to_string();
                 let extras = arr.get(2..).unwrap_or(&[]).to_vec();
                 Ok(Self::E(id, extras))
-            }
-            "encryption" => {
-                let scheme = arr
-                    .get(1)
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        serde::de::Error::custom("encryption-tag requires a scheme value")
-                    })?
-                    .to_string();
-                Ok(Self::Encryption(scheme))
-            }
-            "expiration" => {
-                let ts = arr.get(1).ok_or_else(|| {
-                    serde::de::Error::custom("expiration-tag requires a timestamp value")
-                })?;
-                let ts_str = match ts.as_str() {
-                    Some(s) => s.to_string(),
-                    None => ts
-                        .as_u64()
-                        .ok_or_else(|| {
-                            serde::de::Error::custom(
-                                "expiration-tag timestamp must be a number or numeric string",
-                            )
-                        })?
-                        .to_string(),
-                };
-                let _: u64 = ts_str.parse().map_err(|_| {
-                    serde::de::Error::custom("expiration-tag timestamp must be a number")
-                })?;
-                Ok(Self::Expiration(ts_str))
             }
             _ => {
                 let values = arr.get(1..).unwrap_or(&[]).to_vec();
