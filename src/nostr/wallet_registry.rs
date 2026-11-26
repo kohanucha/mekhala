@@ -2,6 +2,7 @@ use crate::log_debug;
 use crate::log_error;
 use crate::log_info;
 use crate::log_warn;
+use crate::nostr::limits::MAX_INFO_EVENT_BYTES;
 use crate::nostr::{Event, Filter, Limits, StorageError};
 use crate::util::short;
 use async_trait::async_trait;
@@ -23,6 +24,10 @@ const RETIRED_KEY_PREFIXES: [&str; 2] = ["info-p:", "rate:"];
 /// short; the next alarm continues where this one stopped.
 const RETIRED_KEY_SWEEP_LIMIT: usize = 128;
 
+/// How many `info:` entries one listing reads. Trimming keeps only a summary
+/// of each, so memory stays at one page however large the cache is.
+const INFO_LIST_PAGE_SIZE: usize = 128;
+
 /// Persistence boundary of the registry: a key/value store backed by Durable
 /// Object storage in production (see `cloudflare`) and `MockStorage` in
 /// tests. Keys follow the `conn:<id>`, `pk:<pubkey>`, `eid:<event id>`,
@@ -36,13 +41,44 @@ pub trait Storage {
     async fn put_batch(&self, entries: HashMap<String, Value>) -> Result<(), StorageError>;
     /// Removes the given keys; deletions are best-effort (no error path).
     async fn delete_batch(&self, keys: Vec<String>);
-    /// Every entry whose key starts with `prefix`, as `(key, value)` pairs.
+    /// Up to `limit` entries whose key starts with `prefix`, in key order,
+    /// beginning after `start_after` when given.
     ///
-    /// Only used to bound the info cache, which cannot be sized without an
-    /// enumeration: the number of cached wallets is not tracked anywhere that
-    /// survives hibernation. Backends read the values as well as the keys, so
-    /// a caller that only needs ages does not pay for a second read.
-    async fn list_prefix(&self, prefix: &str) -> Vec<(String, Value)>;
+    /// Used to bound the info cache, which cannot be sized without an
+    /// enumeration (the number of cached wallets is not tracked anywhere that
+    /// survives hibernation), and to sweep retired key families. Callers page
+    /// through so that memory does not grow with the number of entries.
+    async fn list_page(
+        &self,
+        prefix: &str,
+        start_after: Option<&str>,
+        limit: usize,
+    ) -> Vec<(String, Value)>;
+}
+
+/// What trimming needs from a cached info event, without its content.
+struct InfoSummary {
+    pubkey: String,
+    id: String,
+    created_at: u64,
+}
+
+impl From<&Event> for InfoSummary {
+    fn from(event: &Event) -> Self {
+        Self {
+            pubkey: event.pubkey.clone(),
+            id: event.id.clone(),
+            created_at: event.created_at,
+        }
+    }
+}
+
+/// The info cache as one trimming pass sees it.
+#[derive(Default)]
+struct CachedInfo {
+    events: Vec<InfoSummary>,
+    oversized: Vec<InfoSummary>,
+    malformed: Vec<String>,
 }
 
 /// Snapshot of one connection's state, produced by the internal index and
@@ -709,7 +745,8 @@ impl<S: Storage> WalletRegistry<S> {
                 short(pubkey, 8),
                 (self.clock)().saturating_sub(event.created_at)
             );
-            self.prune_info_entries(vec![event]).await;
+            self.prune_info_entries(vec![InfoSummary::from(&event)])
+                .await;
             return None;
         }
         Some(event)
@@ -724,8 +761,8 @@ impl<S: Storage> WalletRegistry<S> {
         self.trim_info_cache().await
     }
 
-    /// One pass over the cached info events: drop unreadable values, drop
-    /// expired events, then evict the oldest events beyond the cap.
+    /// One pass over the cached info events: drop unreadable values, oversized
+    /// events and expired events, then evict the oldest events beyond the cap.
     ///
     /// Eviction frees a tenth of the cap at a time, so a burst of publishes
     /// pays for one enumeration per eviction rather than one per publish.
@@ -736,19 +773,19 @@ impl<S: Storage> WalletRegistry<S> {
             return 0;
         }
 
-        let (cached, malformed) = self.collect_cached_info().await;
-        if !malformed.is_empty() {
+        let cached = self.collect_cached_info().await;
+        if !cached.malformed.is_empty() {
             log_warn!(
                 "info cache: dropping {} unreadable entries",
-                malformed.len()
+                cached.malformed.len()
             );
-            self.storage.delete_batch(malformed).await;
+            self.storage.delete_batch(cached.malformed).await;
         }
 
         let now = (self.clock)();
-        let mut keep: Vec<Event> = Vec::new();
-        let mut drop: Vec<Event> = Vec::new();
-        for event in cached {
+        let mut keep: Vec<InfoSummary> = Vec::new();
+        let mut drop: Vec<InfoSummary> = cached.oversized;
+        for event in cached.events {
             if ttl > 0 && now.saturating_sub(event.created_at) > ttl {
                 drop.push(event);
             } else {
@@ -787,23 +824,41 @@ impl<S: Storage> WalletRegistry<S> {
         ttl > 0 && (self.clock)().saturating_sub(event.created_at) > ttl
     }
 
-    /// Every readable cached info event, plus the keys whose value no longer
-    /// parses.
-    async fn collect_cached_info(&self) -> (Vec<Event>, Vec<String>) {
-        let mut events = Vec::new();
-        let mut malformed = Vec::new();
-        for (key, value) in self.storage.list_prefix("info:").await {
-            match serde_json::from_value::<Event>(value) {
-                Ok(event) => events.push(event),
-                Err(_) => malformed.push(key),
+    /// Reads the cache one page at a time and sorts it into readable events,
+    /// events over [`MAX_INFO_EVENT_BYTES`] (stored before that limit existed)
+    /// and keys whose value no longer parses.
+    async fn collect_cached_info(&self) -> CachedInfo {
+        let mut cached = CachedInfo::default();
+        let mut start_after: Option<String> = None;
+        loop {
+            let page = self
+                .storage
+                .list_page("info:", start_after.as_deref(), INFO_LIST_PAGE_SIZE)
+                .await;
+            let Some((last_key, _)) = page.last() else {
+                return cached;
+            };
+            let next = last_key.clone();
+            let full = page.len() == INFO_LIST_PAGE_SIZE;
+            for (key, value) in page {
+                match serde_json::from_value::<Event>(value) {
+                    Ok(event) if event.json_len() > MAX_INFO_EVENT_BYTES => {
+                        cached.oversized.push(InfoSummary::from(&event));
+                    }
+                    Ok(event) => cached.events.push(InfoSummary::from(&event)),
+                    Err(_) => cached.malformed.push(key),
+                }
             }
+            if !full {
+                return cached;
+            }
+            start_after = Some(next);
         }
-        (events, malformed)
     }
 
     /// Removes the given info events from memory and storage, together with
     /// their `infoid:` reverse mappings.
-    async fn prune_info_entries(&mut self, events: Vec<Event>) {
+    async fn prune_info_entries(&mut self, events: Vec<InfoSummary>) {
         if events.is_empty() {
             return;
         }
@@ -838,11 +893,10 @@ impl<S: Storage> WalletRegistry<S> {
             }
             keys.extend(
                 self.storage
-                    .list_prefix(prefix)
+                    .list_page(prefix, None, room)
                     .await
                     .into_iter()
-                    .map(|(key, _)| key)
-                    .take(room),
+                    .map(|(key, _)| key),
             );
         }
         if keys.is_empty() {

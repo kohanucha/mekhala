@@ -100,8 +100,16 @@ merely idle keeps its subscription and is never swept.
 
 `kind` 13194 events are cached so a hibernated or freshly connected client can
 still answer a wallet-discovery `REQ`. Each cached event occupies exactly two
-keys, `info:<author>` (the event) and `infoid:<event id>` (reverse mapping), and
-the cache is bounded by two independent settings:
+keys, `info:<author>` (the event) and `infoid:<event id>` (reverse mapping).
+
+Each event is limited to `MAX_INFO_EVENT_BYTES` (4 KiB of stored JSON,
+`src/nostr/limits.rs`); a larger one gets `OK false` before its signature is
+checked. A real info event is a method list and two short tags, well under
+1 KiB, while the general content limit is 96 KiB for NIP-44 requests. Without
+this cap, 1,000 cached events could hold ~128 MB, and the enumeration below
+would exceed the Durable Object's memory on every alarm.
+
+The number of events is bounded by two independent settings:
 
 - `MAX_INFO_EVENTS` caps how many events are kept. Enforced on publish
   (`cache_info`) because the publisher decides how many keys exist; one publish
@@ -122,9 +130,12 @@ the cache is bounded by two independent settings:
   still shrinks.
 
 Both bounds run through `WalletRegistry::trim_info_cache`, which needs an
-enumeration — `Storage::list_prefix("info:")` — because the number of cached
-wallets is not tracked anywhere that survives hibernation. `0` disables either
-bound; setting both to `0` removes the enumeration entirely.
+enumeration — `Storage::list_page("info:", ...)` — because the number of cached
+wallets is not tracked anywhere that survives hibernation. It reads 128 entries
+per page and keeps only each event's author, id and `created_at`, so memory is
+one page however large the cache is. The same pass deletes events over the
+size cap that were stored before it existed. `0` disables either bound;
+setting both to `0` removes the enumeration entirely.
 
 Trade-off: TTL is measured against `created_at`, which the publisher controls.
 A wallet that republishes keeps its entry; one that never republishes
@@ -152,7 +163,7 @@ Keys written by the version that did index `p` tags (`info-p:`) are deleted by
 `rate:` counters of the Lightning Address callback limiter that used to live in
 this relay. Nothing writes either family any more, so the sweep is a one-way
 migration: at most 128 keys per pass across both families, and its "already
-empty" case is one `list_prefix` per family. To retire another key family,
+empty" case is one `list_page` per family. To retire another key family,
 add its prefix to `RETIRED_KEY_PREFIXES` in `src/nostr/wallet_registry.rs`.
 
 ## Inbound message budget
@@ -199,7 +210,7 @@ per-address counters in storage, which would cost an operation per frame.
 6. **`sync()` required for persistence**: Every `subscribe()`/`unsubscribe()` must call `sync()`. The in-memory index is lost on DO hibernation — only `state.storage()` survives. Removing `sync()` breaks event routing after wake. Regression test: `test_hibernation_contract`.
 7. **Routing index families**: A subscription can be indexed under `pk:` (`authors`/`#p`), `eid:` (`ids`) or `etag:` (`#e`); `sync()`, `load_indexed()`, `subscribe()` (when a `REQ` replaces a `sub_id`), `unsubscribe()` and `on_terminate()` must treat all three the same or routing silently degrades to "accepted, EOSE, no event", or the persisted index keeps a membership the live connection no longer has (leaks storage and resurrects dead subscriptions). Cached info events follow the same rule as any other event: they reach a `#p` filter only through a real `p` tag, and only the author key (`info:<author>`) is comparable, so an app's pubkey resolves to nothing.
 8. **Alarms are one-shot**: the idle sweep re-arms itself inside `alarm()` and the accept path arms it when none is pending. Dropping either half leaves connections that are accepted once and never swept — the case this sweep exists to close. `IDLE_TIMEOUT_SECONDS=0` / `CONNECTION_SWEEP_SECONDS=0` switch it off, which is what the functional test suite does so its own sockets are not swept mid-test.
-9. **Info cache is bounded on purpose**: `MAX_INFO_EVENTS` / `INFO_TTL_SECONDS` are the only thing keeping the `info:` family from growing forever, since anyone may publish a `kind` 13194 event. Both are enforced through one `list_prefix("info:")` enumeration, so a new bound must go there rather than into a separate pass. Unit tests set `info_ttl_seconds: 0` (`test_limits()`) because fixtures publish `created_at: 1000` against a pinned clock of 1_700_000_000 — leaving the default TTL on would expire every fixture. Tests that mean to test expiry set the TTL and `set_test_time` explicitly.
+9. **Info cache is bounded on purpose**: `MAX_INFO_EVENTS` / `INFO_TTL_SECONDS` are the only thing keeping the `info:` family from growing forever, since anyone may publish a `kind` 13194 event. Both are enforced through one paged `list_page("info:", ...)` enumeration, so a new bound must go there rather than into a separate pass. Unit tests set `info_ttl_seconds: 0` (`test_limits()`) because fixtures publish `created_at: 1000` against a pinned clock of 1_700_000_000 — leaving the default TTL on would expire every fixture. Tests that mean to test expiry set the TTL and `set_test_time` explicitly.
 
 ## Agent skills
 

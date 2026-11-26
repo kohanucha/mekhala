@@ -65,6 +65,55 @@ export async function testOversizedEventProducesOK() {
   });
 }
 
+// Mirrors `MAX_INFO_EVENT_BYTES` in src/nostr/limits.rs.
+const MAX_INFO_EVENT_BYTES = 4096;
+
+/// An info event over the size cap is refused and never cached, so a later
+/// discovery REQ for its author finds nothing.
+export async function testOversizedInfoEventRejected() {
+  console.log("\n--- Testing Oversized Info Event Rejected ---");
+  const ws = new WebSocket(RELAY_URL);
+  const sk = generateSecretKey();
+  const pk = getPublicKey(sk);
+  const bigInfo = finalizeEvent({
+    kind: 13194,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [],
+    content: "a".repeat(MAX_INFO_EVENT_BYTES),
+  }, sk);
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      ws.close();
+      reject(new Error("Timeout waiting for oversized info event to be refused"));
+    }, 5000);
+
+    ws.on("open", () => ws.send(JSON.stringify(["EVENT", bigInfo])));
+
+    ws.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg[0] === "OK" && msg[1] === bigInfo.id) {
+        if (msg[2] !== false || !msg[3].includes("info event too large")) {
+          clearTimeout(timer);
+          ws.close();
+          reject(new Error(`oversized info event not refused: ${JSON.stringify(msg)}`));
+          return;
+        }
+        ws.send(JSON.stringify(["REQ", "big-info", { kinds: [13194], authors: [pk] }]));
+      } else if (msg[0] === "EVENT" && msg[1] === "big-info") {
+        clearTimeout(timer);
+        ws.close();
+        reject(new Error("refused info event was cached and replayed"));
+      } else if (msg[0] === "EOSE" && msg[1] === "big-info") {
+        clearTimeout(timer);
+        console.log("✅ Oversized info event refused and not cached.");
+        ws.close();
+        resolve();
+      }
+    });
+  });
+}
+
 export async function testTimestampValidation() {
   console.log("\n--- Testing Timestamp Validation Limits ---");
   const ws = new WebSocket(RELAY_URL);

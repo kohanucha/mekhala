@@ -1,3 +1,4 @@
+use crate::nostr::limits::MAX_INFO_EVENT_BYTES;
 use crate::nostr::{Limits, RelayError, Tag};
 use k256::schnorr::signature::hazmat::PrehashVerifier;
 use k256::schnorr::{Signature, VerifyingKey};
@@ -20,6 +21,12 @@ pub struct Event {
 }
 
 impl Event {
+    /// Length of the event as stored JSON. One that cannot be serialized
+    /// counts as too large.
+    pub fn json_len(&self) -> usize {
+        serde_json::to_vec(self).map_or(usize::MAX, |json| json.len())
+    }
+
     /// Computes the NIP-01 event ID for the given fields: the SHA-256 hash
     /// of the JSON array `[0, pubkey, created_at, kind, tags, content]`.
     /// Returns both the hex ID and the digest bytes (needed to verify the
@@ -57,7 +64,8 @@ impl Event {
     }
 
     /// Full relay-side validation: allowed kinds, required `p`/`e` tags for
-    /// NWC kinds, tag and content length against `limits`, timestamp window
+    /// NWC kinds, tag and content length against `limits`, the size of an
+    /// info event ([`MAX_INFO_EVENT_BYTES`]), timestamp window
     /// (±900 s / not older than one year), recomputed event ID, and Schnorr
     /// signature verification.
     ///
@@ -105,6 +113,12 @@ impl Event {
             return Err(RelayError::LimitExceeded(format!(
                 "content too large (max {} bytes)",
                 limits.max_content_length
+            )));
+        }
+
+        if self.kind == 13194 && self.json_len() > MAX_INFO_EVENT_BYTES {
+            return Err(RelayError::LimitExceeded(format!(
+                "info event too large (max {MAX_INFO_EVENT_BYTES} bytes)"
             )));
         }
 

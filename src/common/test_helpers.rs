@@ -92,15 +92,22 @@ impl Storage for MockStorage {
             data.remove(&k);
         }
     }
-    async fn list_prefix(&self, prefix: &str) -> Vec<(String, Value)> {
+    async fn list_page(
+        &self,
+        prefix: &str,
+        start_after: Option<&str>,
+        limit: usize,
+    ) -> Vec<(String, Value)> {
         let data = self.data.lock().unwrap();
         let mut entries: Vec<(String, Value)> = data
             .iter()
             .filter(|(k, _)| k.starts_with(prefix))
+            .filter(|(k, _)| start_after.is_none_or(|after| k.as_str() > after))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        // Sorted so a test's eviction order cannot depend on hash order.
+        // Key order, as Durable Object storage lists.
         entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries.truncate(limit);
         entries
     }
 }
