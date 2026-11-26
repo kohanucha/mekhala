@@ -1,6 +1,9 @@
 import { WebSocket } from "ws";
 import { RELAY_URL } from "./env.js";
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools/pure";
+import { schnorr } from "@noble/curves/secp256k1.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 
 // Mirrors `MAX_CONTENT_LENGTH` in wrangler.toml (98,304 = 96 KiB), which
 // covers the largest NIP-44 payload. Oversized content must exceed it.
@@ -109,6 +112,51 @@ export async function testOversizedInfoEventRejected() {
         console.log("✅ Oversized info event refused and not cached.");
         ws.close();
         resolve();
+      }
+    });
+  });
+}
+
+/// The relay recomputes the id from the tags it parsed, so a tag it would
+/// rewrite (a numeric `expiration`, extra `encryption` values) used to turn a
+/// correctly signed request into "event ID mismatch".
+export async function testTagsKeptAsSigned() {
+  console.log("\n--- Testing Tags Kept Exactly As Signed ---");
+  const ws = new WebSocket(RELAY_URL);
+  const sk = generateSecretKey();
+  const now = Math.floor(Date.now() / 1000);
+  // Signed by hand: nostr-tools refuses to sign a tag with a number in it.
+  const event = {
+    pubkey: getPublicKey(sk),
+    created_at: now,
+    kind: 23194,
+    tags: [["p", getPublicKey(generateSecretKey())], ["expiration", now + 60], ["encryption", "nip44_v2", "extra"]],
+    content: "x",
+  };
+  const hash = sha256(utf8ToBytes(JSON.stringify(
+    [0, event.pubkey, event.created_at, event.kind, event.tags, event.content],
+  )));
+  event.id = bytesToHex(hash);
+  event.sig = bytesToHex(schnorr.sign(hash, sk));
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      ws.close();
+      reject(new Error("Timeout waiting for OK"));
+    }, 5000);
+
+    ws.on("open", () => ws.send(JSON.stringify(["EVENT", event])));
+
+    ws.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg[0] !== "OK" || msg[1] !== event.id) return;
+      clearTimeout(timer);
+      ws.close();
+      if (msg[2] === true) {
+        console.log("✅ Event with a numeric expiration and extra encryption values accepted.");
+        resolve();
+      } else {
+        reject(new Error(`correctly signed event refused: ${msg[3]}`));
       }
     });
   });
