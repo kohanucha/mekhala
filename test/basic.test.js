@@ -1,4 +1,4 @@
-import { RELAY_URL, HTTP_URL, baseURL, httpProtocol, relaySecret } from "./env.js";
+import { HTTP_URL, baseURL, httpProtocol, relaySecret } from "./env.js";
 
 export async function testAuth() {
   if (

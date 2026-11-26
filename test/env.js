@@ -1,12 +1,3 @@
-import { WebSocket } from "ws";
-import * as nostr from "nostr-tools";
-import { nip04, nip44 } from "nostr-tools";
-import {
-  finalizeEvent,
-  generateSecretKey,
-  getPublicKey,
-} from "nostr-tools/pure";
-
 const args = process.argv.slice(2);
 let baseURL = args[0] || "localhost:8787";
 const relaySecret = args[1] !== undefined ? args[1] : "";

@@ -1,5 +1,5 @@
 import { WebSocket } from "ws";
-import { RELAY_URL, HTTP_URL } from "./env.js";
+import { RELAY_URL } from "./env.js";
 import { withRelay, connect, refused } from "./relay-harness.js";
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools/pure";
 

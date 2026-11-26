@@ -187,24 +187,19 @@ impl DurableObject for CloudflareTransport {
 
             let parsed = crate::nostr::ClientMessage::from_json(&text);
 
-            match &parsed {
-                Ok(crate::nostr::ClientMessage::Event(event)) => {
-                    let mut engine = self.engine.lock().await;
-                    let Some(connection_id) =
-                        self.wake_up_with_handler(&websocket, &mut engine).await
-                    else {
-                        log_error!(
-                            "connection not found for incoming EVENT, sending reconnect notice"
-                        );
-                        let _ = websocket.send_with_str(
-                            crate::nostr::RelayMessage::Notice(
-                                "connection lost: please reconnect".into(),
-                            )
-                            .to_json(),
-                        );
-                        return Ok(());
-                    };
+            let mut engine = self.engine.lock().await;
+            let Some(connection_id) = self.wake_up_with_handler(&websocket, &mut engine).await
+            else {
+                log_error!("connection not found for incoming message, sending reconnect notice");
+                let _ = websocket.send_with_str(
+                    crate::nostr::RelayMessage::Notice("connection lost: please reconnect".into())
+                        .to_json(),
+                );
+                return Ok(());
+            };
 
+            let responses = match parsed {
+                Ok(crate::nostr::ClientMessage::Event(event)) => {
                     log_info!(
                         "← conn={} RECV EVENT kind={} pk={} id={}",
                         connection_id,
@@ -213,7 +208,7 @@ impl DurableObject for CloudflareTransport {
                         short(&event.id, 8)
                     );
 
-                    match engine.validate_event(event) {
+                    match engine.validate_event(&event) {
                         Ok(()) => {
                             log_debug!(
                                 "✓ EVENT accepted kind={} pk={} id={}",
@@ -229,10 +224,7 @@ impl DurableObject for CloudflareTransport {
                             .to_json();
                             log_info!("→ conn={} SEND {}", connection_id, ok_msg);
                             let _ = websocket.send_with_str(ok_msg);
-                            let responses = engine
-                                .route_verified_event(connection_id, event.clone())
-                                .await;
-                            self.process_responses(responses, &mut engine).await?;
+                            engine.route_verified_event(connection_id, event).await
                         }
                         Err((event_id, error_msg)) => {
                             log_warn!("✗ EVENT rejected id={}: {}", short(&event_id, 8), error_msg);
@@ -241,81 +233,55 @@ impl DurableObject for CloudflareTransport {
                                     .to_json();
                             log_info!("→ conn={} SEND {}", connection_id, fail_msg);
                             let _ = websocket.send_with_str(&fail_msg);
+                            Vec::new()
                         }
                     }
                 }
-                _ => {
-                    let mut engine = self.engine.lock().await;
-                    let Some(connection_id) =
-                        self.wake_up_with_handler(&websocket, &mut engine).await
-                    else {
-                        log_error!(
-                            "connection not found for incoming message, sending reconnect notice"
+                Ok(crate::nostr::ClientMessage::Req(sub_id, filters)) => {
+                    log_info!("← conn={} RECV REQ sub={}", connection_id, sub_id);
+                    for (i, f) in filters.iter().enumerate() {
+                        let kinds = f
+                            .kinds
+                            .as_ref()
+                            .map_or_else(|| "any".into(), |k| format!("{k:?}"));
+                        let auths = f.authors.as_ref().map_or_else(String::new, |a| {
+                            a.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(",")
+                        });
+                        let pts = f.p_tags.as_ref().map_or_else(String::new, |p| {
+                            p.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(",")
+                        });
+                        log_info!(
+                            "  filter[{}]: kinds={} authors={} #p={}",
+                            i,
+                            kinds,
+                            auths,
+                            pts
                         );
-                        let _ = websocket.send_with_str(
-                            crate::nostr::RelayMessage::Notice(
-                                "connection lost: please reconnect".into(),
-                            )
-                            .to_json(),
-                        );
-                        return Ok(());
-                    };
-
-                    let responses = match parsed {
-                        Ok(crate::nostr::ClientMessage::Req(sub_id, filters)) => {
-                            log_info!("← conn={} RECV REQ sub={}", connection_id, sub_id);
-                            for (i, f) in filters.iter().enumerate() {
-                                let kinds = f
-                                    .kinds
-                                    .as_ref()
-                                    .map_or_else(|| "any".into(), |k| format!("{k:?}"));
-                                let auths = f.authors.as_ref().map_or_else(String::new, |a| {
-                                    a.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(",")
-                                });
-                                let pts = f.p_tags.as_ref().map_or_else(String::new, |p| {
-                                    p.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(",")
-                                });
-                                log_info!(
-                                    "  filter[{}]: kinds={} authors={} #p={}",
-                                    i,
-                                    kinds,
-                                    auths,
-                                    pts
-                                );
-                            }
-                            engine.handle_req(connection_id, sub_id, filters).await
-                        }
-                        Ok(crate::nostr::ClientMessage::Close(sub_id)) => {
-                            log_info!("← conn={} RECV CLOSE sub={}", connection_id, sub_id);
-                            engine.process_close(connection_id, sub_id).await
-                        }
-                        Ok(crate::nostr::ClientMessage::Event(_)) => unreachable!(),
-                        Err(e) => {
-                            log_error!("✗ parse failed: {}", e);
-                            if let Some(crate::nostr::nip_01::PartialClientMessage::Event(id)) =
-                                crate::nostr::nip_01::PartialClientMessage::from_json(&text)
-                            {
-                                vec![crate::nostr::engine::EngineResponse::send(
-                                    connection_id,
-                                    crate::nostr::RelayMessage::Ok(
-                                        id,
-                                        false,
-                                        format!("parse failed: {e}"),
-                                    ),
-                                )]
-                            } else {
-                                vec![crate::nostr::engine::EngineResponse::send(
-                                    connection_id,
-                                    crate::nostr::RelayMessage::Notice(format!(
-                                        "parse failed: {e}"
-                                    )),
-                                )]
-                            }
-                        }
-                    };
-                    self.process_responses(responses, &mut engine).await?;
+                    }
+                    engine.handle_req(connection_id, sub_id, filters).await
                 }
-            }
+                Ok(crate::nostr::ClientMessage::Close(sub_id)) => {
+                    log_info!("← conn={} RECV CLOSE sub={}", connection_id, sub_id);
+                    engine.process_close(connection_id, sub_id).await
+                }
+                Err(e) => {
+                    log_error!("✗ parse failed: {}", e);
+                    if let Some(crate::nostr::nip_01::PartialClientMessage::Event(id)) =
+                        crate::nostr::nip_01::PartialClientMessage::from_json(&text)
+                    {
+                        vec![crate::nostr::engine::EngineResponse::send(
+                            connection_id,
+                            crate::nostr::RelayMessage::Ok(id, false, format!("parse failed: {e}")),
+                        )]
+                    } else {
+                        vec![crate::nostr::engine::EngineResponse::send(
+                            connection_id,
+                            crate::nostr::RelayMessage::Notice(format!("parse failed: {e}")),
+                        )]
+                    }
+                }
+            };
+            self.process_responses(responses, &mut engine).await?;
 
             Ok(())
         } else {
