@@ -1804,6 +1804,135 @@ fn test_subscribe_replaces_existing_subscription_at_limit() {
     });
 }
 
+// ── replacing a subscription prunes the routing keys it no longer uses ──
+
+/// A re-REQ with new filters takes the connection out of every `pk:`, `eid:`
+/// and `etag:` key that only the old filters used. Without this a client can
+/// grow storage without bound by re-sending one `sub_id` with fresh values.
+#[test]
+fn test_replacing_subscription_prunes_unused_routing_keys() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
+
+        let filter = |pk: &str, id: &str| Filter {
+            authors: Some(vec![pk.into()]),
+            ids: Some(vec![id.into()]),
+            e_tags: Some(vec![id.into()]),
+            ..Default::default()
+        };
+        registry
+            .subscribe(1, "s".into(), vec![filter("old-pk", "old-id")])
+            .await
+            .unwrap();
+        registry
+            .subscribe(1, "s".into(), vec![filter("new-pk", "new-id")])
+            .await
+            .unwrap();
+
+        let mut keys = stored_keys(&registry);
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["conn:1", "eid:new-id", "etag:new-id", "pk:new-pk"]
+        );
+        assert!(woken_by(&mut registry, "old-pk").await.is_empty());
+        assert_eq!(woken_by(&mut registry, "new-pk").await, vec![1]);
+    });
+}
+
+/// A key the connection's other subscription still uses keeps its
+/// membership, and another connection's membership is never touched.
+#[test]
+fn test_replacing_subscription_keeps_keys_still_in_use() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
+
+        registry
+            .subscribe(1, "a".into(), vec![authors_filter("shared")])
+            .await
+            .unwrap();
+        registry
+            .subscribe(1, "b".into(), vec![authors_filter("shared")])
+            .await
+            .unwrap();
+        registry
+            .subscribe(2, "a".into(), vec![authors_filter("other")])
+            .await
+            .unwrap();
+        registry
+            .subscribe(1, "c".into(), vec![authors_filter("other")])
+            .await
+            .unwrap();
+
+        registry
+            .subscribe(1, "a".into(), vec![authors_filter("fresh")])
+            .await
+            .unwrap();
+        registry
+            .subscribe(1, "c".into(), vec![authors_filter("fresh")])
+            .await
+            .unwrap();
+
+        let stored = data.lock().unwrap();
+        assert_eq!(
+            stored["pk:shared"],
+            serde_json::json!([1]),
+            "still used by b"
+        );
+        assert_eq!(
+            stored["pk:other"],
+            serde_json::json!([2]),
+            "conn 2 keeps it"
+        );
+        assert_eq!(stored["pk:fresh"], serde_json::json!([1]));
+    });
+}
+
+/// The leak as a client would see it: after replacing and then closing the
+/// connection, nothing of it is left in storage.
+#[test]
+fn test_terminate_after_replacing_subscription_leaves_nothing() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
+
+        for pk in ["pk-1", "pk-2", "pk-3"] {
+            registry
+                .subscribe(1, "s".into(), vec![authors_filter(pk)])
+                .await
+                .unwrap();
+        }
+        registry.on_terminate(1).await;
+
+        let keys = stored_keys(&registry);
+        assert!(keys.is_empty(), "terminate left state behind: {keys:?}");
+    });
+}
+
+/// When the new snapshot cannot be saved, the persisted `conn:` state still
+/// holds the old filters, so the old keys must keep the connection too.
+#[test]
+fn test_failed_replace_keeps_old_routing_keys() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        let mut registry = WalletRegistry::new(storage, test_limits(), test_now);
+
+        registry
+            .subscribe(1, "s".into(), vec![authors_filter("old-pk")])
+            .await
+            .unwrap();
+        registry.storage.fail_put_batch = true;
+        assert!(registry
+            .subscribe(1, "s".into(), vec![authors_filter("new-pk")])
+            .await
+            .is_err());
+
+        assert_eq!(data.lock().unwrap()["pk:old-pk"], serde_json::json!([1]));
+    });
+}
+
 #[test]
 fn test_subscribe_new_subscription_at_limit_is_rejected() {
     futures::executor::block_on(async {
