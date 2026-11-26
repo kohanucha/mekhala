@@ -148,3 +148,51 @@ export async function testDuplicateEventPublish() {
     setTimeout(() => reject(new Error("Duplicate event test timeout")), 5000);
   });
 }
+
+/// One subscription with 200 routing keys: a Durable Object `put` takes at
+/// most 128 entries, so the relay saves this connection in several puts.
+/// Local workerd does not enforce that cap (production does); this checks that
+/// the split write still saves and routes on the real runtime.
+export async function testSubscriptionBeyondOneStorageBatch() {
+  console.log("\n--- Testing a Subscription Larger Than One Storage Batch ---");
+  const keys = Array.from({ length: 200 }, () => generateSecretKey());
+  const filters = [];
+  for (let i = 0; i < keys.length; i += 10) {
+    filters.push({ kinds: [23194], authors: keys.slice(i, i + 10).map((sk) => getPublicKey(sk)) });
+  }
+  const last = keys[keys.length - 1];
+  const subWs = new WebSocket(RELAY_URL);
+  const pubWs = new WebSocket(RELAY_URL);
+  const event = finalizeEvent({
+    kind: 23194,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [["p", getPublicKey(generateSecretKey())]],
+    content: "big-sub",
+  }, last);
+
+  return new Promise((resolve, reject) => {
+    const finish = (err) => {
+      clearTimeout(timer);
+      subWs.close();
+      pubWs.close();
+      err ? reject(err) : resolve();
+    };
+    const timer = setTimeout(() => finish(new Error("no event for the 200th author")), 8000);
+    const opened = new Promise((r) => pubWs.on("open", r));
+
+    subWs.on("open", () => subWs.send(JSON.stringify(["REQ", "big-sub", ...filters])));
+    subWs.on("message", async (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg[1] !== "big-sub") return;
+      if (msg[0] === "CLOSED") return finish(new Error(`subscription refused: ${msg[2]}`));
+      if (msg[0] === "EOSE") {
+        await opened;
+        pubWs.send(JSON.stringify(["EVENT", event]));
+      }
+      if (msg[0] === "EVENT" && msg[2].id === event.id) {
+        console.log("✅ 200-key subscription saved and routed the last author's event.");
+        finish();
+      }
+    });
+  });
+}

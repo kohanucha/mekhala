@@ -8,7 +8,7 @@ import { testNip01EdgeCases, testFilterMatching, testFilterMatchingAdvanced, tes
 import { testNip09Deletion, testNip09KTagDeletion, testNip09BlanketDeletion, testNip09UnauthorizedDeletion } from "./nip09-deletion.test.js";
 import { testMalformedEventProducesOK, testOversizedEventProducesOK, testOversizedInfoEventRejected, testTagsKeptAsSigned, testTimestampValidation, testProtocolErrors, testLimitEnforcement } from "./event-validation.test.js";
 import { testInfoEventCaching, testKind13194OK } from "./info-event-publish.test.js";
-import { testCloseNonExistentSub, testReplaceSubscription, testDuplicateEventPublish } from "./subscription-edge-cases.test.js";
+import { testCloseNonExistentSub, testReplaceSubscription, testDuplicateEventPublish, testSubscriptionBeyondOneStorageBatch } from "./subscription-edge-cases.test.js";
 import { testPerAddressLimits, testIdleConnectionSweep, testConnectionEviction, testMessageBudget } from "./connection-limits.test.js";
 import { runSdkConformance } from "./conformance.test.js";
 import { testRestartPersistence } from "./restart-persistence.test.js";
@@ -38,6 +38,7 @@ async function runAll() {
     await testTimestampValidation();
     await testEdgeCases();
     await testDuplicateEventPublish();
+    await testSubscriptionBeyondOneStorageBatch();
     await testRealisticPaymentFlow();
     await runSdkConformance();
     await testMultiConnectionRouting();
