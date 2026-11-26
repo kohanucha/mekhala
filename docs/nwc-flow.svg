@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 520" width="960" height="520" role="img" aria-labelledby="t d">
+<title id="t">How an NWC payment travels through Mekhala</title>
+<desc id="d">Six steps: create a connection in Alby Hub, link it to Alby Go, both connect to the relay, the app sends an encrypted pay_invoice, the wallet pays over Lightning, and the encrypted result returns to the app.</desc>
+<style>
+:root { --bg:#f6f8fc; --surface:#ffffff; --sunk:#e8edf5; --fg:#151c2c; --muted:#5a6479; --line:#c9d2e1;
+  --storm:#2d55c8; --bolt:#b06a00; --ok:#2f7d4f; --glow:#fff1d6; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#0d1220; --surface:#151c2e; --sunk:#1c2539; --fg:#e5e9f2; --muted:#9aa4ba; --line:#2d3854;
+    --storm:#89a7ff; --bolt:#f0b444; --ok:#7bcb9c; --glow:#3a2c10; }
+}
+.bg { fill: var(--bg); }
+text { font-family: -apple-system, "Segoe UI", "Helvetica Neue", "Noto Sans", Arial, sans-serif; fill: var(--fg); }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.title { font-size: 22px; font-weight: 700; }
+.desc { font-size: 14.5px; fill: var(--muted); }
+.num { font-size: 13px; font-weight: 700; fill: var(--bolt); }
+.box { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; }
+.name { font-size: 17px; font-weight: 700; }
+.role { font-size: 12.5px; fill: var(--muted); }
+.where { font-size: 11.5px; fill: var(--muted); }
+.ws { stroke: var(--storm); stroke-width: 2; stroke-dasharray: 7 6; fill: none; }
+.ws-t { font-size: 11.5px; fill: var(--storm); }
+.offline { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 3 5; fill: none; }
+.offline-t { font-size: 11.5px; fill: var(--muted); }
+.seg { fill: var(--sunk); }
+.pill { stroke-width: 1.5; }
+.pill.sub { fill: var(--surface); stroke: var(--storm); }
+.pill.pay { fill: var(--glow); stroke: var(--bolt); }
+.pill.ok { fill: var(--surface); stroke: var(--ok); }
+.pill-t { font-size: 12px; font-weight: 600; }
+.pill-t.sub { fill: var(--storm); }
+.pill-t.pay { fill: var(--bolt); }
+.pill-t.ok { fill: var(--ok); }
+.card { fill: var(--glow); stroke: var(--bolt); stroke-width: 1.5; }
+.card-t { font-size: 11px; fill: var(--bolt); }
+.done { font-size: 13px; font-weight: 700; fill: var(--ok); }
+
+@keyframes cap0 { 0% { opacity: 0; } 0.021% { opacity: 0; } 0.042% { opacity: 1; } 16.583% { opacity: 1; } 16.604% { opacity: 0; } 100% { opacity: 0; } }
+.cap0 { opacity: 0; animation: cap0 24.0s infinite; }
+@keyframes seg0 { 0% { fill: var(--sunk); } 0.021% { fill: var(--sunk); } 0.042% { fill: var(--bolt); } 16.583% { fill: var(--bolt); } 16.604% { fill: var(--sunk); } 100% { fill: var(--sunk); } }
+.seg0 { animation: seg0 24.0s infinite; }
+@keyframes cap1 { 0% { opacity: 0; } 16.646% { opacity: 0; } 16.667% { opacity: 1; } 33.250% { opacity: 1; } 33.271% { opacity: 0; } 100% { opacity: 0; } }
+.cap1 { opacity: 0; animation: cap1 24.0s infinite; }
+@keyframes seg1 { 0% { fill: var(--sunk); } 16.646% { fill: var(--sunk); } 16.667% { fill: var(--bolt); } 33.250% { fill: var(--bolt); } 33.271% { fill: var(--sunk); } 100% { fill: var(--sunk); } }
+.seg1 { animation: seg1 24.0s infinite; }
+@keyframes cap2 { 0% { opacity: 0; } 33.312% { opacity: 0; } 33.333% { opacity: 1; } 49.917% { opacity: 1; } 49.938% { opacity: 0; } 100% { opacity: 0; } }
+.cap2 { opacity: 0; animation: cap2 24.0s infinite; }
+@keyframes seg2 { 0% { fill: var(--sunk); } 33.312% { fill: var(--sunk); } 33.333% { fill: var(--bolt); } 49.917% { fill: var(--bolt); } 49.938% { fill: var(--sunk); } 100% { fill: var(--sunk); } }
+.seg2 { animation: seg2 24.0s infinite; }
+@keyframes cap3 { 0% { opacity: 0; } 49.979% { opacity: 0; } 50.000% { opacity: 1; } 66.583% { opacity: 1; } 66.604% { opacity: 0; } 100% { opacity: 0; } }
+.cap3 { opacity: 0; animation: cap3 24.0s infinite; }
+@keyframes seg3 { 0% { fill: var(--sunk); } 49.979% { fill: var(--sunk); } 50.000% { fill: var(--bolt); } 66.583% { fill: var(--bolt); } 66.604% { fill: var(--sunk); } 100% { fill: var(--sunk); } }
+.seg3 { animation: seg3 24.0s infinite; }
+@keyframes cap4 { 0% { opacity: 0; } 66.646% { opacity: 0; } 66.667% { opacity: 1; } 83.250% { opacity: 1; } 83.271% { opacity: 0; } 100% { opacity: 0; } }
+.cap4 { opacity: 0; animation: cap4 24.0s infinite; }
+@keyframes seg4 { 0% { fill: var(--sunk); } 66.646% { fill: var(--sunk); } 66.667% { fill: var(--bolt); } 83.250% { fill: var(--bolt); } 83.271% { fill: var(--sunk); } 100% { fill: var(--sunk); } }
+.seg4 { animation: seg4 24.0s infinite; }
+@keyframes cap5 { 0% { opacity: 0; } 83.312% { opacity: 0; } 83.333% { opacity: 1; } 99.917% { opacity: 1; } 99.938% { opacity: 0; } 100% { opacity: 0; } }
+.cap5 { opacity: 0; animation: cap5 24.0s infinite; }
+@keyframes seg5 { 0% { fill: var(--sunk); } 83.312% { fill: var(--sunk); } 83.333% { fill: var(--bolt); } 99.917% { fill: var(--bolt); } 99.938% { fill: var(--sunk); } 100% { fill: var(--sunk); } }
+.seg5 { animation: seg5 24.0s infinite; }
+@keyframes wsOn { 0% { opacity: 0; } 33.312% { opacity: 0; } 33.333% { opacity: 1; } 99.792% { opacity: 1; } 99.812% { opacity: 0; } 100% { opacity: 0; } }
+.wsline { opacity: 0; animation: wsOn 24.0s infinite; }
+@keyframes offOn { 0% { opacity: 0; } 2.479% { opacity: 0; } 2.500% { opacity: 1; } 32.500% { opacity: 1; } 32.521% { opacity: 0; } 100% { opacity: 0; } }
+.offpath { opacity: 0; animation: offOn 24.0s infinite; }
+@keyframes lit_app { 0% { stroke: var(--line); } 16.646% { stroke: var(--line); } 16.667% { stroke: var(--bolt); } 33.333% { stroke: var(--bolt); } 33.354% { stroke: var(--line); } 43.312% { stroke: var(--line); } 43.333% { stroke: var(--bolt); } 55.417% { stroke: var(--bolt); } 55.438% { stroke: var(--line); } 89.146% { stroke: var(--line); } 89.167% { stroke: var(--bolt); } 99.958% { stroke: var(--bolt); } 99.979% { stroke: var(--line); } 100% { stroke: var(--line); } }
+.lit_app { animation: lit_app 24.0s infinite; }
+@keyframes lit_relay { 0% { stroke: var(--line); } 33.312% { stroke: var(--line); } 33.333% { stroke: var(--bolt); } 66.667% { stroke: var(--bolt); } 66.688% { stroke: var(--line); } 84.562% { stroke: var(--line); } 84.583% { stroke: var(--bolt); } 92.917% { stroke: var(--bolt); } 92.938% { stroke: var(--line); } 100% { stroke: var(--line); } }
+.lit_relay { animation: lit_relay 24.0s infinite; }
+@keyframes lit_wallet { 0% { stroke: var(--line); } 0.021% { stroke: var(--line); } 0.042% { stroke: var(--bolt); } 16.667% { stroke: var(--bolt); } 16.688% { stroke: var(--line); } 33.312% { stroke: var(--line); } 33.333% { stroke: var(--bolt); } 43.333% { stroke: var(--bolt); } 43.354% { stroke: var(--line); } 59.979% { stroke: var(--line); } 60.000% { stroke: var(--bolt); } 88.333% { stroke: var(--bolt); } 88.354% { stroke: var(--line); } 100% { stroke: var(--line); } }
+.lit_wallet { animation: lit_wallet 24.0s infinite; }
+@keyframes lit_ln { 0% { stroke: var(--line); } 68.729% { stroke: var(--line); } 68.750% { stroke: var(--bolt); } 80.000% { stroke: var(--bolt); } 80.021% { stroke: var(--line); } 100% { stroke: var(--line); } }
+.lit_ln { animation: lit_ln 24.0s infinite; }
+@keyframes card { 0% { opacity: 0; transform: translate(640px, 318px); } 2.500% { opacity: 1; transform: translate(640px, 318px); } 17.917% { opacity: 1; transform: translate(640px, 318px); } 20.833% { opacity: 1; transform: translate(640px, 470px); } 27.500% { opacity: 1; transform: translate(135px, 470px); } 30.000% { opacity: 1; transform: translate(135px, 318px); } 32.500% { opacity: 0; transform: translate(135px, 318px); } 100% { opacity: 0; transform: translate(135px, 318px); } }
+.cardg { opacity: 0; animation: card 24.0s infinite; }
+@keyframes tok0 { 0% { opacity: 0; transform: translate(825px, 138px); } 33.542% { opacity: 0; transform: translate(825px, 138px); } 34.583% { opacity: 1; transform: translate(825px, 138px); } 38.333% { opacity: 1; transform: translate(480px, 138px); } 39.375% { opacity: 0; transform: translate(480px, 138px); } 100% { opacity: 0; transform: translate(480px, 138px); } }
+.tok0 { opacity: 0; animation: tok0 24.0s infinite; }
+@keyframes tok1 { 0% { opacity: 0; transform: translate(825px, 138px); } 38.125% { opacity: 0; transform: translate(825px, 138px); } 39.167% { opacity: 1; transform: translate(825px, 138px); } 42.917% { opacity: 1; transform: translate(480px, 138px); } 43.958% { opacity: 0; transform: translate(480px, 138px); } 100% { opacity: 0; transform: translate(480px, 138px); } }
+.tok1 { opacity: 0; animation: tok1 24.0s infinite; }
+@keyframes tok2 { 0% { opacity: 0; transform: translate(480px, 138px); } 42.708% { opacity: 0; transform: translate(480px, 138px); } 43.750% { opacity: 1; transform: translate(480px, 138px); } 46.250% { opacity: 1; transform: translate(135px, 138px); } 47.292% { opacity: 0; transform: translate(135px, 138px); } 100% { opacity: 0; transform: translate(135px, 138px); } }
+.tok2 { opacity: 0; animation: tok2 24.0s infinite; }
+@keyframes tok3 { 0% { opacity: 0; transform: translate(135px, 138px); } 45.625% { opacity: 0; transform: translate(135px, 138px); } 46.667% { opacity: 1; transform: translate(135px, 138px); } 49.583% { opacity: 1; transform: translate(480px, 138px); } 50.625% { opacity: 0; transform: translate(480px, 138px); } 100% { opacity: 0; transform: translate(480px, 138px); } }
+.tok3 { opacity: 0; animation: tok3 24.0s infinite; }
+@keyframes tok4 { 0% { opacity: 0; transform: translate(135px, 138px); } 50.208% { opacity: 0; transform: translate(135px, 138px); } 51.250% { opacity: 1; transform: translate(135px, 138px); } 55.417% { opacity: 1; transform: translate(480px, 138px); } 56.458% { opacity: 0; transform: translate(480px, 138px); } 100% { opacity: 0; transform: translate(480px, 138px); } }
+.tok4 { opacity: 0; animation: tok4 24.0s infinite; }
+@keyframes tok5 { 0% { opacity: 0; transform: translate(480px, 138px); } 56.042% { opacity: 0; transform: translate(480px, 138px); } 57.083% { opacity: 1; transform: translate(480px, 138px); } 59.583% { opacity: 1; transform: translate(135px, 138px); } 60.625% { opacity: 0; transform: translate(135px, 138px); } 100% { opacity: 0; transform: translate(135px, 138px); } }
+.tok5 { opacity: 0; animation: tok5 24.0s infinite; }
+@keyframes tok6 { 0% { opacity: 0; transform: translate(480px, 138px); } 58.958% { opacity: 0; transform: translate(480px, 138px); } 60.000% { opacity: 1; transform: translate(480px, 138px); } 64.167% { opacity: 1; transform: translate(825px, 138px); } 65.208% { opacity: 0; transform: translate(825px, 138px); } 100% { opacity: 0; transform: translate(825px, 138px); } }
+.tok6 { opacity: 0; animation: tok6 24.0s infinite; }
+@keyframes tok7 { 0% { opacity: 0; transform: translate(825px, 305px); } 67.708% { opacity: 0; transform: translate(825px, 305px); } 68.750% { opacity: 1; transform: translate(825px, 305px); } 72.500% { opacity: 1; transform: translate(825px, 360px); } 73.542% { opacity: 0; transform: translate(825px, 360px); } 100% { opacity: 0; transform: translate(825px, 360px); } }
+.tok7 { opacity: 0; animation: tok7 24.0s infinite; }
+@keyframes tok8 { 0% { opacity: 0; transform: translate(825px, 360px); } 75.208% { opacity: 0; transform: translate(825px, 360px); } 76.250% { opacity: 1; transform: translate(825px, 360px); } 80.000% { opacity: 1; transform: translate(825px, 305px); } 81.042% { opacity: 0; transform: translate(825px, 305px); } 100% { opacity: 0; transform: translate(825px, 305px); } }
+.tok8 { opacity: 0; animation: tok8 24.0s infinite; }
+@keyframes tok9 { 0% { opacity: 0; transform: translate(825px, 138px); } 83.542% { opacity: 0; transform: translate(825px, 138px); } 84.583% { opacity: 1; transform: translate(825px, 138px); } 88.333% { opacity: 1; transform: translate(480px, 138px); } 89.375% { opacity: 0; transform: translate(480px, 138px); } 100% { opacity: 0; transform: translate(480px, 138px); } }
+.tok9 { opacity: 0; animation: tok9 24.0s infinite; }
+@keyframes tok10 { 0% { opacity: 0; transform: translate(480px, 138px); } 88.125% { opacity: 0; transform: translate(480px, 138px); } 89.167% { opacity: 1; transform: translate(480px, 138px); } 92.917% { opacity: 1; transform: translate(135px, 138px); } 93.958% { opacity: 0; transform: translate(135px, 138px); } 100% { opacity: 0; transform: translate(135px, 138px); } }
+.tok10 { opacity: 0; animation: tok10 24.0s infinite; }
+@keyframes doneOn { 0% { opacity: 0; } 93.312% { opacity: 0; } 93.333% { opacity: 1; } 99.792% { opacity: 1; } 99.812% { opacity: 0; } 100% { opacity: 0; } }
+.doneg { opacity: 0; animation: doneOn 24.0s infinite; }
+@media (prefers-reduced-motion: reduce) { .tok, .cardg { animation: none; opacity: 0; } }</style>
+<rect class="bg" x="0" y="0" width="960" height="520" rx="14"/>
+<g class="cap0"><text x="40" y="70" class="num">STEP 1 / 6</text><text x="130" y="70" class="title">Create a connection in Alby Hub</text><text x="40" y="96" class="desc">The hub makes a new key for the app, sets its permissions and budget,</text><text x="40" y="116" class="desc">and gives you a nostr+walletconnect:// connection string.</text></g>
+<rect x="40.0" y="26" width="140.0" height="5" rx="2.5" class="seg seg0"/>
+<g class="cap1"><text x="40" y="70" class="num">STEP 2 / 6</text><text x="130" y="70" class="title">Link it to the app</text><text x="40" y="96" class="desc">Scan or paste it into Alby Go. The app now has its own key, the wallet's</text><text x="40" y="116" class="desc">public key and the relay URL. This step never touches the relay.</text></g>
+<rect x="188.0" y="26" width="140.0" height="5" rx="2.5" class="seg seg1"/>
+<g class="cap2"><text x="40" y="70" class="num">STEP 3 / 6</text><text x="130" y="70" class="title">Both sides connect to Mekhala</text><text x="40" y="96" class="desc">The wallet subscribes to requests for its key and publishes its info event</text><text x="40" y="116" class="desc">(kind 13194). The app reads it and subscribes to replies.</text></g>
+<rect x="336.0" y="26" width="140.0" height="5" rx="2.5" class="seg seg2"/>
+<g class="cap3"><text x="40" y="70" class="num">STEP 4 / 6</text><text x="130" y="70" class="title">The app sends pay_invoice</text><text x="40" y="96" class="desc">Encrypted with NIP-44 and signed. Mekhala checks the signature, answers OK,</text><text x="40" y="116" class="desc">and forwards it to the wallet without being able to read it.</text></g>
+<rect x="484.0" y="26" width="140.0" height="5" rx="2.5" class="seg seg3"/>
+<g class="cap4"><text x="40" y="70" class="num">STEP 5 / 6</text><text x="130" y="70" class="title">The wallet does the work</text><text x="40" y="96" class="desc">It decrypts the request, checks the app's permissions and budget,</text><text x="40" y="116" class="desc">and pays the invoice over Lightning.</text></g>
+<rect x="632.0" y="26" width="140.0" height="5" rx="2.5" class="seg seg4"/>
+<g class="cap5"><text x="40" y="70" class="num">STEP 6 / 6</text><text x="130" y="70" class="title">The result comes back</text><text x="40" y="96" class="desc">The wallet sends the result with the payment preimage, encrypted.</text><text x="40" y="116" class="desc">Mekhala forwards it to the app, and the payment is done.</text></g>
+<rect x="780.0" y="26" width="140.0" height="5" rx="2.5" class="seg seg5"/>
+<g class="wsline"><path d="M230 210 H385" class="ws"/><path d="M575 210 H730" class="ws"/><text x="307.5" y="232" text-anchor="middle" class="ws-t">WebSocket</text><text x="652.5" y="232" text-anchor="middle" class="ws-t">WebSocket</text></g>
+<g class="offpath"><path d="M640 342 V470 H135 V342" class="offline"/><text x="388" y="492" text-anchor="middle" class="offline-t">QR code or copy-paste · does not go through the relay</text></g>
+<rect x="40" y="160" width="190" height="100" rx="12" class="box lit_app"/><text x="135" y="202" text-anchor="middle" class="name">Alby Go</text><text x="135" y="226" text-anchor="middle" class="role">app</text><text x="135" y="278" text-anchor="middle" class="where">your phone</text>
+<rect x="385" y="160" width="190" height="100" rx="12" class="box lit_relay"/><text x="480" y="202" text-anchor="middle" class="name">Mekhala</text><text x="480" y="226" text-anchor="middle" class="role">relay · wss://host/&lt;secret&gt;</text><text x="480" y="278" text-anchor="middle" class="where">Cloudflare Worker</text>
+<rect x="730" y="160" width="190" height="100" rx="12" class="box lit_wallet"/><text x="825" y="202" text-anchor="middle" class="name">Alby Hub</text><text x="825" y="226" text-anchor="middle" class="role">wallet service</text><text x="825" y="278" text-anchor="middle" class="where">your node</text>
+<rect x="730" y="379" width="190" height="52" rx="12" class="box lit_ln"/><text x="825" y="411" text-anchor="middle" class="name">Lightning network</text>
+<g class="cardg"><rect x="-125" y="-24" width="250" height="48" rx="8" class="card"/><text x="0" y="-4" text-anchor="middle" class="card-t mono">nostr+walletconnect://&lt;wallet&gt;</text><text x="0" y="13" text-anchor="middle" class="card-t mono">?relay=wss://…&amp;secret=&lt;app key&gt;</text></g>
+<g class="tok tok0"><rect x="-62.5" y="-13" width="125.0" height="26" rx="13" class="pill sub"/><text x="0" y="4.5" text-anchor="middle" class="pill-t sub">REQ  #p: wallet</text></g>
+<g class="tok tok1"><rect x="-47.7" y="-13" width="95.4" height="26" rx="13" class="pill sub"/><text x="0" y="4.5" text-anchor="middle" class="pill-t sub">info  13194</text></g>
+<g class="tok tok2"><rect x="-47.7" y="-13" width="95.4" height="26" rx="13" class="pill sub"/><text x="0" y="4.5" text-anchor="middle" class="pill-t sub">info  13194</text></g>
+<g class="tok tok3"><rect x="-51.4" y="-13" width="102.8" height="26" rx="13" class="pill sub"/><text x="0" y="4.5" text-anchor="middle" class="pill-t sub">REQ  replies</text></g>
+<g class="tok tok4"><rect x="-92.1" y="-13" width="184.2" height="26" rx="13" class="pill pay"/><text x="0" y="4.5" text-anchor="middle" class="pill-t pay">pay_invoice · encrypted</text></g>
+<g class="tok tok5"><rect x="-14.4" y="-13" width="28.8" height="26" rx="13" class="pill ok"/><text x="0" y="4.5" text-anchor="middle" class="pill-t ok">OK</text></g>
+<g class="tok tok6"><rect x="-92.1" y="-13" width="184.2" height="26" rx="13" class="pill pay"/><text x="0" y="4.5" text-anchor="middle" class="pill-t pay">pay_invoice · encrypted</text></g>
+<g class="tok tok7"><rect x="-47.7" y="-13" width="95.4" height="26" rx="13" class="pill pay"/><text x="0" y="4.5" text-anchor="middle" class="pill-t pay">pay invoice</text></g>
+<g class="tok tok8"><rect x="-36.6" y="-13" width="73.2" height="26" rx="13" class="pill ok"/><text x="0" y="4.5" text-anchor="middle" class="pill-t ok">preimage</text></g>
+<g class="tok tok9"><rect x="-114.3" y="-13" width="228.6" height="26" rx="13" class="pill pay"/><text x="0" y="4.5" text-anchor="middle" class="pill-t pay">result + preimage · encrypted</text></g>
+<g class="tok tok10"><rect x="-114.3" y="-13" width="228.6" height="26" rx="13" class="pill pay"/><text x="0" y="4.5" text-anchor="middle" class="pill-t pay">result + preimage · encrypted</text></g>
+<g class="doneg"><text x="135" y="298" text-anchor="middle" class="done">✓ Paid</text></g>
+</svg>

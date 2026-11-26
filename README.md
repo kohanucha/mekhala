@@ -23,6 +23,16 @@ Mekhala is a specialized, ephemeral Nostr relay built in Rust and compiled to We
 
 ---
 
+## 🔄 How an NWC Payment Flows
+
+<p align="center">
+  <img src="docs/nwc-flow.svg" width="960" alt="An NWC payment in six steps: create a connection in Alby Hub, link it to Alby Go, both connect to Mekhala, the app sends an encrypted pay_invoice, the wallet pays over Lightning, and the encrypted result returns to the app.">
+</p>
+
+The connection string is handed from the wallet to the app directly, by QR code or copy-paste, and never passes through the relay. Every request and reply after that is end-to-end encrypted between the app and the wallet: Mekhala checks signatures and routes by tags without reading the content.
+
+---
+
 ## 📦 Quick Setup
 
 1. **Fork & Deploy:**
