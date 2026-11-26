@@ -8,13 +8,20 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
-/// How many `info-p:` keys one legacy-alias sweep removes.
+/// Key families written by earlier versions and by nothing current:
 ///
-/// `Storage::delete_batch` issues one storage call per key, and the layout that
-/// wrote those keys stored up to ten per cached event, so a deployed relay can
-/// hold thousands. Bounding one pass keeps the Durable Object alarm short; the
-/// next alarm continues where this one stopped.
-const LEGACY_ALIAS_SWEEP_LIMIT: usize = 128;
+/// - `info-p:` — aliases from the version that replayed a cached info event to
+///   `#p`-only subscriptions (up to ten per cached event).
+/// - `rate:` — per-source counters of the Lightning Address callback limiter,
+///   which moved out of the relay.
+const RETIRED_KEY_PREFIXES: [&str; 2] = ["info-p:", "rate:"];
+
+/// How many retired keys one sweep removes, across every family.
+///
+/// `Storage::delete_batch` issues one storage call per key and a deployed relay
+/// can hold thousands of them. Bounding one pass keeps the Durable Object alarm
+/// short; the next alarm continues where this one stopped.
+const RETIRED_KEY_SWEEP_LIMIT: usize = 128;
 
 /// Persistence boundary of the registry: a key/value store backed by Durable
 /// Object storage in production (see `cloudflare`) and `MockStorage` in
@@ -321,25 +328,6 @@ impl WalletIndex {
         Box::new(sub_to_conns.into_iter())
     }
 
-    fn get_connection_id(&self, pubkey: &str) -> Option<u32> {
-        if let Some(entry) = self.pk_index.get(pubkey) {
-            let mut latest = None;
-            for sub_key in &entry.0 {
-                if let Some(conns) = self.subscription_index.get(sub_key) {
-                    if let Some(&id) = conns.last() {
-                        match latest {
-                            None => latest = Some(id),
-                            Some(current) if id > current => latest = Some(id),
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            return latest;
-        }
-        None
-    }
-
     fn save(&self, conn_id: u32) -> Option<SavedState> {
         let subscriptions = self.get_subscriptions(conn_id);
         if subscriptions.is_empty() {
@@ -575,17 +563,6 @@ impl<S: Storage> WalletRegistry<S> {
     pub async fn has_subscriptions(&mut self, conn_id: u32) -> bool {
         self.load(conn_id).await;
         self.index.sub_count(conn_id) > 0
-    }
-
-    /// Connection IDs to notify about events addressed to `pubkey`: reads
-    /// the persisted `pk:<pubkey>` index and loads each connection, pruning
-    /// stale IDs from storage. When nothing is persisted, falls back to the
-    /// single live connection mapped in memory.
-    pub async fn load_by_pubkey(&mut self, pubkey: &str) -> Vec<u32> {
-        match self.load_indexed(&format!("pk:{pubkey}")).await {
-            Some(loaded) => loaded,
-            None => self.index.get_connection_id(pubkey).into_iter().collect(),
-        }
     }
 
     /// Loads every connection listed under a persisted routing key
@@ -838,24 +815,30 @@ impl<S: Storage> WalletRegistry<S> {
         }
     }
 
-    /// Deletes every `info-p:` key left behind by versions that replayed a
-    /// cached info event to `#p`-only subscriptions. Nothing writes those keys
-    /// any more, so this is a one-way cleanup for already-deployed storage;
-    /// returns how many keys were removed.
+    /// Deletes keys in the [`RETIRED_KEY_PREFIXES`] families. Nothing writes
+    /// them any more, so this is a one-way cleanup for already-deployed
+    /// storage; returns how many keys were removed.
     ///
-    /// One pass removes at most [`LEGACY_ALIAS_SWEEP_LIMIT`] keys: the old
-    /// layout allowed up to ten aliases per cached event, so a deployed relay
-    /// can hold thousands, and `delete_batch` issues one storage call per key.
-    /// The next alarm continues where this one stopped.
-    pub async fn prune_legacy_info_aliases(&self) -> usize {
-        let mut keys: Vec<String> = self
-            .storage
-            .list_prefix("info-p:")
-            .await
-            .into_iter()
-            .map(|(key, _)| key)
-            .collect();
-        keys.truncate(LEGACY_ALIAS_SWEEP_LIMIT);
+    /// One pass removes at most [`RETIRED_KEY_SWEEP_LIMIT`] keys in total, and
+    /// skips the listing of later families once that budget is spent. The next
+    /// alarm continues where this one stopped; on clean storage a pass costs
+    /// one listing per family.
+    pub async fn prune_retired_keys(&self) -> usize {
+        let mut keys: Vec<String> = Vec::new();
+        for prefix in RETIRED_KEY_PREFIXES {
+            let room = RETIRED_KEY_SWEEP_LIMIT.saturating_sub(keys.len());
+            if room == 0 {
+                break;
+            }
+            keys.extend(
+                self.storage
+                    .list_prefix(prefix)
+                    .await
+                    .into_iter()
+                    .map(|(key, _)| key)
+                    .take(room),
+            );
+        }
         if keys.is_empty() {
             return 0;
         }

@@ -1,4 +1,4 @@
-import { RELAY_URL, HTTP_URL, baseURL, httpProtocol, relaySecret, isLocal } from "./env.js";
+import { HTTP_URL, baseURL, httpProtocol, relaySecret } from "./env.js";
 
 export async function testAuth() {
   if (
@@ -101,18 +101,6 @@ export async function testCorsAndHeaders() {
     }
   }
   console.log("✅ Security headers present on NIP-11 response.");
-
-  if (isLocal) {
-    const lnUrl = `${HTTP_URL.replace(/\/$/, "")}/.well-known/lnurlp/testuser_relay`;
-    const lnResponse = await fetch(lnUrl);
-    const lnCors = lnResponse.headers.get("access-control-allow-origin");
-    if (lnCors !== "*") {
-      throw new Error(`Expected LN address CORS '*', got: '${lnCors}'`);
-    }
-    console.log("✅ CORS headers present on LN address response.");
-  } else {
-    console.log("Skipping LN address CORS check (remote — no local KV).");
-  }
 }
 
 export async function testAuthHeaders() {

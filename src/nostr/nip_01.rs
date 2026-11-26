@@ -87,7 +87,8 @@ impl ClientMessage {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// A relay-to-client NIP-01 message; serialized to the WebSocket with
-/// [`RelayMessage::to_json`].
+/// [`RelayMessage::to_json`]. The relay only ever sends these, so there is no
+/// parser.
 pub enum RelayMessage {
     /// `OK` — acknowledgment of an accepted/rejected event.
     Ok(String, bool, String),
@@ -102,55 +103,6 @@ pub enum RelayMessage {
 }
 
 impl RelayMessage {
-    /// Parses a relay message from JSON (used when relaying the wallet
-    /// service's serialized replies through the DO, see
-    /// `cloudflare::transport`).
-    ///
-    /// # Errors
-    ///
-    /// Returns the parse failure message for invalid or unknown payloads.
-    pub fn from_json(text: &str) -> Result<Self, String> {
-        let arr: Vec<&RawValue> = serde_json::from_str(text).map_err(|e| e.to_string())?;
-
-        if arr.is_empty() {
-            return Err("empty message".to_string());
-        }
-
-        let msg_type: String = serde_json::from_str(arr[0].get()).map_err(|e| e.to_string())?;
-
-        match msg_type.as_str() {
-            "OK" if arr.len() >= 4 => {
-                let id: String = serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
-                let ok: bool = serde_json::from_str(arr[2].get()).map_err(|e| e.to_string())?;
-                let msg: String = serde_json::from_str(arr[3].get()).map_err(|e| e.to_string())?;
-                Ok(Self::Ok(id, ok, msg))
-            }
-            "EVENT" if arr.len() >= 3 => {
-                let sub_id: String =
-                    serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
-                let event: crate::nostr::Event =
-                    serde_json::from_str(arr[2].get()).map_err(|e| e.to_string())?;
-                Ok(Self::Event(sub_id, event))
-            }
-            "EOSE" if arr.len() >= 2 => {
-                let sub_id: String =
-                    serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
-                Ok(Self::Eose(sub_id))
-            }
-            "NOTICE" if arr.len() >= 2 => {
-                let msg: String = serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
-                Ok(Self::Notice(msg))
-            }
-            "CLOSED" if arr.len() >= 3 => {
-                let sub_id: String =
-                    serde_json::from_str(arr[1].get()).map_err(|e| e.to_string())?;
-                let msg: String = serde_json::from_str(arr[2].get()).map_err(|e| e.to_string())?;
-                Ok(Self::Closed(sub_id, msg))
-            }
-            v => Err(format!("unknown message type: {v}")),
-        }
-    }
-
     /// Serializes this message to its NIP-01 JSON wire form.
     pub fn to_json(&self) -> String {
         match self {

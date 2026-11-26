@@ -4,30 +4,22 @@ use crate::cloudflare::connection::{
 };
 use crate::cloudflare::create_cors_response;
 use crate::cloudflare::identity::{self, ClientIdentity};
-use crate::cloudflare::kv::CloudflareKvStore;
-use crate::lnaddress::rate_limit::{self, CounterStore, WindowCounter};
 use crate::log_debug;
 use crate::log_error;
 use crate::log_info;
 use crate::log_warn;
 use crate::nostr::engine::{EngineResponse, NostrEngine};
-use crate::nostr::rpc_machine::{NwcRpcMachine, RpcState};
 use crate::nostr::wallet_registry::Storage;
 use crate::nostr::Limits;
-use crate::nostr::RelayMessage;
 use crate::util::short;
-use futures::channel::oneshot;
 use futures::lock::Mutex;
-use futures_util::FutureExt;
 use js_sys::{Object, Reflect};
 use serde::Serialize;
 use serde_wasm_bindgen::Serializer;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
 use wasm_bindgen::JsValue;
 use worker::{
-    durable_object, Delay, DurableObject, Env, Error, ListOptions, Request, Response, Result,
+    durable_object, DurableObject, Env, Error, ListOptions, Request, Response, Result,
     ScheduledTime, State, WebSocket, WebSocketIncomingMessage, WebSocketPair,
 };
 
@@ -40,14 +32,6 @@ const ATTACHMENT_REFRESH_SECONDS: u64 = 30;
 /// is evictable costs one read, and a full relay must not turn every connect
 /// attempt into a fan-out of reads.
 const MAX_EVICTION_CHECKS: usize = 3;
-
-/// Rate counters deleted per alarm pass. `delete_batch` issues one storage
-/// call per key, so the pass is bounded the same way the legacy info-alias
-/// sweep is.
-const RATE_SWEEP_LIMIT: usize = 128;
-
-/// Sentinel for "this isolate has not counted the rate counters yet".
-const RATE_KEYS_UNKNOWN: usize = usize::MAX;
 
 pub struct CloudflareStorage {
     storage: worker::Storage,
@@ -127,19 +111,14 @@ struct IdCounterState {
 /// and replies back. One object instance per region, named `"GLOBAL"`.
 ///
 /// Holds the `NostrEngine` (relay logic, subscription registry, and
-/// state persistence), the live `ConnectionRegistry`, the request ID
-/// counter, and the optional KV store used by LN address routes.
+/// state persistence), the live `ConnectionRegistry`, and the connection
+/// ID counter.
 pub struct CloudflareTransport {
     config: CloudflareConfig,
     state: State,
     engine: Mutex<NostrEngine<CloudflareStorage>>,
     connections: RefCell<ConnectionRegistry>,
     id_counter: Mutex<IdCounterState>,
-    kv: Option<CloudflareKvStore>,
-    /// Live `rate:` counter count, or [`RATE_KEYS_UNKNOWN`] until a listing
-    /// seeds it. Keeps the callback path from listing storage on every request
-    /// while still refusing to create counters past the configured budget.
-    rate_keys: AtomicUsize,
 }
 
 impl DurableObject for CloudflareTransport {
@@ -160,17 +139,6 @@ impl DurableObject for CloudflareTransport {
             )
         };
         let engine = NostrEngine::new_with_storage(storage, limits, crate::util::now);
-        // `DurableObject::new` cannot return a `Result`, and the release profile
-        // builds with `panic = "abort"`: unwrapping the KV binding here would
-        // kill the isolate. Degrade instead — the WebSocket relay core does not
-        // need KV; only LN address routes use it, and they return 500.
-        let kv = match env.kv("MEKHALA_NWC_KV") {
-            Ok(kv) => Some(CloudflareKvStore::new(kv, config.ln_address_keys)),
-            Err(e) => {
-                log_error!("MEKHALA_NWC_KV binding missing ({e}): LN address callback routes will return 500");
-                None
-            }
-        };
 
         Self {
             config,
@@ -181,41 +149,10 @@ impl DurableObject for CloudflareTransport {
                 current_id: 0,
                 id_limit: 0,
             }),
-            kv,
-            rate_keys: AtomicUsize::new(RATE_KEYS_UNKNOWN),
         }
     }
 
     async fn fetch(&self, req: Request) -> Result<Response> {
-        let url = req.url()?;
-        let path = url.path();
-
-        if path.starts_with("/lnaddress/") && path.ends_with("/callback") {
-            let username = path
-                .strip_prefix("/lnaddress/")
-                .and_then(|s| s.strip_suffix("/callback"))
-                .unwrap_or("");
-            if !crate::lnaddress::is_valid_username(username) {
-                return Response::error("Not Found", 404);
-            }
-            let Some(kv) = self.kv.as_ref() else {
-                log_error!("LN address callback requires the MEKHALA_NWC_KV binding");
-                return Response::error("Internal Server Error", 500);
-            };
-            let identity = identity::from_headers(&req);
-            let handler = crate::cloudflare::handler::LnAddressHandler::new(
-                kv,
-                self.config.lnaddress_policy(),
-            );
-            let response = handler
-                .handle_callback(req, username, &identity, self, self)
-                .await;
-            // Counters are swept by the alarm; make sure one is pending even
-            // when no socket (and therefore no idle sweep) is holding it.
-            self.ensure_rate_sweep_alarm().await;
-            return response;
-        }
-
         let identity = identity::from_headers(&req);
         self.accept_new_connection(identity).await
     }
@@ -226,15 +163,7 @@ impl DurableObject for CloudflareTransport {
         log_debug!("→ alarm handler invoked");
         self.sweep_idle_connections().await;
         self.sweep_info_cache().await;
-        // Rate counters share the alarm with the idle and info sweeps. When
-        // keys remain (fresh counters, or more than one bounded pass covers)
-        // the alarm is re-armed even with no sockets, so the family drains to
-        // empty after traffic stops.
-        let rate_keys_remain = self.sweep_rate_counters().await;
         self.rearm_sweep().await;
-        if rate_keys_remain {
-            self.rearm_rate_sweep().await;
-        }
         Response::empty()
     }
 
@@ -258,24 +187,19 @@ impl DurableObject for CloudflareTransport {
 
             let parsed = crate::nostr::ClientMessage::from_json(&text);
 
-            match &parsed {
-                Ok(crate::nostr::ClientMessage::Event(event)) => {
-                    let mut engine = self.engine.lock().await;
-                    let Some(connection_id) =
-                        self.wake_up_with_handler(&websocket, &mut engine).await
-                    else {
-                        log_error!(
-                            "connection not found for incoming EVENT, sending reconnect notice"
-                        );
-                        let _ = websocket.send_with_str(
-                            crate::nostr::RelayMessage::Notice(
-                                "connection lost: please reconnect".into(),
-                            )
-                            .to_json(),
-                        );
-                        return Ok(());
-                    };
+            let mut engine = self.engine.lock().await;
+            let Some(connection_id) = self.wake_up_with_handler(&websocket, &mut engine).await
+            else {
+                log_error!("connection not found for incoming message, sending reconnect notice");
+                let _ = websocket.send_with_str(
+                    crate::nostr::RelayMessage::Notice("connection lost: please reconnect".into())
+                        .to_json(),
+                );
+                return Ok(());
+            };
 
+            let responses = match parsed {
+                Ok(crate::nostr::ClientMessage::Event(event)) => {
                     log_info!(
                         "← conn={} RECV EVENT kind={} pk={} id={}",
                         connection_id,
@@ -284,7 +208,7 @@ impl DurableObject for CloudflareTransport {
                         short(&event.id, 8)
                     );
 
-                    match engine.validate_event(event) {
+                    match engine.validate_event(&event) {
                         Ok(()) => {
                             log_debug!(
                                 "✓ EVENT accepted kind={} pk={} id={}",
@@ -300,10 +224,7 @@ impl DurableObject for CloudflareTransport {
                             .to_json();
                             log_info!("→ conn={} SEND {}", connection_id, ok_msg);
                             let _ = websocket.send_with_str(ok_msg);
-                            let responses = engine
-                                .route_verified_event(connection_id, event.clone())
-                                .await;
-                            self.process_responses(responses, &mut engine).await?;
+                            engine.route_verified_event(connection_id, event).await
                         }
                         Err((event_id, error_msg)) => {
                             log_warn!("✗ EVENT rejected id={}: {}", short(&event_id, 8), error_msg);
@@ -312,81 +233,55 @@ impl DurableObject for CloudflareTransport {
                                     .to_json();
                             log_info!("→ conn={} SEND {}", connection_id, fail_msg);
                             let _ = websocket.send_with_str(&fail_msg);
+                            Vec::new()
                         }
                     }
                 }
-                _ => {
-                    let mut engine = self.engine.lock().await;
-                    let Some(connection_id) =
-                        self.wake_up_with_handler(&websocket, &mut engine).await
-                    else {
-                        log_error!(
-                            "connection not found for incoming message, sending reconnect notice"
+                Ok(crate::nostr::ClientMessage::Req(sub_id, filters)) => {
+                    log_info!("← conn={} RECV REQ sub={}", connection_id, sub_id);
+                    for (i, f) in filters.iter().enumerate() {
+                        let kinds = f
+                            .kinds
+                            .as_ref()
+                            .map_or_else(|| "any".into(), |k| format!("{k:?}"));
+                        let auths = f.authors.as_ref().map_or_else(String::new, |a| {
+                            a.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(",")
+                        });
+                        let pts = f.p_tags.as_ref().map_or_else(String::new, |p| {
+                            p.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(",")
+                        });
+                        log_info!(
+                            "  filter[{}]: kinds={} authors={} #p={}",
+                            i,
+                            kinds,
+                            auths,
+                            pts
                         );
-                        let _ = websocket.send_with_str(
-                            crate::nostr::RelayMessage::Notice(
-                                "connection lost: please reconnect".into(),
-                            )
-                            .to_json(),
-                        );
-                        return Ok(());
-                    };
-
-                    let responses = match parsed {
-                        Ok(crate::nostr::ClientMessage::Req(sub_id, filters)) => {
-                            log_info!("← conn={} RECV REQ sub={}", connection_id, sub_id);
-                            for (i, f) in filters.iter().enumerate() {
-                                let kinds = f
-                                    .kinds
-                                    .as_ref()
-                                    .map_or_else(|| "any".into(), |k| format!("{k:?}"));
-                                let auths = f.authors.as_ref().map_or_else(String::new, |a| {
-                                    a.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(",")
-                                });
-                                let pts = f.p_tags.as_ref().map_or_else(String::new, |p| {
-                                    p.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(",")
-                                });
-                                log_info!(
-                                    "  filter[{}]: kinds={} authors={} #p={}",
-                                    i,
-                                    kinds,
-                                    auths,
-                                    pts
-                                );
-                            }
-                            engine.handle_req(connection_id, sub_id, filters).await
-                        }
-                        Ok(crate::nostr::ClientMessage::Close(sub_id)) => {
-                            log_info!("← conn={} RECV CLOSE sub={}", connection_id, sub_id);
-                            engine.process_close(connection_id, sub_id).await
-                        }
-                        Ok(crate::nostr::ClientMessage::Event(_)) => unreachable!(),
-                        Err(e) => {
-                            log_error!("✗ parse failed: {}", e);
-                            if let Some(crate::nostr::nip_01::PartialClientMessage::Event(id)) =
-                                crate::nostr::nip_01::PartialClientMessage::from_json(&text)
-                            {
-                                vec![crate::nostr::engine::EngineResponse::send(
-                                    connection_id,
-                                    crate::nostr::RelayMessage::Ok(
-                                        id,
-                                        false,
-                                        format!("parse failed: {e}"),
-                                    ),
-                                )]
-                            } else {
-                                vec![crate::nostr::engine::EngineResponse::send(
-                                    connection_id,
-                                    crate::nostr::RelayMessage::Notice(format!(
-                                        "parse failed: {e}"
-                                    )),
-                                )]
-                            }
-                        }
-                    };
-                    self.process_responses(responses, &mut engine).await?;
+                    }
+                    engine.handle_req(connection_id, sub_id, filters).await
                 }
-            }
+                Ok(crate::nostr::ClientMessage::Close(sub_id)) => {
+                    log_info!("← conn={} RECV CLOSE sub={}", connection_id, sub_id);
+                    engine.process_close(connection_id, sub_id).await
+                }
+                Err(e) => {
+                    log_error!("✗ parse failed: {}", e);
+                    if let Some(crate::nostr::nip_01::PartialClientMessage::Event(id)) =
+                        crate::nostr::nip_01::PartialClientMessage::from_json(&text)
+                    {
+                        vec![crate::nostr::engine::EngineResponse::send(
+                            connection_id,
+                            crate::nostr::RelayMessage::Ok(id, false, format!("parse failed: {e}")),
+                        )]
+                    } else {
+                        vec![crate::nostr::engine::EngineResponse::send(
+                            connection_id,
+                            crate::nostr::RelayMessage::Notice(format!("parse failed: {e}")),
+                        )]
+                    }
+                }
+            };
+            self.process_responses(responses, &mut engine).await?;
 
             Ok(())
         } else {
@@ -421,82 +316,6 @@ impl DurableObject for CloudflareTransport {
     }
 }
 
-#[async_trait::async_trait(?Send)]
-impl crate::common::NwcTransport for CloudflareTransport {
-    async fn get_wallet_info(&self, pubkey: &str) -> Option<crate::nostr::WalletInfo> {
-        let mut engine = self.engine.lock().await;
-        let _ = self
-            .load_connection_with_handler(pubkey, &mut engine)
-            .await
-            .ok();
-        engine.get_wallet_info(pubkey).await
-    }
-
-    async fn execute_nwc_rpc(
-        &self,
-        request: crate::nostr::Event,
-    ) -> Result<crate::nostr::Event, crate::common::NwcError> {
-        const RPC_TIMEOUT_SECS: u64 = 10;
-
-        let id = self.allocate_id().await;
-        let mut machine = NwcRpcMachine::new(request);
-
-        // Phases 1-2. Errors propagate, so Phase 3 must not sit behind `?`.
-        let result = self
-            .run_rpc_round_trip(id, &mut machine, RPC_TIMEOUT_SECS)
-            .await;
-
-        // Phase 3: always tear the session down completely. Memory-only
-        // cleanup leaves `conn:` and index keys behind, and `load_indexed`
-        // would then resurrect the dead subscription on the next request.
-        let mut engine = self.engine.lock().await;
-        let _ = engine.on_terminate(id).await;
-        self.connections.borrow_mut().remove(id);
-
-        result
-    }
-}
-
-#[async_trait::async_trait(?Send)]
-impl CounterStore for CloudflareTransport {
-    async fn load(&self, key: &str) -> Option<WindowCounter> {
-        let value = self
-            .state
-            .storage()
-            .get::<serde_json::Value>(key)
-            .await
-            .ok()
-            .flatten()?;
-        rate_limit::decode(&value)
-    }
-
-    async fn save(&self, key: &str, counter: &WindowCounter) {
-        let value = match serde_json::to_value(counter) {
-            Ok(value) => value,
-            Err(e) => {
-                log_error!("rate limit: could not encode counter '{}': {}", key, e);
-                return;
-            }
-        };
-        if let Err(e) = self.state.storage().put(key, value).await {
-            log_warn!("rate limit: failed to persist '{}': {}", key, e);
-        }
-    }
-
-    /// Gives a source its own counter while the relay holds fewer than
-    /// `RATE_LIMIT_MAX_KEYS` of them, and the shared overflow counter after
-    /// that. An attacker rotating through addresses can therefore create at
-    /// most that many keys, and the traffic it sends afterwards is charged to
-    /// one key it does not control the shape of.
-    async fn key_for_source(&self, ip_tag: &str) -> String {
-        let key = rate_limit::key_for(ip_tag);
-        if self.reserve_rate_key(&key).await {
-            return key;
-        }
-        rate_limit::key_for(rate_limit::OVERFLOW_TAG)
-    }
-}
-
 impl CloudflareTransport {
     /// Charges one inbound frame against the connection's message budget.
     ///
@@ -505,8 +324,8 @@ impl CloudflareTransport {
     /// `MAX_ROUTING_KEYS_PER_CONNECTION` keys), an `EVENT` pays a signature
     /// check, and a `CLOSE` used to rewrite the whole snapshot even when it
     /// named a subscription that was not there. Without a budget one client can
-    /// spend the single Durable Object's time on any of those, and every LN
-    /// address callback shares that object.
+    /// spend the single Durable Object's time — which every connection of the
+    /// region shares — on any of those.
     ///
     /// Returns `false` when the budget is spent and the socket has been asked
     /// to close, so the caller stops before parsing or storage work.
@@ -519,7 +338,7 @@ impl CloudflareTransport {
             crate::util::now(),
             self.config.message_rate_limit_per_minute,
         );
-        let rate_limit::Admission::Limited { retry_after } = decision else {
+        let crate::util::window::Admission::Limited { retry_after } = decision else {
             return true;
         };
 
@@ -543,13 +362,14 @@ impl CloudflareTransport {
     async fn sweep_info_cache(&self) {
         let mut engine = self.engine.lock().await;
 
-        // One-way cleanup of `info-p:` keys from previous versions. This runs
-        // regardless of the cache bounds below because those bounds only
-        // control `info:`/`infoid:`; leaving the aliases behind would leak
-        // storage forever.
-        let aliases = engine.prune_legacy_info_aliases().await;
-        if aliases > 0 {
-            log_info!("info cache: {} legacy alias keys removed", aliases);
+        // One-way cleanup of key families earlier versions wrote (`info-p:`
+        // aliases, Lightning Address `rate:` counters). This runs regardless of
+        // the cache bounds below because those bounds only control
+        // `info:`/`infoid:`; leaving the retired keys behind would leak storage
+        // forever.
+        let retired = engine.prune_retired_keys().await;
+        if retired > 0 {
+            log_info!("storage: {} retired keys removed", retired);
         }
 
         let config = &self.config;
@@ -560,145 +380,6 @@ impl CloudflareTransport {
         if removed > 0 {
             log_info!("info cache: {} entries swept", removed);
         }
-    }
-
-    /// Whether a counter may be created for `key`.
-    ///
-    /// A counter that already exists is always reused — the budget limits how
-    /// many sources may own a key, not how much traffic an owner may send. The
-    /// count is kept in memory and seeded from one listing per isolate; when
-    /// the listing is a full page the count saturates at the budget, which is
-    /// all the decision needs.
-    async fn reserve_rate_key(&self, key: &str) -> bool {
-        if CounterStore::load(self, key).await.is_some() {
-            return true;
-        }
-        let max = self.config.rate_limit_max_keys;
-        if max == 0 {
-            return true;
-        }
-
-        let mut current = self.rate_keys.load(Ordering::Relaxed);
-        if current == RATE_KEYS_UNKNOWN {
-            current = self.seed_rate_key_count(max).await;
-        }
-        loop {
-            if current >= max {
-                return false;
-            }
-            match self.rate_keys.compare_exchange_weak(
-                current,
-                current + 1,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => return true,
-                Err(actual) => current = actual,
-            }
-        }
-    }
-
-    /// Counts the live rate counters once per isolate.
-    async fn seed_rate_key_count(&self, max: usize) -> usize {
-        let storage = CloudflareStorage {
-            storage: self.state.storage(),
-        };
-        let count = storage
-            .list_prefix(rate_limit::RATE_KEY_PREFIX)
-            .await
-            .len()
-            .min(max);
-        self.rate_keys.store(count, Ordering::Relaxed);
-        count
-    }
-
-    /// Removes stale `rate:` counters, at most [`RATE_SWEEP_LIMIT`] keys per
-    /// pass so one alarm does not turn into an unbounded delete loop.
-    ///
-    /// Returns whether any counter remains (fresh ones that will age out, or
-    /// keys a later pass has not reached yet); the caller re-arms the alarm
-    /// while that is true, so the family drains to empty after traffic stops.
-    async fn sweep_rate_counters(&self) -> bool {
-        let storage = CloudflareStorage {
-            storage: self.state.storage(),
-        };
-        let entries = storage.list_prefix(rate_limit::RATE_KEY_PREFIX).await;
-        let total = entries.len();
-        let now = crate::util::now();
-
-        let mut stale = Vec::new();
-        let mut kept = 0usize;
-        for (key, value) in entries.into_iter().take(RATE_SWEEP_LIMIT) {
-            match rate_limit::decode(&value) {
-                // Unreadable values are dropped: nothing can roll them
-                // forward, so they would otherwise live forever.
-                Some(counter) if !counter.is_stale(now) => kept += 1,
-                _ => stale.push(key),
-            }
-        }
-
-        let live = total.saturating_sub(stale.len());
-        if !stale.is_empty() {
-            let removed = stale.len();
-            storage.delete_batch(stale).await;
-            log_info!("rate limit: {} stale counters swept", removed);
-        }
-
-        // Correct the key-budget hint the callback path counts against. The
-        // listing is one page, which is enough: a full page means the budget
-        // is spent, and the hint saturates there.
-        let max = self.config.rate_limit_max_keys;
-        if max != 0 {
-            self.rate_keys.store(live.min(max), Ordering::Relaxed);
-        }
-
-        kept > 0 || total > RATE_SWEEP_LIMIT
-    }
-
-    /// Arms the alarm for the rate sweep when none is pending. Called after a
-    /// callback touched the counters, because the idle sweep only keeps an
-    /// alarm alive while sockets exist.
-    async fn ensure_rate_sweep_alarm(&self) {
-        if self.config.callback_rate_limit_per_minute == 0 {
-            return;
-        }
-        let Some(interval_ms) = self.rate_sweep_interval_ms() else {
-            return;
-        };
-        let storage = self.state.storage();
-        if let Ok(Some(_)) = storage.get_alarm().await {
-            return;
-        }
-        if let Err(e) = storage.set_alarm(ScheduledTime::from(interval_ms)).await {
-            log_warn!("set_alarm failed: {}", e);
-        }
-    }
-
-    /// Re-arms the alarm after a sweep pass while rate counters remain.
-    async fn rearm_rate_sweep(&self) {
-        let Some(interval_ms) = self.rate_sweep_interval_ms() else {
-            return;
-        };
-        if let Err(e) = self
-            .state
-            .storage()
-            .set_alarm(ScheduledTime::from(interval_ms))
-            .await
-        {
-            log_warn!("set_alarm failed: {}", e);
-        }
-    }
-
-    /// Delay between rate-counter sweeps, or `None` when sweeping is switched
-    /// off. Independent of `IDLE_TIMEOUT_SECONDS`: a relay may keep sockets
-    /// forever and still want the counters cleaned.
-    fn rate_sweep_interval_ms(&self) -> Option<i64> {
-        if self.config.connection_sweep_seconds == 0 {
-            return None;
-        }
-        i64::try_from(self.config.connection_sweep_seconds)
-            .ok()
-            .map(|seconds| seconds.saturating_mul(1000))
     }
 
     async fn allocate_id(&self) -> u32 {
@@ -727,156 +408,14 @@ impl CloudflareTransport {
         }
     }
 
-    fn route_send(&self, id: u32, message: String) -> bool {
+    fn route_send(&self, id: u32, message: &str) -> bool {
         log_info!("→ conn={} SEND {}", id, message);
-        if self.connections.borrow_mut().send(id, message) {
+        if self.connections.borrow().send(id, message) {
             true
         } else {
             log_warn!("✗ send failed: conn={} not found", id);
             false
         }
-    }
-
-    /// Phase 1-2 of an internal NWC round trip: subscribe, publish, and wait
-    /// for the wallet's reply. The caller always runs Phase 3 cleanup.
-    async fn run_rpc_round_trip(
-        &self,
-        id: u32,
-        machine: &mut NwcRpcMachine,
-        timeout_secs: u64,
-    ) -> Result<crate::nostr::Event, crate::common::NwcError> {
-        {
-            let mut engine = self.engine.lock().await;
-            for action in machine.start() {
-                self.execute_rpc_action_inner(id, action, &mut engine)
-                    .await?;
-            }
-        }
-
-        self.receive_rpc_response(id, machine, timeout_secs).await
-    }
-
-    async fn receive_rpc_response(
-        &self,
-        id: u32,
-        machine: &mut NwcRpcMachine,
-        timeout_secs: u64,
-    ) -> Result<crate::nostr::Event, crate::common::NwcError> {
-        let start = crate::util::now();
-
-        loop {
-            let remaining = timeout_secs.saturating_sub(crate::util::now().saturating_sub(start));
-            if remaining == 0 {
-                return Err(crate::common::NwcError::Timeout);
-            }
-
-            let (tx, rx) = oneshot::channel();
-            self.connections.borrow_mut().add_internal(id, tx);
-
-            let delay = Delay::from(Duration::from_secs(remaining)).fuse();
-            let pinned_rx = rx.fuse();
-            futures_util::pin_mut!(pinned_rx, delay);
-
-            let text = match futures_util::future::select(pinned_rx, delay).await {
-                futures_util::future::Either::Left((Ok(text), _)) => text,
-                futures_util::future::Either::Left((Err(_), _)) => {
-                    return Err(crate::common::NwcError::ProtocolError(
-                        "channel closed".into(),
-                    ));
-                }
-                futures_util::future::Either::Right(_) => {
-                    return Err(crate::common::NwcError::Timeout);
-                }
-            };
-
-            let msg = RelayMessage::from_json(&text).map_err(|e| {
-                crate::common::NwcError::ProtocolError(format!("malformed relay response: {e}"))
-            })?;
-
-            if let Some(action) = machine.transition(msg) {
-                let mut engine = self.engine.lock().await;
-                self.execute_rpc_action_inner(id, action, &mut engine)
-                    .await?;
-            }
-
-            match machine.state() {
-                RpcState::Success(event) => return Ok(event.clone()),
-                RpcState::Failed(err) => {
-                    return Err(crate::common::NwcError::ProtocolError(err.clone()))
-                }
-                _ => {}
-            }
-        }
-    }
-
-    async fn execute_rpc_action_inner(
-        &self,
-        conn_id: u32,
-        action: crate::nostr::rpc_machine::RpcAction,
-        engine: &mut NostrEngine<CloudflareStorage>,
-    ) -> Result<(), crate::common::NwcError> {
-        match action {
-            crate::nostr::rpc_machine::RpcAction::Subscribe(sub_id, filter) => {
-                let responses = engine
-                    .handle_req_internal(conn_id, sub_id, vec![filter])
-                    .await;
-                if responses.iter().any(|r| {
-                    matches!(
-                        r,
-                        EngineResponse::Send {
-                            message: RelayMessage::Closed(..),
-                            ..
-                        }
-                    )
-                }) {
-                    return Err(crate::common::NwcError::ProtocolError(
-                        "subscribe rejected: storage unavailable".into(),
-                    ));
-                }
-                self.process_responses(responses, engine)
-                    .await
-                    .map_err(|e| crate::common::NwcError::ProtocolError(e.to_string()))?;
-            }
-            crate::nostr::rpc_machine::RpcAction::Publish(event) => {
-                let event_msg = crate::nostr::ClientMessage::Event(event);
-                let responses = engine.handle_typed(conn_id, event_msg).await;
-                self.process_responses(responses, engine)
-                    .await
-                    .map_err(|e| crate::common::NwcError::ProtocolError(e.to_string()))?;
-            }
-            crate::nostr::rpc_machine::RpcAction::Unsubscribe(sub_id) => {
-                let responses = engine.process_close(conn_id, sub_id).await;
-                self.process_responses(responses, engine)
-                    .await
-                    .map_err(|e| crate::common::NwcError::ProtocolError(e.to_string()))?;
-            }
-        }
-        Ok(())
-    }
-
-    async fn load_connection_with_handler(
-        &self,
-        pubkey: &str,
-        engine: &mut NostrEngine<CloudflareStorage>,
-    ) -> Result<Option<u32>> {
-        if let Some(id) = engine.load_by_pubkey(pubkey).await.into_iter().next() {
-            let ws = self.connections.borrow().find_ws_by_id(&self.state, id);
-            if let Some(ws) = ws {
-                let _ = self.wake_up_with_handler(&ws, engine).await;
-                return Ok(Some(id));
-            }
-
-            let all_ws = self.connections.borrow().get_all_websockets(&self.state);
-            for ws in all_ws {
-                if let Some(actual_id) = self.wake_up_with_handler(&ws, engine).await {
-                    if actual_id == id {
-                        return Ok(Some(id));
-                    }
-                }
-            }
-            return Ok(Some(id));
-        }
-        Ok(None)
     }
 
     async fn wake_up_with_handler(
@@ -1166,7 +705,7 @@ impl CloudflareTransport {
                     recipient_id,
                     message,
                 } => {
-                    self.route_send(recipient_id, message.to_json());
+                    self.route_send(recipient_id, &message.to_json());
                 }
                 EngineResponse::WakeUp { connection_id } => {
                     let ws = self

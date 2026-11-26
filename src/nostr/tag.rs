@@ -14,21 +14,6 @@ pub enum Tag {
 }
 
 impl Tag {
-    /// Builds a `p` tag for the given recipient public key.
-    pub fn p(pubkey: impl Into<String>) -> Self {
-        Self::P(pubkey.into(), vec![])
-    }
-
-    /// Builds an `encryption` tag carrying NIP-47 protocol strings.
-    pub fn encryption(scheme: impl Into<String>) -> Self {
-        Self::Encryption(scheme.into())
-    }
-
-    /// Builds an `expiration` tag for the given Unix timestamp.
-    pub fn expiration(ts: u64) -> Self {
-        Self::Expiration(ts.to_string())
-    }
-
     /// Whether this is a `p` (recipient public key) tag.
     pub fn is_p(&self) -> bool {
         matches!(self, Self::P(_, _))
@@ -51,14 +36,6 @@ impl Tag {
     pub fn event_id(&self) -> Option<&str> {
         match self {
             Self::E(id, _) => Some(id),
-            _ => None,
-        }
-    }
-
-    /// The encryption scheme string if this is an `encryption` tag.
-    pub fn encryption_scheme(&self) -> Option<&str> {
-        match self {
-            Self::Encryption(scheme) => Some(scheme),
             _ => None,
         }
     }

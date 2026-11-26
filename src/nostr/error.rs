@@ -1,5 +1,5 @@
-/// Error type for the entire relay domain: event validation, NIP protocol
-/// handling, crypto failures, and limit enforcement.
+/// Error type for the relay domain: event validation, protocol handling and
+/// limit enforcement.
 ///
 /// String payloads carry human-readable detail (e.g. offending values or
 /// upstream error text) that is forwarded as Nostr `OK`/`NOTICE` messages,
@@ -30,15 +30,6 @@ pub enum RelayError {
     /// The request exceeds a configured relay limit.
     #[error("rejected: {0}")]
     LimitExceeded(String),
-    /// A cryptographic operation (key, ECDH, signature) failed.
-    #[error("error: crypto failure: {0}")]
-    CryptoError(String),
-    /// Base64 decoding failed.
-    #[error("error: base64 failure: {0}")]
-    Base64Error(String),
-    /// UTF-8 decoding failed.
-    #[error("error: utf8 failure: {0}")]
-    Utf8Error(String),
     /// Anything not covered by the specific variants.
     #[error("error: {0}")]
     Generic(String),
@@ -75,12 +66,6 @@ impl From<serde_json::Error> for RelayError {
 impl From<hex::FromHexError> for RelayError {
     fn from(e: hex::FromHexError) -> Self {
         Self::MalformedHex(e.to_string())
-    }
-}
-
-impl From<base64::DecodeError> for RelayError {
-    fn from(e: base64::DecodeError) -> Self {
-        Self::Base64Error(e.to_string())
     }
 }
 

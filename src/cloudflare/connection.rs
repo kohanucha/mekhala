@@ -1,14 +1,8 @@
-use futures::channel::oneshot;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use worker::{State, WebSocket};
 
-use crate::lnaddress::rate_limit;
-
-pub enum ConnectionKind {
-    External(WebSocket),
-    Internal(oneshot::Sender<String>),
-}
+use crate::util::window;
 
 /// What a WebSocket carries with it across hibernation: which connection it
 /// is, where the client came from (for admission limits), and when it was
@@ -120,13 +114,14 @@ pub fn admit(
 }
 
 pub struct ConnectionRegistry {
-    connections: HashMap<u32, ConnectionKind>,
+    /// Sockets this instance has accepted or woken, by connection id.
+    connections: HashMap<u32, WebSocket>,
     /// Most recent activity seen by this instance for each connection.
     /// Attachment timestamps are refreshed at most once per interval, so the
     /// two are merged when deciding whether a connection is idle.
     last_seen: HashMap<u32, u64>,
     /// Inbound message window for each connection.
-    message_windows: HashMap<u32, rate_limit::WindowCounter>,
+    message_windows: HashMap<u32, window::WindowCounter>,
 }
 
 impl ConnectionRegistry {
@@ -148,18 +143,12 @@ impl ConnectionRegistry {
         }
         state.accept_web_socket(ws);
         self.last_seen.insert(attachment.id, attachment.last_seen);
-        self.connections
-            .insert(attachment.id, ConnectionKind::External(ws.clone()));
+        self.connections.insert(attachment.id, ws.clone());
         crate::log_debug!("✓ conn={} registered, attachment verified", attachment.id);
     }
 
     pub fn insert_active(&mut self, id: u32, ws: WebSocket) {
-        self.connections.insert(id, ConnectionKind::External(ws));
-    }
-
-    pub fn add_internal(&mut self, id: u32, sender: oneshot::Sender<String>) {
-        self.connections
-            .insert(id, ConnectionKind::Internal(sender));
+        self.connections.insert(id, ws);
     }
 
     /// Records activity on `id`. The in-memory timestamp always moves; the
@@ -186,11 +175,9 @@ impl ConnectionRegistry {
     }
 
     pub fn identify(&self, ws: &WebSocket) -> Option<u32> {
-        for (id, kind) in &self.connections {
-            if let ConnectionKind::External(registered) = kind {
-                if js_sys::Object::is(registered.as_ref(), ws.as_ref()) {
-                    return Some(*id);
-                }
+        for (id, registered) in &self.connections {
+            if js_sys::Object::is(registered.as_ref(), ws.as_ref()) {
+                return Some(*id);
             }
         }
 
@@ -209,33 +196,18 @@ impl ConnectionRegistry {
             }
         }
 
-        if let Some(ConnectionKind::External(ws)) = self.connections.get(&id) {
-            return Some(ws.clone());
-        }
-
-        None
-    }
-
-    pub fn get_all_websockets(&self, state: &State) -> Vec<WebSocket> {
-        state.get_websockets()
+        self.connections.get(&id).cloned()
     }
 
     pub fn len(&self, state: &State) -> usize {
         state.get_websockets().len()
     }
 
-    pub fn send(&mut self, id: u32, message: String) -> bool {
+    pub fn send(&self, id: u32, message: &str) -> bool {
         match self.connections.get(&id) {
-            Some(ConnectionKind::External(ws)) => {
-                let _ = ws.send_with_str(&message);
+            Some(ws) => {
+                let _ = ws.send_with_str(message);
                 true
-            }
-            Some(ConnectionKind::Internal(_)) => {
-                if let Some(ConnectionKind::Internal(sender)) = self.connections.remove(&id) {
-                    sender.send(message).is_ok()
-                } else {
-                    false
-                }
             }
             None => false,
         }
@@ -257,14 +229,14 @@ impl ConnectionRegistry {
     /// client can start over.
     ///
     /// The caller decides what an exhausted budget means; this only answers.
-    pub fn admit_message(&mut self, id: u32, now: u64, limit: u32) -> rate_limit::Admission {
+    pub fn admit_message(&mut self, id: u32, now: u64, limit: u32) -> window::Admission {
         if limit == 0 {
-            return rate_limit::Admission::Admitted;
+            return window::Admission::Admitted;
         }
 
         self.message_windows
             .entry(id)
-            .or_insert_with(|| rate_limit::WindowCounter::new(now))
+            .or_insert_with(|| window::WindowCounter::new(now))
             .admit(now, limit)
     }
 }

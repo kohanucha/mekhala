@@ -1,8 +1,11 @@
-//! Utility functions: timestamp, string truncation, logging macros.
+//! Utility functions: timestamp, string truncation, logging macros, and the
+//! fixed-window counter in [`window`].
 //!
 //! All functions are safe for wasm ("workers-js") and native test builds;
 //! log macros compile to `console_*` calls only on wasm and are no-ops
 //! natively.
+
+pub mod window;
 
 /// Current time as seconds since the Unix epoch.
 pub fn now() -> u64 {

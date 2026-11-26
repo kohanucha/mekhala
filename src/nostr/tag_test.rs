@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn test_tag_p_roundtrip() {
-    let tag = Tag::p("abc123");
+    let tag = Tag::P("abc123".into(), vec![]);
     let json = serde_json::to_value(&tag).unwrap();
     assert_eq!(json, serde_json::json!(["p", "abc123"]));
 
@@ -50,7 +50,7 @@ fn test_tag_e_roundtrip() {
 
 #[test]
 fn test_tag_encryption_roundtrip() {
-    let tag = Tag::encryption("nip44_v2 nip04");
+    let tag = Tag::Encryption("nip44_v2 nip04".into());
     let json = serde_json::to_value(&tag).unwrap();
     assert_eq!(json, serde_json::json!(["encryption", "nip44_v2 nip04"]));
 
@@ -60,7 +60,7 @@ fn test_tag_encryption_roundtrip() {
 
 #[test]
 fn test_tag_expiration_roundtrip() {
-    let tag = Tag::expiration(1234567890u64);
+    let tag = Tag::Expiration("1234567890".into());
     let json = serde_json::to_value(&tag).unwrap();
     assert_eq!(json, serde_json::json!(["expiration", "1234567890"]));
 
@@ -104,12 +104,11 @@ fn test_tag_other_roundtrip() {
 
 #[test]
 fn test_tag_accessors() {
-    let p = Tag::p("pk1");
+    let p = Tag::P("pk1".into(), vec![]);
     assert!(p.is_p());
     assert!(!p.is_e());
     assert_eq!(p.pubkey(), Some("pk1"));
     assert_eq!(p.event_id(), None);
-    assert_eq!(p.encryption_scheme(), None);
 
     let e = Tag::E("eid1".into(), vec![]);
     assert!(!e.is_p());
@@ -117,11 +116,10 @@ fn test_tag_accessors() {
     assert_eq!(e.event_id(), Some("eid1"));
     assert_eq!(e.pubkey(), None);
 
-    let enc = Tag::encryption("nip04");
-    assert_eq!(enc.encryption_scheme(), Some("nip04"));
+    let enc = Tag::Encryption("nip04".into());
     assert_eq!(enc.pubkey(), None);
 
-    let exp = Tag::expiration(999u64);
+    let exp = Tag::Expiration("999".into());
     assert_eq!(exp.pubkey(), None);
     assert_eq!(exp.event_id(), None);
 }
@@ -188,7 +186,7 @@ fn test_tag_kind_value_string() {
 
 #[test]
 fn test_tag_kind_value_non_k_tag() {
-    let tag = Tag::p("pk1");
+    let tag = Tag::P("pk1".into(), vec![]);
     assert_eq!(tag.kind_value(), None);
 
     let tag = Tag::E("event1".into(), vec![]);

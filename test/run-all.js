@@ -7,19 +7,12 @@ import { testRelay, testNwcFlow, testStrictValidation, testMultiClientIsolation,
 import { testNip01EdgeCases, testFilterMatching, testFilterMatchingAdvanced, testMixedValidInvalidFilters, testFilterLimit } from "./nip01-filters.test.js";
 import { testNip09Deletion, testNip09KTagDeletion, testNip09BlanketDeletion, testNip09UnauthorizedDeletion } from "./nip09-deletion.test.js";
 import { testMalformedEventProducesOK, testOversizedEventProducesOK, testTimestampValidation, testProtocolErrors, testLimitEnforcement } from "./event-validation.test.js";
-import { testNip44AndFallback, testInfoEventCaching, testKind13194OK } from "./nip44.test.js";
-import { testLnAddressFlow, testLnAddressOffline, testLnAddressErrors } from "./lnaddress.test.js";
+import { testInfoEventCaching, testKind13194OK } from "./info-event-publish.test.js";
 import { testCloseNonExistentSub, testReplaceSubscription, testDuplicateEventPublish } from "./subscription-edge-cases.test.js";
 import { testPerAddressLimits, testIdleConnectionSweep, testConnectionEviction, testMessageBudget } from "./connection-limits.test.js";
 import { runSdkConformance } from "./conformance.test.js";
 import { testRestartPersistence } from "./restart-persistence.test.js";
 import { testInfoCacheCap, testInfoCacheExpiry } from "./info-cache.test.js";
-import {
-  testLnAddressAmountBounds,
-  testLnAddressCallbackRateLimit,
-  testLnAddressCounterBudget,
-} from "./lnaddress-limits.test.js";
-import { testLnAddressStorage } from "./lnaddress-storage.test.js";
 
 async function runAll() {
   try {
@@ -47,24 +40,12 @@ async function runAll() {
     await testDuplicateEventPublish();
     await testRealisticPaymentFlow();
     await runSdkConformance();
-    if (isLocal) {
-      await testLnAddressFlow();
-      await testLnAddressOffline();
-      await testNip44AndFallback();
-    } else {
-      console.log("Skipping LN Address and NIP-44 tests (remote — no local KV)...");
-    }
     await testMultiConnectionRouting();
     await testProtocolErrors();
     await testLimitEnforcement();
     await testKind13194OK();
     await testMalformedEventProducesOK();
     await testOversizedEventProducesOK();
-    if (isLocal) {
-      await testLnAddressErrors();
-    } else {
-      console.log("Skipping LN Address Error tests (remote — no local KV)...");
-    }
     await testFilterMatching();
     await testFilterMatchingAdvanced();
     await testMixedValidInvalidFilters();
@@ -79,16 +60,11 @@ async function runAll() {
       await testRestartPersistence();
       await testInfoCacheCap();
       await testInfoCacheExpiry();
-      await testLnAddressAmountBounds();
-      await testLnAddressCallbackRateLimit();
-      await testLnAddressCounterBudget();
-      await testLnAddressStorage();
     } else {
       console.log("Skipping Max Connections test (remote — spawns local wrangler)...");
       console.log("Skipping connection limit tests (remote — spawn local wrangler)...");
       console.log("Skipping Restart Persistence test (remote — spawns local wrangler)...");
       console.log("Skipping Info Cache tests (remote — spawn local wrangler)...");
-      console.log("Skipping LN address policy tests (remote — spawn local wrangler)...");
     }
     console.log("\nAll tests passed successfully! 🚀");
     process.exit(0);

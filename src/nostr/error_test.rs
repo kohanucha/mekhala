@@ -1,5 +1,4 @@
 use super::*;
-use base64::Engine;
 
 #[test]
 fn test_relay_error_display() {
@@ -60,33 +59,9 @@ fn test_relay_error_from_hex() {
 #[test]
 fn test_relay_error_display_missing_variants() {
     assert_eq!(
-        RelayError::CryptoError("bad".into()).to_string(),
-        "error: crypto failure: bad"
-    );
-    assert_eq!(
-        RelayError::Base64Error("b64 bad".into()).to_string(),
-        "error: base64 failure: b64 bad"
-    );
-    assert_eq!(
-        RelayError::Utf8Error("utf8 bad".into()).to_string(),
-        "error: utf8 failure: utf8 bad"
-    );
-    assert_eq!(
         RelayError::Generic("oops".into()).to_string(),
         "error: oops"
     );
-}
-
-#[test]
-fn test_relay_error_from_base64() {
-    let b64_err = base64::engine::general_purpose::STANDARD
-        .decode("!!!")
-        .unwrap_err();
-    let relay_err: RelayError = b64_err.into();
-    match relay_err {
-        RelayError::Base64Error(msg) => assert!(!msg.is_empty()),
-        _ => panic!("Expected Base64Error"),
-    }
 }
 
 #[test]

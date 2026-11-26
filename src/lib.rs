@@ -5,20 +5,22 @@
 //! wallet-service info registries backed by durable storage, and routes
 //! NIP-47 request/response events between clients and wallet services.
 //!
+//! The relay only validates and routes: it never decrypts NIP-47 content and
+//! holds no wallet credentials.
+//!
 //! Module layout:
 //! - `cloudflare`: Worker entry, router, transport (Durable Object), config
-//! - `nostr`: NIP protocol types (messages, events, filters, tags),
-//!   encryption (NIP-04, NIP-44), the NIP-47 request/response machinery,
-//!   and the subscription/KV registry
-//! - `lnaddress`: Lightning Address resolution and wallet sessions
-//! - `auth`, `common`, `util`: shared helpers
+//! - `nostr`: NIP-01 protocol types (messages, events, filters, tags), the
+//!   relay engine and the subscription registry
+//! - `auth`, `util`: relay-secret check and shared helpers
+//! - `common` (tests only): shared test fixtures
 
 use worker::{event, Context, Env, Request, Response, Result};
 
 mod auth;
 mod cloudflare;
+#[cfg(test)]
 mod common;
-mod lnaddress;
 mod nostr;
 mod util;
 
@@ -35,7 +37,7 @@ pub fn set_panic_hook() {
 }
 
 /// Worker fetch handler: installs the panic hook, then delegates every
-/// request to the router (LNURL HTTP routes and WebSocket upgrade).
+/// request to the router (NIP-11 document and WebSocket upgrade).
 ///
 /// # Errors
 ///

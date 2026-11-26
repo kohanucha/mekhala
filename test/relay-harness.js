@@ -13,18 +13,7 @@ export const QUIET_LIMITS = {
   IDLE_TIMEOUT_SECONDS: 0,
   CONNECTION_SWEEP_SECONDS: 0,
   EVICT_MIN_IDLE_SECONDS: 3600,
-  // Every request of a scenario may share one source tag, so leaving the
-  // callback limiter on would let one scenario's traffic decide another's.
-  // test/lnaddress-limits.test.js turns it on for the scenario that proves it.
-  CALLBACK_RATE_LIMIT_PER_MINUTE: 0,
 };
-
-/**
- * Sealing key every private relay gets unless a scenario overrides it. The
- * LN address store refuses to serve rows without one, so tests that seed a
- * username must start with a configured key.
- */
-export const TEST_LN_ADDRESS_KEY = "5a".repeat(32);
 
 export function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -110,7 +99,7 @@ export async function withRelay(
   }
 
   const args = ["wrangler", "dev", "--port", String(port), "--ip", "127.0.0.1"];
-  const defaults = { LN_ADDRESS_KEY: TEST_LN_ADDRESS_KEY, ...QUIET_LIMITS };
+  const defaults = { ...QUIET_LIMITS };
   for (const [key, value] of Object.entries({ ...defaults, ...vars })) {
     args.push("--var", `${key}:${value}`);
   }

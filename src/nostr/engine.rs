@@ -1,6 +1,6 @@
 use super::limits::MAX_SUB_ID_LENGTH;
 use super::wallet_registry::{RegistryResponse, Storage, WalletRegistry};
-use super::{ClientMessage, Event, Filter, Limits, RelayMessage};
+use super::{Event, Filter, Limits, RelayMessage};
 use crate::util::short;
 use crate::{log_debug, log_info, log_warn};
 use std::collections::{HashMap, HashSet};
@@ -53,22 +53,6 @@ impl<S: Storage> NostrEngine<S> {
         }
     }
 
-    /// Dispatches a decoded NIP-01 client message (`EVENT`/`REQ`/`CLOSE`)
-    /// and returns the responses the transport must emit.
-    pub async fn handle_typed(
-        &mut self,
-        connection_id: u32,
-        message: ClientMessage,
-    ) -> Vec<EngineResponse> {
-        match message {
-            ClientMessage::Event(event) => self.handle_event(connection_id, event).await,
-            ClientMessage::Req(sub_id, filters) => {
-                self.handle_req(connection_id, sub_id, filters).await
-            }
-            ClientMessage::Close(sub_id) => self.process_close(connection_id, sub_id).await,
-        }
-    }
-
     /// Validate an event without routing it. Returns `Ok(event_id)` if
     /// accepted, or `Err((event_id, error_message))` if rejected.
     pub fn validate_event(&self, event: &Event) -> Result<(), (String, String)> {
@@ -101,42 +85,6 @@ impl<S: Storage> NostrEngine<S> {
             self.process_deletion_event(&event).await;
         }
         self.route_event(connection_id, event).await
-    }
-
-    async fn handle_event(&mut self, connection_id: u32, event: Event) -> Vec<EngineResponse> {
-        match event.kind {
-            5 | 13194 | 23194..=23197 => {
-                let ts = (self.clock)();
-
-                if let Err(e) = event.verify(ts, &self.limits) {
-                    return vec![EngineResponse::send(
-                        connection_id,
-                        RelayMessage::Ok(event.id, false, e.to_string()),
-                    )];
-                }
-
-                if event.kind == 13194 {
-                    self.process_info_event(event.clone()).await;
-                    self.process_event(connection_id, event).await
-                } else if event.kind == 5 {
-                    self.process_deletion_event(&event).await;
-                    self.process_event(connection_id, event).await
-                } else {
-                    self.process_event(connection_id, event).await
-                }
-            }
-            _ => {
-                let ts = (self.clock)();
-
-                let message = if let Err(e) = event.verify(ts, &self.limits) {
-                    RelayMessage::Ok(event.id, false, e.to_string())
-                } else {
-                    RelayMessage::Ok(event.id, false, "blocked: event kind not allowed".into())
-                };
-
-                vec![EngineResponse::send(connection_id, message)]
-            }
-        }
     }
 
     /// Handles a `REQ`: rejects oversized subscriptions and overly broad
@@ -172,17 +120,6 @@ impl<S: Storage> NostrEngine<S> {
             return vec![EngineResponse::send(id, message)];
         }
 
-        self.process_req(id, sub_id, filters).await
-    }
-
-    /// Same as [`Self::handle_req`] but skips the broad-filter guard, for
-    /// subscriptions the relay constructs itself.
-    pub async fn handle_req_internal(
-        &mut self,
-        id: u32,
-        sub_id: String,
-        filters: Vec<Filter>,
-    ) -> Vec<EngineResponse> {
         self.process_req(id, sub_id, filters).await
     }
 
@@ -226,35 +163,6 @@ impl<S: Storage> NostrEngine<S> {
                 self.registry.delete_info(author).await;
             }
         }
-    }
-
-    async fn process_event(&mut self, connection_id: u32, event: Event) -> Vec<EngineResponse> {
-        let mut responses = Vec::new();
-
-        responses.push(EngineResponse::send(
-            connection_id,
-            RelayMessage::Ok(event.id.clone(), true, String::new()),
-        ));
-
-        let registry_responses = self.registry.match_event(&event).await;
-        for resp in registry_responses {
-            match resp {
-                RegistryResponse::Send {
-                    recipient_id,
-                    sub_id,
-                } => {
-                    responses.push(EngineResponse::send(
-                        recipient_id,
-                        RelayMessage::Event(sub_id, event.clone()),
-                    ));
-                }
-                RegistryResponse::WakeUp(recipient_id) => {
-                    responses.push(EngineResponse::wake_up(recipient_id));
-                }
-            }
-        }
-
-        responses
     }
 
     /// Route event to subscribers without sending OK (caller already sent it).
@@ -360,19 +268,11 @@ impl<S: Storage> NostrEngine<S> {
         self.registry.prune_info_cache().await
     }
 
-    /// Removes `info-p:` keys written by versions that replayed a cached info
-    /// event to `#p`-only subscriptions; returns how many keys were deleted.
-    pub async fn prune_legacy_info_aliases(&mut self) -> usize {
-        self.registry.prune_legacy_info_aliases().await
-    }
-
-    /// Parses the cached wallet info event (`kind` 13194) for `pubkey` into
-    /// the wallet's advertised capabilities; `None` when nothing is cached.
-    pub async fn get_wallet_info(&mut self, pubkey: &str) -> Option<super::WalletInfo> {
-        self.registry
-            .get_info(pubkey)
-            .await
-            .map(|event| super::nip_47::parse_wallet_info(&event))
+    /// Removes keys that earlier versions wrote and nothing current reads
+    /// (see `WalletRegistry::prune_retired_keys`); returns how many keys were
+    /// deleted.
+    pub async fn prune_retired_keys(&mut self) -> usize {
+        self.registry.prune_retired_keys().await
     }
 
     /// Registers the given subscriptions for a connection, ignoring
@@ -393,12 +293,6 @@ impl<S: Storage> NostrEngine<S> {
     /// loading its persisted state first.
     pub async fn has_subscriptions(&mut self, conn_id: u32) -> bool {
         self.registry.has_subscriptions(conn_id).await
-    }
-
-    /// Connection IDs whose subscriptions cover events addressed to
-    /// `pubkey`, loading them from storage as needed.
-    pub async fn load_by_pubkey(&mut self, pubkey: &str) -> Vec<u32> {
-        self.registry.load_by_pubkey(pubkey).await
     }
 }
 

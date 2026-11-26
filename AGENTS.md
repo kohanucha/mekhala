@@ -3,6 +3,12 @@
 ## Overview
 Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay with WebSocket Hibernation.
 
+The relay only validates and routes events. It never decrypts NIP-47 content
+and holds no wallet credentials. Lightning Address lives in a separate
+self-hosted service (manee) that connects to this relay as an ordinary NWC
+client. **Do not add Lightning Address, LNURL, wallet-session or NWC-client
+code here**: anything that needs a wallet's secret belongs on the client side.
+
 ## Key Commands
 | Action | Command | Notes |
 |--------|---------|-------|
@@ -21,7 +27,7 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
 
 ## Architecture
 - **Durable Object**: `CloudflareTransport` (`src/cloudflare/transport.rs`; wrangler `class_name = "CloudflareTransport"`)
-- **Modules**: auth.rs, lib.rs, cloudflare/, lnaddress/, nostr/, util/
+- **Modules**: auth.rs, lib.rs, cloudflare/, nostr/, util/ (`common/` is test fixtures only)
 
 ## Critical Dependencies
 - `worker` 0.8.x runtime
@@ -47,21 +53,8 @@ Cloudflare Worker (Rust/WASM) implementing Nostr Wallet Connect (NIP-47) relay w
   "Info cache" below)
 - `INFO_TTL_SECONDS` - optional, default: 2592000 (30 days), `0` disables
   expiry
-- `MIN_AMOUNT_MSAT` - optional, default: 1000: lowest LN address invoice
-  amount, advertised and enforced
-- `MAX_AMOUNT_MSAT` - optional, default: 100000000: highest LN address
-  invoice amount, advertised and enforced
-- `CALLBACK_RATE_LIMIT_PER_MINUTE` - optional, default: 10, `0` disables (see
-  "LN address callbacks" below)
 - `MESSAGE_RATE_LIMIT_PER_MINUTE` - optional, default: 120, `0` disables (see
   "Inbound message budget" below)
-- `RATE_LIMIT_MAX_KEYS` - optional, default: 1000, `0` removes the cap: how many
-  sources may own a counter before new ones share one
-- `LN_ADDRESS_KEY` - required to use Lightning Addresses: 64 hex characters
-  (32 bytes). Seals stored wallet connections; without a usable value no
-  Lightning Address is served or stored (see "LN address storage" below)
-- `LN_ADDRESS_KEY_PREVIOUS` - optional: the previous `LN_ADDRESS_KEY` during a
-  rotation, kept readable until every record has been re-sealed
 - `MAX_CONTENT_LENGTH` - default: 98304 (96 KB, covers the 87,472-character NIP-44 ceiling)
 
 ## Wrangler Config
@@ -155,9 +148,12 @@ app already subscribed when the wallet publishes still receives it. Only
 replay — the case where the app subscribes after the fact — has no path.
 
 Keys written by the version that did index `p` tags (`info-p:`) are deleted by
-`prune_legacy_info_aliases()`, which the alarm calls. Nothing writes them any
-more, so the sweep is a one-way migration and its "already empty" case is a
-single `list_prefix`.
+`prune_retired_keys()`, which the alarm calls. The same sweep removes the
+`rate:` counters of the Lightning Address callback limiter that used to live in
+this relay. Nothing writes either family any more, so the sweep is a one-way
+migration: at most 128 keys per pass across both families, and its "already
+empty" case is one `list_prefix` per family. To retire another key family,
+add its prefix to `RETIRED_KEY_PREFIXES` in `src/nostr/wallet_registry.rs`.
 
 ## Inbound message budget
 
@@ -168,8 +164,8 @@ retry in Ns") and closes with 1008; the caller stops there, so nothing is
 parsed, no signature is checked, and no storage operation is issued.
 
 The window lives in memory on the Durable Object
-(`ConnectionRegistry::admit_message`, reusing
-`lnaddress::rate_limit::WindowCounter`), not in storage: persisting it would put
+(`ConnectionRegistry::admit_message`, using `util::window::WindowCounter`),
+not in storage: persisting it would put
 a write in front of every frame, and a socket that hibernates has been silent
 long enough for a fresh window to be the right answer. A reconnect gets a new
 id and a fresh window, so the admission caps — not this budget — are what bound
@@ -177,10 +173,10 @@ how often a client can start over; the budget bounds what one connection can
 spend while it is here.
 
 Why it exists: one `REQ` re-reads and rewrites the connection's routing index
-(up to `MAX_ROUTING_KEYS_PER_CONNECTION` keys), an `EVENT` pays a Schnorr
-check, and every LN address callback is routed through the same Durable Object.
-Without a budget, one client could keep that object busy and starve the
-callbacks. Two smaller rules go with it:
+(up to `MAX_ROUTING_KEYS_PER_CONNECTION` keys), and an `EVENT` pays a Schnorr
+check, all inside the one Durable Object every connection of a region shares.
+Without a budget, one client could keep that object busy and starve everyone
+else. Two smaller rules go with it:
 
 - A `CLOSE` for a subscription the connection does not have returns before
   touching storage (`WalletRegistry::unsubscribe` checks
@@ -193,102 +189,6 @@ Trade-off: the budget is per connection, and a client that reconnects starts a
 fresh one. That is delegated to the admission caps rather than adding
 per-address counters in storage, which would cost an operation per frame.
 
-## LN address callbacks
-
-`GET /lnaddress/:username/callback?amount=<msat>` passes four gates, in this
-order, before it reaches a wallet (`src/cloudflare/handler.rs`):
-
-1. **Amount present** — a missing or non-numeric `amount` is refused without
-   touching anything else.
-2. **Amount in range** — `MIN_AMOUNT_MSAT..=MAX_AMOUNT_MSAT`. The `.well-known`
-   document advertises these same values as `minSendable`/`maxSendable`, so a
-   client is never told one range and refused for another. A zero bound or an
-   inverted range cannot be advertised meaningfully, so it falls back to the
-   defaults and logs once; the range is never switched off.
-3. **Per-source rate limit** — `CALLBACK_RATE_LIMIT_PER_MINUTE` callbacks per
-   60-second window, keyed on the address tag the Worker stamps on the
-   forwarded request (`x-mekhala-client-ip-tag`). A request with no tag (local
-   development, or an edge that reports no address) is admitted, matching
-   per-address connection limits. Refused requests get HTTP 200 with
-   `{"status":"ERROR","reason":"Too many requests, retry in Ns"}` and do not
-   consume a slot or write storage.
-4. **Store lookup and invoice** — only now is the username resolved and the
-   wallet asked to mint an invoice.
-
-Each source owns a counter at `rate:<ip-tag>`, but the family is capped by
-`RATE_LIMIT_MAX_KEYS`: once that many sources hold a key, a source that has
-none is charged to `rate:overflow` instead. Without the cap, rotating through
-addresses would let one caller grow Durable Object storage without bound. An
-existing counter always keeps working, so the cap limits who may open a new
-one, not how much traffic an owner may send. The count is held in memory per
-isolate, seeded by one listing, and corrected by every sweep.
-
-Invoice failures answer with one fixed reason (`Wallet unavailable`) and the
-wallet's own message goes to the log. The callback endpoint is anonymous, and
-its errors would otherwise tell a caller whether the wallet is online, short of
-funds, or rejecting the amount.
-
-The counters live in Durable Object storage under `rate:<ip-tag>` and are
-swept by the same alarm as the idle and info sweeps, with the pass delay taken
-from `CONNECTION_SWEEP_SECONDS` (independent of `IDLE_TIMEOUT_SECONDS`: a relay
-may keep sockets forever and still want counters cleaned). Each pass deletes at
-most 128 keys because `delete_batch` issues one storage call per key, and the
-alarm re-arms itself while any counter remains, so the family drains after
-traffic stops even with no sockets. Setting `CONNECTION_SWEEP_SECONDS=0` turns
-sweeping off entirely, and then `rate:` keys linger until read again.
-
-## NIP-47 round trips
-
-A Lightning Address invoice is minted through an internal NWC round trip
-(`NwcRpcMachine` in `src/nostr/rpc_machine.rs`): open a subscription for the
-reply, publish the request, then wait for the wallet's response. The request
-is published to the relay, so its id is public — anyone who can read the relay
-can publish an event that references it. A reply therefore has to come from
-the wallet the request was addressed to: the response subscription carries
-`authors: [<wallet pubkey>]`, taken from the request's `p` tag, and the machine
-independently ignores an event from any other author and keeps waiting. Being
-fooled by a forged event would end the round trip on it and lose the real
-answer. A request with no `p` tag is addressed to nobody, so no reply can
-match it.
-
-## LN address storage
-
-A stored NWC URI can spend from the user's wallet, so it is never kept in
-plaintext. `CloudflareKvStore` (`src/cloudflare/kv.rs`) stores each registration
-under `lnaddr:<username>` as `v1:<NIP-44 payload>`, sealed with a key derived
-from `LN_ADDRESS_KEY` by HKDF-SHA256 with info `lnaddr:v1`
-(`src/lnaddress/record.rs`). The sealed JSON carries the version, the username,
-the URI, and the verified methods once a registration has checked them.
-
-The username is sealed inside the payload and compared after opening, so a row
-copied to another username's key decrypts but is refused — moving KV rows
-around cannot attach one user's wallet to another address. `Debug` for the
-record and for the key set prints no URI or key material, because both end up
-in log lines on the error paths.
-
-Behavior that matters operationally:
-
-- **Missing or malformed key fails closed.** Sealed rows cannot be opened, and
-  plaintext rows from earlier versions are refused rather than served, so a
-  forgotten secret cannot silently downgrade storage. No row is deleted in that
-  state; fix the secret and the records work again.
-- **Plaintext rows migrate lazily.** Earlier versions stored the URI under the
-  bare username. The first read seals the row under `lnaddr:<username>` and
-  then deletes the plaintext key (sealed write first, so an interruption cannot
-  lose the URI). There is no separate migration step or version bump.
-- **Rotation is two-step.** Set `LN_ADDRESS_KEY_PREVIOUS` to the old key and
-  `LN_ADDRESS_KEY` to the new one: reads try the current key first, then the
-  previous one. Only rows written again are sealed under the new key, so keep
-  `LN_ADDRESS_KEY_PREVIOUS` set until every record has been rewritten.
-- **Usernames are bounded.** At most 64 characters of `[A-Za-z0-9._~-]`, and
-  `.`/`..` are refused: those two are the only path segments an HTTP client
-  rewrites, which would turn a callback URL into one that misses this route.
-  The same check guards `.well-known`, callbacks, and stored registrations.
-- **Local development needs the key too.** `wrangler dev` without `LN_ADDRESS_KEY`
-  (in `.dev.vars` or as `--var LN_ADDRESS_KEY:<64 hex chars>`) answers every
-  Lightning Address lookup with `User not found`; the integration suite passes
-  one for exactly this reason.
-
 ## Common Gotchas
 
 1. **Bounded REQs**: every value in a filter (`ids`, `authors`, `kinds`, `#p`, `#e`) becomes a persisted routing key, and `sync()` re-reads and rewrites all of a connection's keys on every subscribe. That is why `Limits::max_filter_items` / `max_routing_keys_per_connection` and the `MAX_SUB_ID_LENGTH` check in `NostrEngine::handle_req` exist; removing them turns one `REQ` into tens of thousands of storage operations.
@@ -300,7 +200,6 @@ Behavior that matters operationally:
 7. **Routing index families**: A subscription can be indexed under `pk:` (`authors`/`#p`), `eid:` (`ids`) or `etag:` (`#e`); `sync()`, `load_indexed()`, `unsubscribe()` and `on_terminate()` must treat all three the same or routing silently degrades to "accepted, EOSE, no event", or the persisted index keeps a membership the live connection no longer has (leaks storage and resurrects dead subscriptions). Cached info events follow the same rule as any other event: they reach a `#p` filter only through a real `p` tag, and only the author key (`info:<author>`) is comparable, so an app's pubkey resolves to nothing.
 8. **Alarms are one-shot**: the idle sweep re-arms itself inside `alarm()` and the accept path arms it when none is pending. Dropping either half leaves connections that are accepted once and never swept — the case this sweep exists to close. `IDLE_TIMEOUT_SECONDS=0` / `CONNECTION_SWEEP_SECONDS=0` switch it off, which is what the functional test suite does so its own sockets are not swept mid-test.
 9. **Info cache is bounded on purpose**: `MAX_INFO_EVENTS` / `INFO_TTL_SECONDS` are the only thing keeping the `info:` family from growing forever, since anyone may publish a `kind` 13194 event. Both are enforced through one `list_prefix("info:")` enumeration, so a new bound must go there rather than into a separate pass. Unit tests set `info_ttl_seconds: 0` (`test_limits()`) because fixtures publish `created_at: 1000` against a pinned clock of 1_700_000_000 — leaving the default TTL on would expire every fixture. Tests that mean to test expiry set the TTL and `set_test_time` explicitly.
-10. **LN address range is one value**: the `.well-known` advertisement and the callback check both read `SendableLimits` from `CloudflareConfig::lnaddress_policy()`. Changing one side alone makes the service advertise a range it refuses. The callback rate limiter is only swept while `CONNECTION_SWEEP_SECONDS` is non-zero; that switch is deliberately separate from `IDLE_TIMEOUT_SECONDS`.
 
 ## Agent skills
 
@@ -373,7 +272,7 @@ Single-context layout. See `docs/agents/domain.md`.
     --fail-under-lines 95 --fail-under-regions 90 --fail-under-functions 80
   ```
 
-> All worker-dependent modules live under `cloudflare/`. The core relay logic (`nostr/*`, `auth.rs`, `lnaddress/*`) has zero `worker` crate dependency and is fully testable.
+> All worker-dependent modules live under `cloudflare/`. The core relay logic (`nostr/*`, `auth.rs`, `util/*`) has zero `worker` crate dependency and is fully testable.
 
 ## Mutation Testing
 - Coverage says the code was *executed*; mutation testing proves the tests
