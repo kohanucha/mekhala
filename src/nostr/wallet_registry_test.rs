@@ -1485,7 +1485,8 @@ fn test_prune_retired_keys_drains_in_bounded_batches() {
         for i in 0..seeded {
             entries.insert(format!("info-p:app{i}"), serde_json::json!("wallet"));
         }
-        registry.storage.put_batch(entries).await.unwrap();
+        // Seeded straight into storage: more keys than one put may carry.
+        registry.storage.data.lock().unwrap().extend(entries);
 
         let mut passes = 0usize;
         let mut removed = registry.prune_retired_keys().await;
@@ -1522,7 +1523,8 @@ fn test_prune_retired_keys_shares_one_budget_across_families() {
         }
         entries.insert("rate:a".to_string(), serde_json::json!({}));
         entries.insert("rate:b".to_string(), serde_json::json!({}));
-        registry.storage.put_batch(entries).await.unwrap();
+        // Seeded straight into storage: more keys than one put may carry.
+        registry.storage.data.lock().unwrap().extend(entries);
 
         assert_eq!(registry.prune_retired_keys().await, RETIRED_KEY_SWEEP_LIMIT);
         let keys = stored_keys(&registry);
@@ -2462,6 +2464,7 @@ struct CountingStorage {
     list_calls: std::rc::Rc<std::cell::Cell<usize>>,
     list_pages: std::rc::Rc<std::cell::Cell<usize>>,
     ops: std::rc::Rc<std::cell::Cell<usize>>,
+    put_sizes: std::rc::Rc<std::cell::RefCell<Vec<usize>>>,
 }
 
 impl CountingStorage {
@@ -2470,6 +2473,7 @@ impl CountingStorage {
             inner: MockStorage::new(),
             list_calls: std::rc::Rc::new(std::cell::Cell::new(0)),
             list_pages: std::rc::Rc::new(std::cell::Cell::new(0)),
+            put_sizes: std::rc::Rc::default(),
             ops: std::rc::Rc::new(std::cell::Cell::new(0)),
         }
     }
@@ -2502,6 +2506,7 @@ impl Storage for CountingStorage {
         entries: std::collections::HashMap<String, Value>,
     ) -> Result<(), StorageError> {
         self.count_op();
+        self.put_sizes.borrow_mut().push(entries.len());
         self.inner.put_batch(entries).await
     }
     async fn delete_batch(&self, keys: Vec<String>) {
@@ -2758,5 +2763,105 @@ fn test_info_cache_trim_drops_oversized_entries() {
             ]
         );
         assert_eq!(registry.info_count, Some(2));
+    });
+}
+
+// ── persisting more keys than one storage call takes ──
+
+/// A Durable Object `put` takes at most 128 entries, and one connection may
+/// reference up to `max_routing_keys_per_connection` (1000) keys. `MockStorage`
+/// refuses an oversized put the way production does.
+#[test]
+fn test_subscribe_persists_more_keys_than_one_storage_batch() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
+        let filters: Vec<Filter> = (0..20)
+            .map(|f| Filter {
+                authors: Some((0..10).map(|a| format!("pk-{f}-{a}")).collect()),
+                ..Default::default()
+            })
+            .collect();
+
+        registry
+            .subscribe(1, "s".into(), filters)
+            .await
+            .expect("200 routing keys are within the limits");
+
+        let keys = stored_keys(&registry);
+        assert_eq!(keys.iter().filter(|k| k.starts_with("pk:")).count(), 200);
+        assert!(keys.contains(&"conn:1".to_string()));
+
+        let mut woken = simulate_hibernation(&registry.storage).await;
+        assert_eq!(woken_by(&mut woken, "pk-19-9").await, vec![1]);
+    });
+}
+
+/// A subscription whose state could not be saved was answered with `CLOSED`,
+/// so it must not deliver events or count toward the limits afterwards.
+#[test]
+fn test_failed_new_subscription_is_not_live() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
+        registry
+            .subscribe(1, "kept".into(), vec![authors_filter("alice")])
+            .await
+            .unwrap();
+        registry.storage.fail_put_batch = true;
+
+        assert!(registry
+            .subscribe(1, "lost".into(), vec![authors_filter("bob")])
+            .await
+            .is_err());
+
+        assert!(!has_subscription(&registry, 1, "lost"));
+        assert_eq!(registry.index.sub_count(1), 1);
+        let bob = crate::common::test_helpers::test_event("e1", "bob", 23194, vec![], 0);
+        assert!(send_targets(&registry.match_event(&bob).await).is_empty());
+    });
+}
+
+/// A replacement that could not be saved leaves the previous filters live, the
+/// same ones the stored `conn:` state still holds.
+#[test]
+fn test_failed_replace_keeps_previous_filters_live() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
+        registry
+            .subscribe(1, "s".into(), vec![authors_filter("alice")])
+            .await
+            .unwrap();
+        registry.storage.fail_put_batch = true;
+
+        assert!(registry
+            .subscribe(1, "s".into(), vec![authors_filter("bob")])
+            .await
+            .is_err());
+
+        let alice = crate::common::test_helpers::test_event("e1", "alice", 23194, vec![], 0);
+        assert_eq!(
+            send_targets(&registry.match_event(&alice).await),
+            vec![(1, "s".to_string())]
+        );
+        let bob = crate::common::test_helpers::test_event("e2", "bob", 23194, vec![], 0);
+        assert!(send_targets(&registry.match_event(&bob).await).is_empty());
+    });
+}
+
+/// Every put is a billed storage operation, so `put_all` fills each batch to
+/// the limit rather than splitting more than it has to.
+#[test]
+fn test_put_all_uses_the_fewest_full_batches() {
+    futures::executor::block_on(async {
+        let registry = WalletRegistry::new(CountingStorage::new(), test_limits(), test_now);
+        let entries = (0..300)
+            .map(|i| (format!("k{i}"), serde_json::json!(i)))
+            .collect();
+
+        registry.put_all(entries).await.unwrap();
+
+        let mut sizes = registry.storage.put_sizes.borrow().clone();
+        sizes.sort_unstable();
+        assert_eq!(sizes, vec![44, MAX_STORAGE_BATCH, MAX_STORAGE_BATCH]);
+        assert_eq!(registry.storage.inner.data.lock().unwrap().len(), 300);
     });
 }

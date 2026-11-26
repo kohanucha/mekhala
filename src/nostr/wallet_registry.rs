@@ -24,6 +24,10 @@ const RETIRED_KEY_PREFIXES: [&str; 2] = ["info-p:", "rate:"];
 /// short; the next alarm continues where this one stopped.
 const RETIRED_KEY_SWEEP_LIMIT: usize = 128;
 
+/// Most entries one storage call may carry: Durable Object `put`, `get` and
+/// `delete` take at most 128 keys at a time.
+pub const MAX_STORAGE_BATCH: usize = 128;
+
 /// How many `info:` entries one listing reads. Trimming keeps only a summary
 /// of each, so memory stays at one page however large the cache is.
 const INFO_LIST_PAGE_SIZE: usize = 128;
@@ -492,7 +496,7 @@ impl<S: Storage> WalletRegistry<S> {
         // the budget is checked against the whole connection, not this filter.
         let mut prospective = self.index.get_subscriptions(conn_id);
         let before = referenced_keys(&prospective);
-        prospective.insert(sub_id.clone(), filters.clone());
+        let previous = prospective.insert(sub_id.clone(), filters.clone());
         let after = referenced_keys(&prospective);
         let keys = after.len();
         if keys > self.limits.max_routing_keys_per_connection {
@@ -502,10 +506,18 @@ impl<S: Storage> WalletRegistry<S> {
             )));
         }
 
-        self.index.subscribe(conn_id, sub_id, filters);
-        self.sync(conn_id)
-            .await
-            .map_err(|e| crate::nostr::RelayError::Generic(format!("persist failed: {e}")))?;
+        self.index.subscribe(conn_id, sub_id.clone(), filters);
+        if let Err(e) = self.sync(conn_id).await {
+            // The client is told the subscription is closed, so the live index
+            // goes back to what the stored `conn:` state still holds.
+            match previous {
+                Some(old) => self.index.subscribe(conn_id, sub_id, old),
+                None => self.index.unsubscribe(conn_id, sub_id),
+            }
+            return Err(crate::nostr::RelayError::Generic(format!(
+                "persist failed: {e}"
+            )));
+        }
 
         // Only after a successful save, so the old keys still match `conn:`
         // if it fails.
@@ -1005,13 +1017,32 @@ impl<S: Storage> WalletRegistry<S> {
                 self.append_conn(&mut entries, format!("etag:{event_id}"), conn_id)
                     .await;
             }
-            self.storage.put_batch(entries).await?;
+            self.put_all(entries).await?;
         } else {
             self.storage
                 .delete_batch(vec![format!("conn:{}", conn_id)])
                 .await;
         }
         Ok(())
+    }
+
+    /// Writes `entries` in calls of at most [`MAX_STORAGE_BATCH`]. All calls
+    /// start before any is awaited, so a Durable Object commits them as one
+    /// atomic write.
+    async fn put_all(&self, entries: HashMap<String, Value>) -> Result<(), StorageError> {
+        let mut batches: Vec<HashMap<String, Value>> = Vec::new();
+        for (key, value) in entries {
+            match batches.last_mut() {
+                Some(batch) if batch.len() < MAX_STORAGE_BATCH => {
+                    batch.insert(key, value);
+                }
+                _ => batches.push(HashMap::from([(key, value)])),
+            }
+        }
+        let puts = batches
+            .into_iter()
+            .map(|batch| self.storage.put_batch(batch));
+        futures::future::join_all(puts).await.into_iter().collect()
     }
 
     /// Adds `conn_id` to the persisted connection list under `key`.

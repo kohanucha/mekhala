@@ -80,6 +80,11 @@ impl Storage for MockStorage {
         if self.fail_put_batch {
             return Err(crate::nostr::StorageError::from("mock storage unavailable"));
         }
+        if entries.len() > crate::nostr::wallet_registry::MAX_STORAGE_BATCH {
+            return Err(crate::nostr::StorageError::from(
+                "too many entries in one put",
+            ));
+        }
         let mut data = self.data.lock().unwrap();
         for (k, v) in entries {
             data.insert(k, v);
@@ -131,7 +136,7 @@ pub fn test_event(id: &str, pubkey: &str, kind: u64, tags: Vec<Tag>, created_at:
 pub async fn simulate_hibernation(original: &MockStorage) -> WalletRegistry<MockStorage> {
     let snapshot = original.data.lock().unwrap().clone();
     let new_storage = MockStorage::new();
-    new_storage.put_batch(snapshot).await.unwrap();
+    new_storage.data.lock().unwrap().extend(snapshot);
     // Same limits and clock as the engine under test: the point of the
     // simulation is that only the in-memory index is lost.
     WalletRegistry::new(new_storage, test_limits(), test_now)
