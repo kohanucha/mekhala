@@ -123,7 +123,7 @@ fn test_verify_default_limit_accepts_max_nip44_payload() {
         id: "id1".into(),
         pubkey: "pk1".into(),
         created_at: 1700000000,
-        kind: 13194,
+        kind: 23194,
         tags: vec![],
         content: "a".repeat(87_472),
         sig: "sig".into(),
@@ -502,4 +502,48 @@ fn test_verify_timestamp_window_boundaries() {
         Err(RelayError::TimestampTooFar(msg)) => assert!(msg.contains("too old")),
         other => panic!("expected TimestampTooFar, got {other:?}"),
     }
+}
+
+/// An info event padded so its stored JSON is exactly `len` bytes.
+fn info_event_of_len(len: usize) -> Event {
+    let mut event = Event {
+        id: "id".into(),
+        pubkey: "pk".into(),
+        created_at: 1_700_000_000,
+        kind: 13194,
+        tags: vec![],
+        content: String::new(),
+        sig: "sig".into(),
+    };
+    event.content = "a".repeat(len - event.json_len());
+    assert_eq!(event.json_len(), len);
+    event
+}
+
+#[test]
+fn test_verify_info_event_size_boundary() {
+    let limits = Limits::default();
+    // At the limit passes the size check (and fails later on the id).
+    assert!(!matches!(
+        info_event_of_len(MAX_INFO_EVENT_BYTES).verify(1_700_000_000, &limits),
+        Err(RelayError::LimitExceeded(_))
+    ));
+    match info_event_of_len(MAX_INFO_EVENT_BYTES + 1).verify(1_700_000_000, &limits) {
+        Err(RelayError::LimitExceeded(msg)) => assert!(msg.contains("info event too large")),
+        other => panic!("expected LimitExceeded, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_verify_size_limit_applies_only_to_info_events() {
+    // An NWC request carries NIP-44 content far larger than an info event.
+    let request = Event {
+        kind: 23194,
+        tags: vec![Tag::P(String::from("wallet"), vec![])],
+        ..info_event_of_len(MAX_INFO_EVENT_BYTES * 4)
+    };
+    assert!(!matches!(
+        request.verify(1_700_000_000, &Limits::default()),
+        Err(RelayError::LimitExceeded(_))
+    ));
 }

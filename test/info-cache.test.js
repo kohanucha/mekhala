@@ -1,7 +1,7 @@
 // Bounds on the cached wallet-info family (`info:`, `infoid:`).
 //
 // Rust unit tests cover the eviction and expiry logic against `MockStorage`.
-// These two scenarios exercise the piece those cannot: `Storage::list_prefix`
+// These two scenarios exercise the piece those cannot: `Storage::list_page`
 // against real Durable Object storage, and the alarm-driven sweep that keeps
 // the cache from growing without anyone reading it.
 //
@@ -112,6 +112,42 @@ export async function testInfoCacheCap() {
         "an evicted event must not come back on a second request",
       );
       console.log("✅ Evicted event stayed gone.");
+
+      reader.close();
+      publisher.close();
+    });
+  });
+}
+
+/// More events than one storage page (128), so the cap only holds if trimming
+/// pages through real Durable Object storage. Pubkeys are random, so key order
+/// has nothing to do with age.
+export async function testInfoCacheCapAcrossPages() {
+  console.log("\n--- Testing the info-cache cap across storage pages ---");
+
+  await withStateDir("info-pages", async (persistTo) => {
+    const vars = { MAX_INFO_EVENTS: 200, INFO_TTL_SECONDS: 0, MESSAGE_RATE_LIMIT_PER_MINUTE: 0 };
+
+    await withRelay({ port: 8793, vars, persistTo }, async ({ wsURL }) => {
+      const publisher = await connect(wsURL);
+      const base = now() - 300;
+      const wallets = [];
+      for (let i = 0; i < 201; i++) {
+        const sk = generateSecretKey();
+        wallets.push({ sk, pk: getPublicKey(sk), createdAt: base + i });
+      }
+      for (const wallet of wallets) {
+        await publishInfo(publisher, wallet.sk, wallet.createdAt);
+      }
+      console.log("Published 201 info events with a cap of 200.");
+
+      // One over the cap trims back to 90% of it: the 21 oldest go.
+      const reader = await connect(wsURL);
+      for (const [i, cached] of [[0, false], [20, false], [21, true], [200, true]]) {
+        const found = (await fetchInfo(reader, `w${i}`, wallets[i].pk)).length === 1;
+        check(found === cached, `wallet ${i} should ${cached ? "stay cached" : "be evicted"}`);
+      }
+      console.log("✅ Cap evicted the oldest events across every page.");
 
       reader.close();
       publisher.close();

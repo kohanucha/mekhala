@@ -67,15 +67,22 @@ impl Storage for CloudflareStorage {
             }
         }
     }
-    async fn list_prefix(&self, prefix: &str) -> Vec<(String, serde_json::Value)> {
-        let map = match self
-            .storage
-            .list_with_options(ListOptions::new().prefix(prefix))
-            .await
-        {
+    async fn list_page(
+        &self,
+        prefix: &str,
+        start_after: Option<&str>,
+        limit: usize,
+    ) -> Vec<(String, serde_json::Value)> {
+        // `start` is inclusive; a trailing NUL is the first key after it.
+        let start = start_after.map(|key| format!("{key}\0"));
+        let mut options = ListOptions::new().prefix(prefix).limit(limit);
+        if let Some(start) = start.as_deref() {
+            options = options.start(start);
+        }
+        let map = match self.storage.list_with_options(options).await {
             Ok(map) => map,
             Err(e) => {
-                log_warn!("list_prefix('{}') failed: {}", prefix, e);
+                log_warn!("list_page('{}') failed: {}", prefix, e);
                 return Vec::new();
             }
         };
@@ -90,10 +97,13 @@ impl Storage for CloudflareStorage {
             let Some(key) = pair.get(0).as_string() else {
                 continue;
             };
-            let Ok(value) = serde_wasm_bindgen::from_value::<serde_json::Value>(pair.get(1)) else {
-                log_warn!("list_prefix('{}'): skipping unreadable '{}'", prefix, key);
-                continue;
-            };
+            // Kept as `Null` rather than skipped: a short page would read as the
+            // last one, and callers treat `Null` as unreadable and delete it.
+            let value = serde_wasm_bindgen::from_value::<serde_json::Value>(pair.get(1))
+                .unwrap_or_else(|_| {
+                    log_warn!("list_page('{}'): unreadable '{}'", prefix, key);
+                    serde_json::Value::Null
+                });
             entries.push((key, value));
         }
         entries

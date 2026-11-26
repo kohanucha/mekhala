@@ -4,6 +4,11 @@ use serde::{Deserialize, Serialize};
 /// the persisted connection snapshot, so they need a ceiling.
 pub const MAX_SUB_ID_LENGTH: usize = 128;
 
+/// Largest kind 13194 info event accepted, measured as stored JSON. A real one
+/// is a method list and two short tags, well under 1 KiB. Anyone may publish
+/// one, so this keeps the whole cache small: 1,000 events stay under 4 MiB.
+pub const MAX_INFO_EVENT_BYTES: usize = 4_096;
+
 /// Relay-enforced ceilings, parsed from environment configuration (see
 /// `CloudflareConfig`).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

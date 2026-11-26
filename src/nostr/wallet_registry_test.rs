@@ -2452,7 +2452,7 @@ fn test_prune_info_cache_is_a_noop_when_both_bounds_are_off() {
 // ── Info-cache bound: enforcement without a listing per publish ──
 
 /// `MockStorage` plus counters for the calls a test cares about: how often the
-/// info cache was enumerated, and how many storage operations the registry
+/// info cache was enumerated (and in how many pages), and how many storage operations the registry
 /// issued at all. Every publish is attacker-controlled, so an enumeration per
 /// publish would be an amplification vector; the in-memory hint exists to
 /// avoid it. The operation counter is what proves a message that changes
@@ -2460,6 +2460,7 @@ fn test_prune_info_cache_is_a_noop_when_both_bounds_are_off() {
 struct CountingStorage {
     inner: MockStorage,
     list_calls: std::rc::Rc<std::cell::Cell<usize>>,
+    list_pages: std::rc::Rc<std::cell::Cell<usize>>,
     ops: std::rc::Rc<std::cell::Cell<usize>>,
 }
 
@@ -2468,12 +2469,17 @@ impl CountingStorage {
         Self {
             inner: MockStorage::new(),
             list_calls: std::rc::Rc::new(std::cell::Cell::new(0)),
+            list_pages: std::rc::Rc::new(std::cell::Cell::new(0)),
             ops: std::rc::Rc::new(std::cell::Cell::new(0)),
         }
     }
 
     fn info_list_calls(&self) -> usize {
         self.list_calls.get()
+    }
+
+    fn info_list_pages(&self) -> usize {
+        self.list_pages.get()
     }
 
     fn reset_ops(&self) {
@@ -2502,12 +2508,20 @@ impl Storage for CountingStorage {
         self.count_op();
         self.inner.delete_batch(keys).await;
     }
-    async fn list_prefix(&self, prefix: &str) -> Vec<(String, Value)> {
+    async fn list_page(
+        &self,
+        prefix: &str,
+        start_after: Option<&str>,
+        limit: usize,
+    ) -> Vec<(String, Value)> {
         self.count_op();
         if prefix == "info:" {
-            self.list_calls.set(self.list_calls.get() + 1);
+            if start_after.is_none() {
+                self.list_calls.set(self.list_calls.get() + 1);
+            }
+            self.list_pages.set(self.list_pages.get() + 1);
         }
-        self.inner.list_prefix(prefix).await
+        self.inner.list_page(prefix, start_after, limit).await
     }
 }
 
@@ -2667,5 +2681,82 @@ fn test_close_for_an_unknown_subscription_touches_no_storage() {
             ops.get() > 0,
             "closing a live subscription must persist the change"
         );
+    });
+}
+
+// ── trimming reads the cache a page at a time ──
+
+/// Writes an info event straight into storage, the way an earlier version (or
+/// an earlier publish) left it, without going through `cache_info`.
+fn store_info(storage: &MockStorage, event: &Event) {
+    let mut data = storage.data.lock().unwrap();
+    data.insert(
+        format!("info:{}", event.pubkey),
+        serde_json::to_value(event).unwrap(),
+    );
+    data.insert(
+        format!("infoid:{}", event.id),
+        serde_json::json!(event.pubkey),
+    );
+}
+
+#[test]
+fn test_info_cache_trim_reads_every_page() {
+    futures::executor::block_on(async {
+        let storage = CountingStorage::new();
+        // Key order (wallet000, wallet001, ...) is the reverse of age, so the
+        // oldest events sit on the last page.
+        for i in 0..300u64 {
+            store_info(
+                &storage.inner,
+                &info_at(&format!("id{i:03}"), &format!("wallet{i:03}"), 2_000 - i),
+            );
+        }
+        let mut registry = WalletRegistry::new(storage, capped(200), test_now);
+
+        assert_eq!(registry.prune_info_cache().await, 120);
+
+        // 128 + 128 + 44: memory is bounded by one page, not by the cache.
+        assert_eq!(registry.storage.info_list_pages(), 3);
+        assert_eq!(registry.info_count, Some(180));
+        assert!(registry.get_info("wallet179").await.is_some());
+        assert!(registry.get_info("wallet180").await.is_none());
+        let data = registry.storage.inner.data.lock().unwrap();
+        assert!(!data.contains_key("infoid:id180"));
+        assert!(!data.contains_key("infoid:id299"));
+    });
+}
+
+#[test]
+fn test_info_cache_trim_drops_oversized_entries() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let normal = info_at("small", "wallet-a", 1_000);
+        let mut oversized = info_at("big", "wallet-b", 1_001);
+        oversized.content = "a".repeat(MAX_INFO_EVENT_BYTES);
+        store_info(&storage, &normal);
+        store_info(&storage, &oversized);
+        let mut at_limit = info_at("edge", "wallet-c", 1_002);
+        at_limit.content.clear();
+        at_limit.content = "a".repeat(MAX_INFO_EVENT_BYTES - at_limit.json_len());
+        assert_eq!(at_limit.json_len(), MAX_INFO_EVENT_BYTES);
+        store_info(&storage, &at_limit);
+        // Far under the cap and no expiry: size alone has to remove it.
+        let mut registry = WalletRegistry::new(storage, capped(10), test_now);
+
+        assert_eq!(registry.prune_info_cache().await, 1);
+
+        let mut keys = stored_keys(&registry);
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "info:wallet-a",
+                "info:wallet-c",
+                "infoid:edge",
+                "infoid:small"
+            ]
+        );
+        assert_eq!(registry.info_count, Some(2));
     });
 }
