@@ -41,6 +41,8 @@ cleanup() {
     lsof -ti :8802 2>/dev/null | xargs kill -9 2>/dev/null || true
     # Port 8803 cleanup (from the orphaned connection test in JS)
     lsof -ti :8803 2>/dev/null | xargs kill -9 2>/dev/null || true
+    # Port 8804 cleanup (from the relay-without-secret test in JS)
+    lsof -ti :8804 2>/dev/null | xargs kill -9 2>/dev/null || true
     echo "Cleanup complete."
     echo "Wrangler logs saved to: $LOG_FILE"
 }
@@ -116,7 +118,8 @@ npx wrangler dev --port $PORT --ip 127.0.0.1 \
     --var CONN_MAX_PER_IP:0 \
     --var CONN_MAX_PER_ASN:0 \
     --var CONN_IDLE_TIMEOUT_SECONDS:0 \
-    --var CONN_SWEEP_SECONDS:0 > "$LOG_FILE" 2>&1 &
+    --var CONN_SWEEP_SECONDS:0 \
+    --var AUTH_RELAY_SECRET:test-secret > "$LOG_FILE" 2>&1 &
 WRANGLER_PID=$!
 
 # 4. Wait for Relay to be Ready
@@ -139,7 +142,7 @@ sleep 2
 # 5. Run Integration Tests
 echo "Step 4: Running Node.js integration tests..."
 cd test
-npm test -- "127.0.0.1:$PORT"
+npm test -- "127.0.0.1:$PORT" test-secret
 TEST_RESULT=$?
 cd ..
 

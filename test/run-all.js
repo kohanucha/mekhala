@@ -2,7 +2,7 @@ import { isLocal } from "./env.js";
 
 import { testWebSocketMessageDelivery } from "./ws-connect.test.js";
 import { testInfoEventRetrieval, testAppAliasInfoNotReplayed, testRealisticNwcFlow, testRealisticPaymentFlow } from "./info-event.test.js";
-import { testAuth, testAuthHeaders, testNip11, testCorsAndHeaders } from "./basic.test.js";
+import { testAuth, testAuthHeaders, testAuthModes, testNip11, testCorsAndHeaders } from "./basic.test.js";
 import { testRelay, testNwcFlow, testStrictValidation, testMultiClientIsolation, testEdgeCases, testMultiConnectionRouting, testMaxConnections } from "./nwc-flow.test.js";
 import { testNip01EdgeCases, testFilterMatching, testFilterMatchingAdvanced, testMixedValidInvalidFilters, testFilterLimit } from "./nip01-filters.test.js";
 import { testNip09Deletion, testNip09KTagDeletion, testNip09BlanketDeletion, testNip09UnauthorizedDeletion } from "./nip09-deletion.test.js";
@@ -61,6 +61,7 @@ async function runAll() {
       await testConnectionEviction();
       await testMessageBudget();
       await testOrphanedConnectionCleanup();
+      await testAuthModes();
       await testRestartPersistence();
       await testInfoCacheCap();
       await testInfoCacheCapAcrossPages();
