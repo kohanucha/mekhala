@@ -9,6 +9,8 @@ self-hosted service (manee) that connects to this relay as an ordinary NWC
 client. **Do not add Lightning Address, LNURL, wallet-session or NWC-client
 code here**: anything that needs a wallet's secret belongs on the client side.
 
+This file is the only agent instruction file in the repository.
+
 ## Key Commands
 | Action | Command | Notes |
 |--------|---------|-------|
@@ -238,17 +240,15 @@ per-address counters in storage, which would cost an operation per frame.
 
 ### Issue tracker
 
-GitHub Issues via GitHub MCP. See `docs/agents/issue-tracker.md`.
+GitHub Issues through the GitHub MCP tools, never `gh`. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
-Default vocabulary. See `docs/agents/triage-labels.md`.
+The five default labels, each named after its role. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
-Domain language and the architecture map live in `docs/agents/domain.md`;
-read it when the work touches the domain model. This file is the only agent
-instruction file in the repository.
+Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
 ## Testing Conventions
 
