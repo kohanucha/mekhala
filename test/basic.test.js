@@ -135,7 +135,7 @@ export async function testAuthHeaders() {
  */
 export async function testAuthModes() {
   console.log("\n--- Testing a relay with no secret ---");
-  const { withRelay, connect, refused } = await import("./relay-harness.js");
+  const { withRelay, connect, refused, wait } = await import("./relay-harness.js");
   const port = 8804;
   const nip11 = { headers: { Accept: "application/nostr+json" } };
 
@@ -146,6 +146,12 @@ export async function testAuthModes() {
     }
     if (!(await refused(wsURL))) {
       throw new Error("unconfigured relay accepted a WebSocket");
+    }
+    // wrangler forwards the Worker's console output on its own schedule, so
+    // the line can arrive after the response: wait for it, with a deadline.
+    const deadline = Date.now() + 10_000;
+    while (!log().includes("no relay secret is configured") && Date.now() < deadline) {
+      await wait(250);
     }
     if (!log().includes("no relay secret is configured")) {
       throw new Error("unconfigured relay did not log why it refuses");

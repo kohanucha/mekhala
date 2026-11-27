@@ -234,8 +234,15 @@ export async function testOrphanedConnectionCleanup() {
           ws.on("message", handler);
         });
       }
-      await wait(300);
-      const removed = log().split("\n").filter((line) => line.includes("has no socket: removing its state"));
+      // The Worker's console reaches wrangler's output on its own schedule:
+      // wait for the first clean-up line, then a moment for any duplicate.
+      const cleanups = () => log().split("\n").filter((line) => line.includes("has no socket: removing its state"));
+      const deadline = Date.now() + 10_000;
+      while (cleanups().length === 0 && Date.now() < deadline) {
+        await wait(250);
+      }
+      await wait(500);
+      const removed = cleanups();
       check(removed.length === 1, `expected one immediate clean-up, saw ${removed.length}`);
       check(!log().includes("send failed"), "an event was sent to a connection that no longer exists");
       console.log("✅ The first event for a dead subscriber removed it; nothing was sent to it.");
