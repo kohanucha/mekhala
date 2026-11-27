@@ -471,11 +471,9 @@ impl CloudflareTransport {
             last_seen: now,
         };
 
-        // Room is decided before an id is allocated: a refused connection
-        // must not burn one.
-        let mut freed = 0usize;
-        match admit(&existing, sockets.len(), &candidate, &limits) {
-            Admission::Accept => {}
+        let admission = admit(&existing, sockets.len(), &candidate, &limits);
+        match admission {
+            Admission::Accept | Admission::Full => {}
             Admission::IpAtCapacity => {
                 log_warn!(
                     "✗ connection rejected: address limit {} reached",
@@ -490,25 +488,28 @@ impl CloudflareTransport {
                 );
                 return Response::error("Too Many Requests", 429);
             }
-            Admission::Full => {
-                if self.reclaim_idle_slot(&existing, now).await? {
-                    // The evicted socket stays in `get_websockets()` until
-                    // its close propagates, so its slot is counted as freed
-                    // rather than read back as still occupied.
-                    freed = 1;
-                } else {
-                    log_warn!(
-                        "✗ connection rejected: max={} connections reached",
-                        limits.max_connections
-                    );
-                    return Response::error("Too Many Requests", 429);
-                }
-            }
         }
 
+        // Before reclaiming a slot, so a failed reservation evicts no one.
         let Some(connection_id) = self.allocate_id().await else {
             return Response::error("Service Unavailable", 503);
         };
+
+        let mut freed = 0usize;
+        if admission == Admission::Full {
+            if !self.reclaim_idle_slot(&existing, now).await? {
+                log_warn!(
+                    "✗ connection rejected: max={} connections reached",
+                    limits.max_connections
+                );
+                return Response::error("Too Many Requests", 429);
+            }
+            // The evicted socket stays in `get_websockets()` until its close
+            // propagates, so its slot is counted as freed rather than read
+            // back as still occupied.
+            freed = 1;
+        }
+
         let WebSocketPair { client, server } = WebSocketPair::new()?;
         let attachment = Attachment {
             id: connection_id,
