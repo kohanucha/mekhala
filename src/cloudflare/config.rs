@@ -4,6 +4,7 @@ pub struct CloudflareConfig {
     pub max_content_length: usize,
     pub max_subscriptions_per_connection: usize,
     pub max_filter_items: usize,
+    pub max_filters_per_req: usize,
     pub max_event_tags: usize,
     pub max_routing_keys_per_connection: usize,
     pub max_connections: usize,
@@ -36,6 +37,10 @@ impl CloudflareConfig {
             ),
             max_filter_items: Self::parse_opt(
                 env.var("SUB_MAX_FILTER_VALUES").ok().map(|v| v.to_string()),
+                10,
+            ),
+            max_filters_per_req: Self::parse_opt(
+                env.var("SUB_MAX_FILTERS").ok().map(|v| v.to_string()),
                 10,
             ),
             max_event_tags: Self::parse_opt(

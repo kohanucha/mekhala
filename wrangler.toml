@@ -25,6 +25,7 @@ CONN_ORPHAN_SWEEP_SECONDS = "3600"
 # SUB: subscriptions and filters
 SUB_MAX_PER_CONN = "100"
 SUB_MAX_FILTER_VALUES = "10"
+SUB_MAX_FILTERS = "10"
 SUB_MAX_ROUTING_KEYS = "1000"
 
 # EVENT: accepted event size

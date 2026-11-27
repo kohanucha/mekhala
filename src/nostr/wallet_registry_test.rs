@@ -3112,3 +3112,34 @@ fn test_resending_the_cached_info_event_writes_nothing() {
         );
     });
 }
+
+#[test]
+fn test_routing_keys_share_one_copy_of_a_subscription() {
+    let mut index = WalletIndex::new();
+    let filters = vec![Filter {
+        kinds: Some(vec![23195]),
+        authors: Some((0..10).map(|i| format!("author{i}")).collect()),
+        p_tags: Some((0..10).map(|i| format!("payee{i}")).collect()),
+        ..Default::default()
+    }];
+    for conn in 1..=100 {
+        index.subscribe(conn, "s".into(), filters.clone());
+    }
+
+    assert_eq!(index.subscriptions.len(), 1);
+    assert_eq!(index.handles.len(), 1);
+    let handle = index.handles[&("s".to_string(), filters)];
+    assert_eq!(index.subscriptions[&handle].conns.len(), 100);
+    assert_eq!(index.pk_index.len(), 20);
+    assert!(index
+        .pk_index
+        .values()
+        .all(|(handles, _)| *handles == HashSet::from([handle])));
+
+    for conn in 1..=100 {
+        index.unsubscribe(conn, "s".into());
+    }
+    assert!(index.subscriptions.is_empty());
+    assert!(index.handles.is_empty());
+    assert!(index.pk_index.is_empty());
+}

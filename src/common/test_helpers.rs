@@ -11,6 +11,13 @@ use std::sync::{Arc, Mutex};
 pub const TEST_WALLET_SK: &str = "0101010101010101010101010101010101010101010101010101010101010101";
 pub const TEST_WALLET_PK: &str = "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f";
 
+/// A stable 64-character lowercase hex value named by `label`, for filter
+/// values, which the relay accepts only in that form.
+pub fn hex_key(label: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(label.as_bytes()))
+}
+
 // ── Clock seam ──
 
 thread_local! {

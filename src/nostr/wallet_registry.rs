@@ -110,15 +110,26 @@ pub struct SavedState {
     pub e_tags: HashSet<String>,
 }
 
-/// A purely synchronous index for subscriptions and info events.
 type SubKey = (String, Vec<Filter>);
-type PkEntry = (HashSet<SubKey>, Option<Event>);
+/// Names one distinct subscription in the routing indexes, so they hold a
+/// number per key instead of a copy of every filter of the `REQ`.
+type SubHandle = u64;
+type PkEntry = (HashSet<SubHandle>, Option<Event>);
 
+/// A subscription and the connections that hold it.
+struct Subscription {
+    key: SubKey,
+    conns: Vec<u32>,
+}
+
+/// A purely synchronous index for subscriptions and info events.
 struct WalletIndex {
-    subscription_index: HashMap<SubKey, Vec<u32>>,
+    subscriptions: HashMap<SubHandle, Subscription>,
+    handles: HashMap<SubKey, SubHandle>,
+    next_handle: SubHandle,
     pk_index: HashMap<String, PkEntry>,
-    id_index: HashMap<String, HashSet<SubKey>>,
-    e_index: HashMap<String, HashSet<SubKey>>,
+    id_index: HashMap<String, HashSet<SubHandle>>,
+    e_index: HashMap<String, HashSet<SubHandle>>,
     info_id_index: HashMap<String, String>,
     reverse_index: HashMap<u32, HashMap<String, Vec<Filter>>>,
 }
@@ -146,10 +157,14 @@ fn referenced_keys(subs: &HashMap<String, Vec<Filter>>) -> HashSet<String> {
 
 /// Removes a subscription from one of the secondary indexes, dropping the
 /// key entirely once no subscription references it.
-fn remove_from_index(index: &mut HashMap<String, HashSet<SubKey>>, key: &str, sub_key: &SubKey) {
+fn remove_from_index(
+    index: &mut HashMap<String, HashSet<SubHandle>>,
+    key: &str,
+    handle: SubHandle,
+) {
     let empty = match index.get_mut(key) {
         Some(subs) => {
-            subs.remove(sub_key);
+            subs.remove(&handle);
             subs.is_empty()
         }
         None => false,
@@ -162,7 +177,9 @@ fn remove_from_index(index: &mut HashMap<String, HashSet<SubKey>>, key: &str, su
 impl WalletIndex {
     fn new() -> Self {
         Self {
-            subscription_index: HashMap::new(),
+            subscriptions: HashMap::new(),
+            handles: HashMap::new(),
+            next_handle: 0,
             pk_index: HashMap::new(),
             id_index: HashMap::new(),
             e_index: HashMap::new(),
@@ -175,32 +192,14 @@ impl WalletIndex {
         self.unsubscribe(conn_id, sub_id.clone());
 
         let sub_key = (sub_id.clone(), filters.clone());
-
-        for filter in &filters {
-            for pk in filter.pubkeys() {
-                let entry = self
-                    .pk_index
-                    .entry(pk)
-                    .or_insert_with(|| (HashSet::new(), None));
-                entry.0.insert(sub_key.clone());
+        let handle = match self.handles.get(&sub_key) {
+            Some(&handle) => handle,
+            None => self.add_subscription(sub_key),
+        };
+        if let Some(sub) = self.subscriptions.get_mut(&handle) {
+            if !sub.conns.contains(&conn_id) {
+                sub.conns.push(conn_id);
             }
-            for id in filter.ids.iter().flatten() {
-                self.id_index
-                    .entry(id.clone())
-                    .or_default()
-                    .insert(sub_key.clone());
-            }
-            for event_id in filter.e_tags.iter().flatten() {
-                self.e_index
-                    .entry(event_id.clone())
-                    .or_default()
-                    .insert(sub_key.clone());
-            }
-        }
-
-        let conns = self.subscription_index.entry(sub_key).or_default();
-        if !conns.contains(&conn_id) {
-            conns.push(conn_id);
         }
 
         self.reverse_index
@@ -209,39 +208,86 @@ impl WalletIndex {
             .insert(sub_id, filters);
     }
 
+    /// Records a subscription no connection holds yet under a new handle.
+    fn add_subscription(&mut self, sub_key: SubKey) -> SubHandle {
+        let handle = self.next_handle;
+        self.next_handle = self.next_handle.wrapping_add(1);
+
+        for filter in &sub_key.1 {
+            for pk in filter.pubkeys() {
+                let entry = self
+                    .pk_index
+                    .entry(pk)
+                    .or_insert_with(|| (HashSet::new(), None));
+                entry.0.insert(handle);
+            }
+            for id in filter.ids.iter().flatten() {
+                self.id_index.entry(id.clone()).or_default().insert(handle);
+            }
+            for event_id in filter.e_tags.iter().flatten() {
+                self.e_index
+                    .entry(event_id.clone())
+                    .or_default()
+                    .insert(handle);
+            }
+        }
+
+        self.handles.insert(sub_key.clone(), handle);
+        self.subscriptions.insert(
+            handle,
+            Subscription {
+                key: sub_key,
+                conns: Vec::new(),
+            },
+        );
+        handle
+    }
+
     fn unsubscribe(&mut self, conn_id: u32, sub_id: String) {
-        if let Some(conn_subs) = self.reverse_index.get_mut(&conn_id) {
-            if let Some(filters) = conn_subs.remove(&sub_id) {
-                let sub_key = (sub_id, filters);
+        let Some(conn_subs) = self.reverse_index.get_mut(&conn_id) else {
+            return;
+        };
+        let removed = conn_subs.remove(&sub_id);
+        if conn_subs.is_empty() {
+            self.reverse_index.remove(&conn_id);
+        }
+        let Some(filters) = removed else {
+            return;
+        };
+        let Some(&handle) = self.handles.get(&(sub_id, filters)) else {
+            return;
+        };
+        let Some(sub) = self.subscriptions.get_mut(&handle) else {
+            return;
+        };
+        sub.conns.retain(|&id| id != conn_id);
+        if sub.conns.is_empty() {
+            self.remove_subscription(handle);
+        }
+    }
 
-                if let Some(conns) = self.subscription_index.get_mut(&sub_key) {
-                    conns.retain(|&id| id != conn_id);
-                    if conns.is_empty() {
-                        self.subscription_index.remove(&sub_key);
-
-                        for filter in &sub_key.1 {
-                            for pk in filter.pubkeys() {
-                                if let Some(entry) = self.pk_index.get_mut(&pk) {
-                                    entry.0.remove(&sub_key);
-                                    if entry.0.is_empty() && entry.1.is_none() {
-                                        self.pk_index.remove(&pk);
-                                    }
-                                }
-                            }
-                            for id in filter.ids.iter().flatten() {
-                                remove_from_index(&mut self.id_index, id, &sub_key);
-                            }
-                            for event_id in filter.e_tags.iter().flatten() {
-                                remove_from_index(&mut self.e_index, event_id, &sub_key);
-                            }
-                        }
+    /// Drops a subscription no connection holds any more from every index.
+    fn remove_subscription(&mut self, handle: SubHandle) {
+        let Some(sub) = self.subscriptions.remove(&handle) else {
+            return;
+        };
+        for filter in &sub.key.1 {
+            for pk in filter.pubkeys() {
+                if let Some(entry) = self.pk_index.get_mut(&pk) {
+                    entry.0.remove(&handle);
+                    if entry.0.is_empty() && entry.1.is_none() {
+                        self.pk_index.remove(&pk);
                     }
                 }
             }
-            if conn_subs.is_empty() {
-                self.reverse_index.remove(&conn_id);
+            for id in filter.ids.iter().flatten() {
+                remove_from_index(&mut self.id_index, id, handle);
+            }
+            for event_id in filter.e_tags.iter().flatten() {
+                remove_from_index(&mut self.e_index, event_id, handle);
             }
         }
+        self.handles.remove(&sub.key);
     }
 
     fn disconnect(&mut self, conn_id: u32) {
@@ -334,19 +380,19 @@ impl WalletIndex {
     /// an attacker's, silence every other subscriber of the same wallet.
     fn collect_matches(
         &self,
-        subs: &HashSet<SubKey>,
+        handles: &HashSet<SubHandle>,
         event: &Event,
         out: &mut HashMap<String, Vec<u32>>,
     ) {
-        for sub_key in subs {
-            if !sub_key.1.iter().any(|f| f.matches(event)) {
-                continue;
-            }
-            let Some(conns) = self.subscription_index.get(sub_key) else {
+        for handle in handles {
+            let Some(sub) = self.subscriptions.get(handle) else {
                 continue;
             };
-            for id in conns {
-                let recipients = out.entry(sub_key.0.clone()).or_default();
+            if !sub.key.1.iter().any(|f| f.matches(event)) {
+                continue;
+            }
+            for id in &sub.conns {
+                let recipients = out.entry(sub.key.0.clone()).or_default();
                 if !recipients.contains(id) {
                     recipients.push(*id);
                 }

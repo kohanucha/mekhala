@@ -87,6 +87,7 @@ fn handle_nip11(env: &Env) -> Result<Response> {
         "limitation": {
             "max_subscriptions": config.max_subscriptions_per_connection,
             "max_subid_length": crate::nostr::limits::MAX_SUB_ID_LENGTH,
+            "max_filters": config.max_filters_per_req,
             "max_event_tags": config.max_event_tags,
             "max_content_length": config.max_content_length,
         }

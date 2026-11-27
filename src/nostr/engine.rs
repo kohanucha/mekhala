@@ -104,6 +104,14 @@ impl<S: Storage> NostrEngine<S> {
             return vec![EngineResponse::send(id, message)];
         }
 
+        if filters.len() > self.limits.max_filters_per_req {
+            let message = RelayMessage::Closed(
+                sub_id,
+                format!("too many filters (max {})", self.limits.max_filters_per_req),
+            );
+            return vec![EngineResponse::send(id, message)];
+        }
+
         if filters.iter().any(|f| f.exceeds_item_limit(&self.limits)) {
             let message = RelayMessage::Closed(
                 sub_id,
@@ -111,6 +119,15 @@ impl<S: Storage> NostrEngine<S> {
                     "filter too large (max {} values per field)",
                     self.limits.max_filter_items
                 ),
+            );
+            return vec![EngineResponse::send(id, message)];
+        }
+
+        if !filters.iter().all(Filter::has_hex_values) {
+            let message = RelayMessage::Closed(
+                sub_id,
+                "invalid filter value: ids, authors, #p and #e take 64 lowercase hex characters"
+                    .to_string(),
             );
             return vec![EngineResponse::send(id, message)];
         }
@@ -208,7 +225,12 @@ impl<S: Storage> NostrEngine<S> {
             .subscribe(id, sub_id.clone(), filters.clone())
             .await
         {
-            log_warn!("sub rejected: conn={} sub={}: {}", id, sub_id, e);
+            log_warn!(
+                "sub rejected: conn={} sub={}: {}",
+                id,
+                short(&sub_id, 16),
+                e
+            );
             return vec![EngineResponse::send(
                 id,
                 RelayMessage::Closed(sub_id, e.to_string()),
@@ -216,23 +238,26 @@ impl<S: Storage> NostrEngine<S> {
         }
 
         let global_limit = filters.iter().filter_map(|f| f.limit).min();
-        let mut replayed: HashSet<String> = HashSet::new();
 
-        for filters_set in filters.iter() {
-            for pk in filters_set.pubkeys() {
-                if let Some(info_event) = self.registry.get_info(&pk).await {
-                    if filters.iter().any(|f| f.matches(&info_event))
-                        && replayed.insert(info_event.id.clone())
-                    {
-                        log_debug!("info hit: pk={} sub={}", short(&pk, 8), sub_id);
-                        responses.push(EngineResponse::send(
-                            id,
-                            RelayMessage::Event(sub_id.clone(), info_event),
-                        ));
-                    }
-                } else {
-                    log_debug!("info miss: pk={} sub={}", short(&pk, 8), sub_id);
+        // One read per wallet, however many filters name it. Each author has
+        // one cached event, so distinct keys never replay the same event.
+        let mut seen = HashSet::new();
+        let pubkeys: Vec<String> = filters
+            .iter()
+            .flat_map(Filter::pubkeys)
+            .filter(|pk| seen.insert(pk.clone()))
+            .collect();
+        for pk in pubkeys {
+            if let Some(info_event) = self.registry.get_info(&pk).await {
+                if filters.iter().any(|f| f.matches(&info_event)) {
+                    log_debug!("info hit: pk={} sub={}", short(&pk, 8), short(&sub_id, 16));
+                    responses.push(EngineResponse::send(
+                        id,
+                        RelayMessage::Event(sub_id.clone(), info_event),
+                    ));
                 }
+            } else {
+                log_debug!("info miss: pk={} sub={}", short(&pk, 8), short(&sub_id, 16));
             }
         }
 
@@ -249,7 +274,7 @@ impl<S: Storage> NostrEngine<S> {
 
     /// Ends a subscription and persists the change; returns no responses.
     pub async fn process_close(&mut self, id: u32, sub_id: String) -> Vec<EngineResponse> {
-        log_debug!("close conn={} sub={}", id, sub_id);
+        log_debug!("close conn={} sub={}", id, short(&sub_id, 16));
         let _ = self.registry.unsubscribe(id, sub_id).await;
         Vec::new()
     }

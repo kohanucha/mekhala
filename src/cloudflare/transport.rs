@@ -12,7 +12,7 @@ use crate::log_warn;
 use crate::nostr::engine::{EngineResponse, NostrEngine};
 use crate::nostr::wallet_registry::Storage;
 use crate::nostr::Limits;
-use crate::util::short;
+use crate::util::{short, LOG_TEXT_BYTES};
 use futures::lock::Mutex;
 use js_sys::{Object, Reflect};
 use serde::Serialize;
@@ -143,6 +143,7 @@ impl DurableObject for CloudflareTransport {
         };
         let limits = Limits {
             max_filter_items: config.max_filter_items,
+            max_filters_per_req: config.max_filters_per_req,
             max_event_tags: config.max_event_tags,
             max_routing_keys_per_connection: config.max_routing_keys_per_connection,
             max_info_events: config.max_info_events,
@@ -251,34 +252,24 @@ impl DurableObject for CloudflareTransport {
                     }
                 }
                 Ok(crate::nostr::ClientMessage::Req(sub_id, filters)) => {
-                    log_info!("← conn={} RECV REQ sub={}", connection_id, sub_id);
-                    for (i, f) in filters.iter().enumerate() {
-                        let kinds = f
-                            .kinds
-                            .as_ref()
-                            .map_or_else(|| "any".into(), |k| format!("{k:?}"));
-                        let auths = f.authors.as_ref().map_or_else(String::new, |a| {
-                            a.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(",")
-                        });
-                        let pts = f.p_tags.as_ref().map_or_else(String::new, |p| {
-                            p.iter().map(|s| short(s, 8)).collect::<Vec<_>>().join(",")
-                        });
-                        log_info!(
-                            "  filter[{}]: kinds={} authors={} #p={}",
-                            i,
-                            kinds,
-                            auths,
-                            pts
-                        );
-                    }
+                    log_info!(
+                        "← conn={} RECV REQ sub={} filters={}",
+                        connection_id,
+                        short(&sub_id, 16),
+                        filters.len()
+                    );
                     engine.handle_req(connection_id, sub_id, filters).await
                 }
                 Ok(crate::nostr::ClientMessage::Close(sub_id)) => {
-                    log_info!("← conn={} RECV CLOSE sub={}", connection_id, sub_id);
+                    log_info!(
+                        "← conn={} RECV CLOSE sub={}",
+                        connection_id,
+                        short(&sub_id, 16)
+                    );
                     engine.process_close(connection_id, sub_id).await
                 }
                 Err(e) => {
-                    log_error!("✗ parse failed: {}", e);
+                    log_error!("✗ parse failed: {}", short(&e, LOG_TEXT_BYTES));
                     if let Some(crate::nostr::nip_01::PartialClientMessage::Event(id)) =
                         crate::nostr::nip_01::PartialClientMessage::from_json(&text)
                     {

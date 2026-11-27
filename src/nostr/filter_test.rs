@@ -439,3 +439,24 @@ fn test_filter_item_limit_leaves_empty_fields_alone() {
     };
     assert!(!empty.exceeds_item_limit(&limits));
 }
+
+#[test]
+fn test_has_hex_values_accepts_only_64_lowercase_hex() {
+    let good = "ab".repeat(32);
+    let with = |value: &str| Filter {
+        authors: Some(vec![good.clone()]),
+        e_tags: Some(vec![value.to_string()]),
+        ..Default::default()
+    };
+    assert!(with(&good).has_hex_values());
+    assert!(Filter::default().has_hex_values());
+    for bad in [
+        "AB".repeat(32),
+        "ab".repeat(31) + "a",
+        "ab".repeat(32) + "a",
+        "gg".repeat(32),
+        String::new(),
+    ] {
+        assert!(!with(&bad).has_hex_values(), "{bad}");
+    }
+}

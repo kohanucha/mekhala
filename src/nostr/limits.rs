@@ -20,6 +20,9 @@ pub struct Limits {
     /// Maximum number of values in one filter field (`ids`, `authors`,
     /// `kinds`, `#p`, `#e`).
     pub max_filter_items: usize,
+    /// Maximum number of filters in one `REQ`. Each filter is kept in memory
+    /// and in the connection snapshot, so the count needs its own ceiling.
+    pub max_filters_per_req: usize,
     /// Maximum number of tags accepted on one event.
     pub max_event_tags: usize,
     /// Maximum number of routing keys (`pk:`, `eid:`, `etag:`) one
@@ -56,7 +59,7 @@ impl Limits {
 impl Default for Limits {
     /// Conservative defaults used when no configuration is provided (96 KiB
     /// content, 100 subscriptions per connection, 10 values per filter field,
-    /// 10 tags per event, 1000 routing keys per connection, 1000 cached info
+    /// 10 filters per `REQ`, 10 tags per event, 1000 routing keys per connection, 1000 cached info
     /// events kept for 30 days). The content ceiling covers the largest
     /// NIP-44 payload (87,472 base64 characters) with room for the JSON
     /// envelope while staying inside the 128 KiB WebSocket message cap.
@@ -65,6 +68,7 @@ impl Default for Limits {
             max_content_length: 98_304,
             max_subscriptions_per_connection: 100,
             max_filter_items: 10,
+            max_filters_per_req: 10,
             max_event_tags: 10,
             max_routing_keys_per_connection: 1_000,
             max_info_events: 1_000,

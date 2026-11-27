@@ -2,6 +2,9 @@ import { WebSocket } from "ws";
 import { RELAY_URL } from "./env.js";
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools/pure";
 
+/** Filter values must be event ids or keys: 64 lowercase hex characters. */
+const E_TAG_ID = "1e".repeat(32);
+
 export async function testNip01EdgeCases() {
   console.log("\n--- Testing NIP-01 Edge Cases (Adapted for Strict NWC) ---");
   const ws = new WebSocket(RELAY_URL);
@@ -134,12 +137,12 @@ export async function testFilterMatching() {
       const parentEvent = finalizeEvent({
         kind: 23194,
         created_at: Math.floor(Date.now() / 1000),
-        tags: [["p", pk], ["e", "test-event-id-123"]],
+        tags: [["p", pk], ["e", E_TAG_ID]],
         content: "event with e-tag"
       }, sk);
 
       // `#e`-only: no authors / `#p`, so the relay must route by e-tag index.
-      ws.send(JSON.stringify(["REQ", "sub-e", { kinds: [23194], "#e": ["test-event-id-123"] }]));
+      ws.send(JSON.stringify(["REQ", "sub-e", { kinds: [23194], "#e": [E_TAG_ID] }]));
     });
 
     ws.on("message", (data) => {
@@ -149,14 +152,14 @@ export async function testFilterMatching() {
         const eventWithETag = finalizeEvent({
           kind: 23194,
           created_at: Math.floor(Date.now() / 1000),
-          tags: [["p", pk], ["e", "test-event-id-123"]],
+          tags: [["p", pk], ["e", E_TAG_ID]],
           content: "matches e-tag"
         }, sk);
         ws.send(JSON.stringify(["EVENT", eventWithETag]));
       }
 
       if (msg[0] === "EVENT" && msg[1] === "sub-e") {
-        if (msg[2].tags.some(t => t[0] === "e" && t[1] === "test-event-id-123")) {
+        if (msg[2].tags.some(t => t[0] === "e" && t[1] === E_TAG_ID)) {
           eTagReceived = true;
           console.log("✅ Filter matching on #e tag works.");
           ws.send(JSON.stringify(["CLOSE", "sub-e"]));

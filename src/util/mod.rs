@@ -22,6 +22,10 @@ pub fn now() -> u64 {
     }
 }
 
+/// Longest free text (a reason, a parse error) a log line repeats. That text
+/// can quote what the client sent, so the client must not decide its size.
+pub const LOG_TEXT_BYTES: usize = 120;
+
 /// Truncates `s` to at most `len` bytes for log display, snapping down to
 /// the nearest UTF-8 character boundary.
 ///

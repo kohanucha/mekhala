@@ -81,6 +81,17 @@ impl Filter {
             || over(self.e_tags.as_ref().map_or(0, Vec::len))
     }
 
+    /// Whether every `ids`, `authors`, `#p` and `#e` value is 64 lowercase hex
+    /// characters, the only form an event id or public key takes. Each value
+    /// becomes a storage key, so its length must be fixed.
+    pub fn has_hex_values(&self) -> bool {
+        [&self.ids, &self.authors, &self.p_tags, &self.e_tags]
+            .into_iter()
+            .flatten()
+            .flatten()
+            .all(|value| is_lower_hex_64(value))
+    }
+
     /// Guard for incoming `REQ`s: rejects filters that would scan the whole
     /// event space, or that carry more values than `limits` allows. Filters
     /// with `#p`, `#e`, or `ids` only need allowed kinds; otherwise the filter
@@ -139,6 +150,13 @@ impl Filter {
         }
         keys
     }
+}
+
+fn is_lower_hex_64(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 #[cfg(test)]
