@@ -246,7 +246,9 @@ Default vocabulary. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
-Single-context layout. See `docs/agents/domain.md`.
+Domain language and the architecture map live in `docs/agents/domain.md`;
+read it when the work touches the domain model. This file is the only agent
+instruction file in the repository.
 
 ## Testing Conventions
 
