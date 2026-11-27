@@ -17,6 +17,7 @@ use js_sys::{Object, Reflect};
 use serde::Serialize;
 use serde_wasm_bindgen::Serializer;
 use std::cell::RefCell;
+use std::collections::HashSet;
 use wasm_bindgen::JsValue;
 use worker::{
     durable_object, DurableObject, Env, Error, ListOptions, Request, Response, Result,
@@ -173,6 +174,7 @@ impl DurableObject for CloudflareTransport {
         log_debug!("→ alarm handler invoked");
         self.sweep_idle_connections().await;
         self.sweep_info_cache().await;
+        self.sweep_orphaned_connections().await;
         self.rearm_sweep().await;
         Response::empty()
     }
@@ -639,6 +641,31 @@ impl CloudflareTransport {
         }
     }
 
+    /// Removes the stored state of connections whose socket was dropped
+    /// without a close event (a deploy, an eviction or a crash), at most once
+    /// per `ORPHAN_SWEEP_SECONDS`.
+    async fn sweep_orphaned_connections(&self) {
+        // Holding the engine lock keeps a new connection from saving state
+        // between reading the live sockets and comparing them with storage.
+        let mut engine = self.engine.lock().await;
+        let live: HashSet<u32> = self
+            .state
+            .get_websockets()
+            .iter()
+            .filter_map(attachment_of)
+            .map(|attachment| attachment.id)
+            .collect();
+        let removed = engine
+            .prune_orphaned_connections(&live, self.config.orphan_sweep_seconds)
+            .await;
+        if removed > 0 {
+            log_info!(
+                "orphan sweep: removed state of {} connection(s) with no socket",
+                removed
+            );
+        }
+    }
+
     /// Most recent activity known for a connection, merging this instance's
     /// record (accurate while awake) with the attachment (written before
     /// hibernation, refreshed at most every `ATTACHMENT_REFRESH_SECONDS`).
@@ -709,13 +736,16 @@ impl CloudflareTransport {
         responses: Vec<EngineResponse>,
         engine: &mut NostrEngine<CloudflareStorage>,
     ) -> Result<()> {
+        let mut gone = HashSet::new();
         for resp in responses {
             match resp {
                 EngineResponse::Send {
                     recipient_id,
                     message,
                 } => {
-                    self.route_send(recipient_id, &message.to_json());
+                    if !gone.contains(&recipient_id) {
+                        self.route_send(recipient_id, &message.to_json());
+                    }
                 }
                 EngineResponse::WakeUp { connection_id } => {
                     let ws = self
@@ -724,6 +754,14 @@ impl CloudflareTransport {
                         .find_ws_by_id(&self.state, connection_id);
                     if let Some(ws) = ws {
                         let _ = self.wake_up_with_handler(&ws, engine).await;
+                    } else {
+                        // Hibernated sockets are still listed, so a missing
+                        // one was dropped without a close event (a deploy or
+                        // an eviction). Nothing else would remove its state.
+                        log_info!("- conn={} has no socket: removing its state", connection_id);
+                        let _ = engine.on_terminate(connection_id).await;
+                        self.connections.borrow_mut().remove(connection_id);
+                        gone.insert(connection_id);
                     }
                 }
             }

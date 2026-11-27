@@ -53,6 +53,7 @@ Configurable via `wrangler.toml` or environment variables:
 | `IDLE_TIMEOUT_SECONDS` | `120` | Close connections idle longer than this that hold no subscription; `0` disables. |
 | `CONNECTION_SWEEP_SECONDS` | `60` | How often the idle sweep runs; `0` disables. |
 | `EVICT_MIN_IDLE_SECONDS` | `10` | Minimum idle time before a subscription-less connection may be closed to free a slot. |
+| `ORPHAN_SWEEP_SECONDS` | `3600` | How often the alarm removes the stored state of connections dropped without a close (after a deploy); `0` disables. |
 | `MAX_INFO_EVENTS` | `1000` | Max cached wallet info events (each also costs an `infoid:` key, and each event is limited to 4 KiB); `0` disables. |
 | `INFO_TTL_SECONDS` | `2592000` | How long a cached wallet info event is served, measured from its `created_at`; `0` disables. |
 | `MESSAGE_RATE_LIMIT_PER_MINUTE` | `120` | Frames a connection may send per minute before it is closed with a `NOTICE`; `0` disables. |

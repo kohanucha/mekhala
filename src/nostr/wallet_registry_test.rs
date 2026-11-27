@@ -2865,3 +2865,142 @@ fn test_put_all_uses_the_fewest_full_batches() {
         assert_eq!(registry.storage.inner.data.lock().unwrap().len(), 300);
     });
 }
+
+// ── connections whose socket is gone without a close event ──
+
+fn live(ids: &[u32]) -> HashSet<u32> {
+    ids.iter().copied().collect()
+}
+
+/// After a deploy the old sockets are gone and no close event ever arrives,
+/// so their `conn:` state and routing memberships have to be found and
+/// removed by comparing storage with the sockets that still exist.
+#[test]
+fn test_prune_orphaned_connections_removes_state_without_a_socket() {
+    futures::executor::block_on(async {
+        set_test_time(1_700_000_000);
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
+        registry
+            .subscribe(1, "s".into(), vec![authors_filter("alice")])
+            .await
+            .unwrap();
+        registry
+            .subscribe(2, "s".into(), vec![authors_filter("bob")])
+            .await
+            .unwrap();
+        // A fresh instance: nothing of either connection is in memory.
+        let mut registry = simulate_hibernation(&registry.storage).await;
+
+        assert_eq!(
+            registry.prune_orphaned_connections(&live(&[2]), 3600).await,
+            1
+        );
+
+        let keys = stored_keys(&registry);
+        assert!(!keys.contains(&"conn:1".to_string()));
+        assert!(
+            !keys.contains(&"pk:alice".to_string()),
+            "routing memberships go too"
+        );
+        assert!(keys.contains(&"conn:2".to_string()));
+        assert!(keys.contains(&"pk:bob".to_string()));
+        assert_eq!(woken_by(&mut registry, "bob").await, vec![2]);
+    });
+}
+
+#[test]
+fn test_prune_orphaned_connections_runs_at_most_once_per_interval() {
+    futures::executor::block_on(async {
+        set_test_time(1_700_000_000);
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
+        assert_eq!(
+            registry.prune_orphaned_connections(&live(&[]), 3600).await,
+            0
+        );
+
+        registry
+            .subscribe(1, "s".into(), vec![authors_filter("alice")])
+            .await
+            .unwrap();
+        set_test_time(1_700_003_599);
+        assert_eq!(
+            registry.prune_orphaned_connections(&live(&[]), 3600).await,
+            0,
+            "the last full pass was less than an interval ago"
+        );
+        set_test_time(1_700_003_600);
+        assert_eq!(
+            registry.prune_orphaned_connections(&live(&[]), 3600).await,
+            1
+        );
+    });
+}
+
+#[test]
+fn test_prune_orphaned_connections_zero_interval_disables_it() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
+        registry
+            .subscribe(1, "s".into(), vec![authors_filter("alice")])
+            .await
+            .unwrap();
+        assert_eq!(registry.prune_orphaned_connections(&live(&[]), 0).await, 0);
+        assert!(stored_keys(&registry).contains(&"conn:1".to_string()));
+    });
+}
+
+/// One pass removes a bounded number; an unfinished pass does not count as
+/// a full one, so the next alarm continues instead of waiting an interval.
+#[test]
+fn test_prune_orphaned_connections_is_bounded_and_resumes() {
+    futures::executor::block_on(async {
+        set_test_time(1_700_000_000);
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
+        let total = ORPHAN_SWEEP_LIMIT as u32 + 2;
+        for id in 0..total {
+            registry
+                .subscribe(id, "s".into(), vec![authors_filter(&format!("pk{id}"))])
+                .await
+                .unwrap();
+        }
+        let mut registry = simulate_hibernation(&registry.storage).await;
+
+        assert_eq!(
+            registry.prune_orphaned_connections(&live(&[]), 3600).await,
+            ORPHAN_SWEEP_LIMIT
+        );
+        assert_eq!(
+            registry.prune_orphaned_connections(&live(&[]), 3600).await,
+            2
+        );
+        assert_eq!(
+            registry.prune_orphaned_connections(&live(&[]), 3600).await,
+            0
+        );
+        assert!(stored_keys(&registry)
+            .iter()
+            .all(|key| !key.starts_with("conn:") && !key.starts_with("pk:")));
+    });
+}
+
+/// The listing pages through `conn:`: an orphan sitting past the first full
+/// page of live connections must still be found.
+#[test]
+fn test_prune_orphaned_connections_reads_past_the_first_page() {
+    futures::executor::block_on(async {
+        set_test_time(1_700_000_000);
+        let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
+        for id in 0..130u32 {
+            registry
+                .subscribe(id, "s".into(), vec![authors_filter(&format!("pk{id}"))])
+                .await
+                .unwrap();
+        }
+        let mut registry = simulate_hibernation(&registry.storage).await;
+        // Keys list as text, so `conn:99` is on the second page of 128.
+        let alive: HashSet<u32> = (0..130).filter(|id| *id != 99).collect();
+
+        assert_eq!(registry.prune_orphaned_connections(&alive, 3600).await, 1);
+        assert!(!stored_keys(&registry).contains(&"conn:99".to_string()));
+    });
+}

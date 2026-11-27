@@ -28,6 +28,12 @@ const RETIRED_KEY_SWEEP_LIMIT: usize = 128;
 /// `delete` take at most 128 keys at a time.
 pub const MAX_STORAGE_BATCH: usize = 128;
 
+/// Most orphaned connections one sweep removes; the next alarm continues.
+pub(crate) const ORPHAN_SWEEP_LIMIT: usize = 128;
+
+/// When the orphan sweep last finished a full pass, in Unix seconds.
+const ORPHAN_SWEEP_KEY: &str = "orphan_sweep_at";
+
 /// How many `info:` entries one listing reads. Trimming keeps only a summary
 /// of each, so memory stays at one page however large the cache is.
 const INFO_LIST_PAGE_SIZE: usize = 128;
@@ -885,6 +891,80 @@ impl<S: Storage> WalletRegistry<S> {
         self.forget_info_events(events.len());
         for event in &events {
             self.index.delete_info(&event.pubkey);
+        }
+    }
+
+    /// Removes the stored state of connections whose socket no longer exists;
+    /// returns how many were removed.
+    ///
+    /// A deploy, an eviction or a crash drops every socket without a close
+    /// event, so `on_terminate` never runs for them and their `conn:` state
+    /// and routing memberships stay forever. `live` holds the ids of the
+    /// sockets that still exist. A full pass runs at most once per
+    /// `interval` seconds (`0` disables it) and removes at most
+    /// [`ORPHAN_SWEEP_LIMIT`]; a pass cut short by that limit is not recorded,
+    /// so the next call continues.
+    pub async fn prune_orphaned_connections(
+        &mut self,
+        live: &HashSet<u32>,
+        interval: u64,
+    ) -> usize {
+        if interval == 0 {
+            return 0;
+        }
+        let now = (self.clock)();
+        let last = self
+            .storage
+            .get(ORPHAN_SWEEP_KEY)
+            .await
+            .and_then(|value| value.as_u64());
+        if last.is_some_and(|last| now.saturating_sub(last) < interval) {
+            return 0;
+        }
+
+        let orphans = self.find_orphaned_connections(live).await;
+        for &id in &orphans {
+            // Loaded first so `on_terminate` knows which routing keys to clean.
+            self.load(id).await;
+            self.on_terminate(id).await;
+        }
+        if orphans.len() < ORPHAN_SWEEP_LIMIT {
+            let entries = HashMap::from([(ORPHAN_SWEEP_KEY.to_string(), Value::from(now))]);
+            let _ = self.storage.put_batch(entries).await;
+        }
+        orphans.len()
+    }
+
+    /// Ids with a stored `conn:` state but no socket in `live`, up to
+    /// [`ORPHAN_SWEEP_LIMIT`].
+    async fn find_orphaned_connections(&self, live: &HashSet<u32>) -> Vec<u32> {
+        let mut orphans = Vec::new();
+        let mut start_after: Option<String> = None;
+        loop {
+            let page = self
+                .storage
+                .list_page("conn:", start_after.as_deref(), INFO_LIST_PAGE_SIZE)
+                .await;
+            let Some((last_key, _)) = page.last() else {
+                return orphans;
+            };
+            let next = last_key.clone();
+            let full = page.len() == INFO_LIST_PAGE_SIZE;
+            for (key, _) in page {
+                let id = key
+                    .strip_prefix("conn:")
+                    .and_then(|id| id.parse::<u32>().ok());
+                if let Some(id) = id.filter(|id| !live.contains(id)) {
+                    orphans.push(id);
+                    if orphans.len() == ORPHAN_SWEEP_LIMIT {
+                        return orphans;
+                    }
+                }
+            }
+            if !full {
+                return orphans;
+            }
+            start_after = Some(next);
         }
     }
 

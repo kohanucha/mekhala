@@ -1759,3 +1759,22 @@ fn test_engine_prune_retired_keys_removes_stale_keys() {
         assert_eq!(engine.prune_retired_keys().await, 0);
     });
 }
+
+#[test]
+fn test_engine_prune_orphaned_connections_reports_the_count() {
+    futures::executor::block_on(async {
+        set_test_time(1_700_000_000);
+        let mut engine = new_test_engine();
+        engine.on_connect(1).await;
+        let filter = Filter {
+            kinds: Some(vec![23194]),
+            authors: Some(vec!["alice".into()]),
+            ..Default::default()
+        };
+        engine.handle_req(1, "s".into(), vec![filter]).await;
+
+        let none_live = std::collections::HashSet::new();
+        assert_eq!(engine.prune_orphaned_connections(&none_live, 3600).await, 1);
+        assert_eq!(engine.prune_orphaned_connections(&none_live, 3600).await, 0);
+    });
+}
