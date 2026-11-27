@@ -690,7 +690,7 @@ export async function testSdkLargeResponse() {
   console.log("\n--- SDK conformance: near-maximum NIP-44 response payload ---");
 
   // NIP-44 v2 rejects plaintext > 65,535 bytes; base64 of that ceiling is
-  // ~87 KiB, which only fits because MAX_CONTENT_LENGTH is 98,304. Keeping
+  // ~87 KiB, which only fits because EVENT_MAX_CONTENT_BYTES is 98,304. Keeping
   // the plaintext under 65,535 while pushing the ciphertext over 65,536
   // guards the raised limit against a regression back to 64 KiB.
   const MAX_PLAINTEXT = 65_535;

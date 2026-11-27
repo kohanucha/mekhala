@@ -13,7 +13,7 @@ pub enum AuthError {
 /// Access control for the relay's HTTP endpoints.
 ///
 /// Supports "public mode" (no secret configured — everything passes) and
-/// "private mode" (a `RELAY_SECRET` must be supplied), verified with a
+/// "private mode" (a `AUTH_RELAY_SECRET` must be supplied), verified with a
 /// constant-time comparison.
 pub struct AccessPolicy {
     expected_secret: Option<String>,

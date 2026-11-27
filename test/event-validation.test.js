@@ -5,9 +5,9 @@ import { schnorr } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 
-// Mirrors `MAX_CONTENT_LENGTH` in wrangler.toml (98,304 = 96 KiB), which
+// Mirrors `EVENT_MAX_CONTENT_BYTES` in wrangler.toml (98,304 = 96 KiB), which
 // covers the largest NIP-44 payload. Oversized content must exceed it.
-const MAX_CONTENT_LENGTH = 98304;
+const EVENT_MAX_CONTENT_BYTES = 98304;
 
 export async function testMalformedEventProducesOK() {
   console.log("\n--- Testing Malformed Event Produces OK False ---");
@@ -46,7 +46,7 @@ export async function testOversizedEventProducesOK() {
         kind: 23194,
         created_at: Math.floor(Date.now() / 1000),
         tags: [],
-        content: "a".repeat(MAX_CONTENT_LENGTH + 1)
+        content: "a".repeat(EVENT_MAX_CONTENT_BYTES + 1)
       }, sk);
 
       ws.send(JSON.stringify(["EVENT", largeEvent]));
@@ -291,7 +291,7 @@ export async function testLimitEnforcement() {
     let contentLimitRejected = false;
 
     ws.on("open", () => {
-      const bigContent = "a".repeat(MAX_CONTENT_LENGTH + 1);
+      const bigContent = "a".repeat(EVENT_MAX_CONTENT_BYTES + 1);
       const eventTooLarge = finalizeEvent({
         kind: 23194,
         created_at: Math.floor(Date.now() / 1000),

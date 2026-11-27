@@ -225,7 +225,7 @@ impl ConnectionRegistry {
     /// wakes has been silent long enough for a fresh window to be the right
     /// answer, and persisting it would put a storage write in front of every
     /// frame. A reconnect gets a new id and a fresh window, so the admission
-    /// caps (`MAX_CONNECTIONS_PER_IP` / `_PER_ASN`) are what bound how often a
+    /// caps (`CONN_MAX_PER_IP` / `_PER_ASN`) are what bound how often a
     /// client can start over.
     ///
     /// The caller decides what an exhausted budget means; this only answers.

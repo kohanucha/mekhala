@@ -113,10 +113,10 @@ echo "Step 3: Starting local relay on port $PORT..."
 # Each gate has a dedicated test that starts its own relay — see
 # test/connection-limits.test.js.
 npx wrangler dev --port $PORT --ip 127.0.0.1 \
-    --var MAX_CONNECTIONS_PER_IP:0 \
-    --var MAX_CONNECTIONS_PER_ASN:0 \
-    --var IDLE_TIMEOUT_SECONDS:0 \
-    --var CONNECTION_SWEEP_SECONDS:0 > "$LOG_FILE" 2>&1 &
+    --var CONN_MAX_PER_IP:0 \
+    --var CONN_MAX_PER_ASN:0 \
+    --var CONN_IDLE_TIMEOUT_SECONDS:0 \
+    --var CONN_SWEEP_SECONDS:0 > "$LOG_FILE" 2>&1 &
 WRANGLER_PID=$!
 
 # 4. Wait for Relay to be Ready

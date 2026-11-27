@@ -579,9 +579,9 @@ export async function testMultiConnectionRouting() {
 export async function testMaxConnections() {
   console.log("\n--- Testing Max Connections (429 Too Many Requests) ---");
 
-  // EVICT_MIN_IDLE_SECONDS keeps slot reclaiming out of the way: this test is
+  // CONN_EVICT_MIN_IDLE_SECONDS keeps slot reclaiming out of the way: this test is
   // about the cap itself, not about freeing a slot.
-  const vars = { MAX_CONNECTIONS: 3, EVICT_MIN_IDLE_SECONDS: 3600 };
+  const vars = { CONN_MAX_TOTAL: 3, CONN_EVICT_MIN_IDLE_SECONDS: 3600 };
 
   await withRelay({ port: 8788, vars, secret: "limit-test-secret" }, async ({ wsURL }) => {
     const connections = [];

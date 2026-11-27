@@ -75,7 +75,7 @@ export async function testInfoCacheCap() {
   console.log("\n--- Testing the info-cache size cap ---");
 
   await withStateDir("info-cap", async (persistTo) => {
-    const vars = { MAX_INFO_EVENTS: 2, INFO_TTL_SECONDS: 0 };
+    const vars = { INFO_CACHE_MAX_EVENTS: 2, INFO_CACHE_TTL_SECONDS: 0 };
 
     await withRelay({ port: 8793, vars, persistTo }, async ({ wsURL }) => {
       const publisher = await connect(wsURL);
@@ -126,7 +126,7 @@ export async function testInfoCacheCapAcrossPages() {
   console.log("\n--- Testing the info-cache cap across storage pages ---");
 
   await withStateDir("info-pages", async (persistTo) => {
-    const vars = { MAX_INFO_EVENTS: 200, INFO_TTL_SECONDS: 0, MESSAGE_RATE_LIMIT_PER_MINUTE: 0 };
+    const vars = { INFO_CACHE_MAX_EVENTS: 200, INFO_CACHE_TTL_SECONDS: 0, CONN_MAX_MESSAGES_PER_MINUTE: 0 };
 
     await withRelay({ port: 8793, vars, persistTo }, async ({ wsURL }) => {
       const publisher = await connect(wsURL);
@@ -163,10 +163,10 @@ export async function testInfoCacheExpiry() {
     // sweep is enabled; the idle timeout stays generous so the sockets this
     // test holds open are not closed mid-check.
     const vars = {
-      MAX_INFO_EVENTS: 0,
-      INFO_TTL_SECONDS: 2,
-      IDLE_TIMEOUT_SECONDS: 120,
-      CONNECTION_SWEEP_SECONDS: 1,
+      INFO_CACHE_MAX_EVENTS: 0,
+      INFO_CACHE_TTL_SECONDS: 2,
+      CONN_IDLE_TIMEOUT_SECONDS: 120,
+      CONN_SWEEP_SECONDS: 1,
     };
 
     await withRelay({ port: 8794, vars, persistTo }, async ({ wsURL, log }) => {

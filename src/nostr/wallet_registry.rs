@@ -438,7 +438,7 @@ pub struct WalletRegistry<S: Storage> {
     /// Only an in-memory hint — it exists so a publish does not have to list
     /// the whole cache to find out whether the cap is reached. Losing it (to
     /// hibernation) costs one enumeration; the sweep reseeds it every
-    /// `CONNECTION_SWEEP_SECONDS`.
+    /// `CONN_SWEEP_SECONDS`.
     info_count: Option<usize>,
 }
 

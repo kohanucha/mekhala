@@ -8,11 +8,11 @@ const projectRoot = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
  * exercises; `wrangler.toml` carries the production defaults.
  */
 export const QUIET_LIMITS = {
-  MAX_CONNECTIONS_PER_IP: 0,
-  MAX_CONNECTIONS_PER_ASN: 0,
-  IDLE_TIMEOUT_SECONDS: 0,
-  CONNECTION_SWEEP_SECONDS: 0,
-  EVICT_MIN_IDLE_SECONDS: 3600,
+  CONN_MAX_PER_IP: 0,
+  CONN_MAX_PER_ASN: 0,
+  CONN_IDLE_TIMEOUT_SECONDS: 0,
+  CONN_SWEEP_SECONDS: 0,
+  CONN_EVICT_MIN_IDLE_SECONDS: 3600,
 };
 
 export function wait(ms) {
@@ -103,7 +103,7 @@ export async function withRelay(
   for (const [key, value] of Object.entries({ ...defaults, ...vars })) {
     args.push("--var", `${key}:${value}`);
   }
-  args.push("--var", `RELAY_SECRET:${secret}`);
+  args.push("--var", `AUTH_RELAY_SECRET:${secret}`);
   if (persistTo) {
     args.push("--persist-to", persistTo);
   }

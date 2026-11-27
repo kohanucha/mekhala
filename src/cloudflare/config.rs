@@ -24,81 +24,79 @@ impl CloudflareConfig {
     pub fn from_env(env: &Env) -> Self {
         Self {
             max_content_length: Self::parse_opt(
-                env.var("MAX_CONTENT_LENGTH").ok().map(|v| v.to_string()),
+                env.var("EVENT_MAX_CONTENT_BYTES")
+                    .ok()
+                    .map(|v| v.to_string()),
                 98_304,
             ),
             max_subscriptions_per_connection: Self::parse_opt(
-                env.var("MAX_SUBSCRIPTIONS_PER_CONNECTION")
-                    .ok()
-                    .map(|v| v.to_string()),
+                env.var("SUB_MAX_PER_CONN").ok().map(|v| v.to_string()),
                 100,
             ),
             max_filter_items: Self::parse_opt(
-                env.var("MAX_FILTER_ITEMS").ok().map(|v| v.to_string()),
+                env.var("SUB_MAX_FILTER_VALUES").ok().map(|v| v.to_string()),
                 10,
             ),
             max_event_tags: Self::parse_opt(
-                env.var("MAX_EVENT_TAGS").ok().map(|v| v.to_string()),
+                env.var("EVENT_MAX_TAGS").ok().map(|v| v.to_string()),
                 10,
             ),
             max_routing_keys_per_connection: Self::parse_opt(
-                env.var("MAX_ROUTING_KEYS_PER_CONNECTION")
-                    .ok()
-                    .map(|v| v.to_string()),
+                env.var("SUB_MAX_ROUTING_KEYS").ok().map(|v| v.to_string()),
                 1_000,
             ),
             max_connections: Self::parse_opt(
-                env.var("MAX_CONNECTIONS").ok().map(|v| v.to_string()),
+                env.var("CONN_MAX_TOTAL").ok().map(|v| v.to_string()),
                 100,
             ),
             max_connections_per_ip: Self::parse_opt(
-                env.var("MAX_CONNECTIONS_PER_IP")
-                    .ok()
-                    .map(|v| v.to_string()),
+                env.var("CONN_MAX_PER_IP").ok().map(|v| v.to_string()),
                 5,
             ),
             max_connections_per_asn: Self::parse_opt(
-                env.var("MAX_CONNECTIONS_PER_ASN")
-                    .ok()
-                    .map(|v| v.to_string()),
+                env.var("CONN_MAX_PER_ASN").ok().map(|v| v.to_string()),
                 20,
             ),
             idle_timeout_seconds: Self::parse_opt(
-                env.var("IDLE_TIMEOUT_SECONDS").ok().map(|v| v.to_string()),
+                env.var("CONN_IDLE_TIMEOUT_SECONDS")
+                    .ok()
+                    .map(|v| v.to_string()),
                 120,
             ),
             connection_sweep_seconds: Self::parse_opt(
-                env.var("CONNECTION_SWEEP_SECONDS")
-                    .ok()
-                    .map(|v| v.to_string()),
+                env.var("CONN_SWEEP_SECONDS").ok().map(|v| v.to_string()),
                 60,
             ),
             evict_min_idle_seconds: Self::parse_opt(
-                env.var("EVICT_MIN_IDLE_SECONDS")
+                env.var("CONN_EVICT_MIN_IDLE_SECONDS")
                     .ok()
                     .map(|v| v.to_string()),
                 10,
             ),
             max_info_events: Self::parse_opt(
-                env.var("MAX_INFO_EVENTS").ok().map(|v| v.to_string()),
+                env.var("INFO_CACHE_MAX_EVENTS").ok().map(|v| v.to_string()),
                 1_000,
             ),
             info_ttl_seconds: Self::parse_opt_u64(
-                env.var("INFO_TTL_SECONDS").ok().map(|v| v.to_string()),
+                env.var("INFO_CACHE_TTL_SECONDS")
+                    .ok()
+                    .map(|v| v.to_string()),
                 2_592_000,
             ),
             orphan_sweep_seconds: Self::parse_opt_u64(
-                env.var("ORPHAN_SWEEP_SECONDS").ok().map(|v| v.to_string()),
+                env.var("CONN_ORPHAN_SWEEP_SECONDS")
+                    .ok()
+                    .map(|v| v.to_string()),
                 3_600,
             ),
             wallet_region: env
-                .var("WALLET_REGION")
+                .var("DO_REGION")
                 .ok()
                 .map(|v| v.to_string())
                 .filter(|s| !s.is_empty()),
-            relay_secret: env.var("RELAY_SECRET").ok().map(|v| v.to_string()),
+            relay_secret: env.var("AUTH_RELAY_SECRET").ok().map(|v| v.to_string()),
             message_rate_limit_per_minute: Self::parse_opt_u32(
-                env.var("MESSAGE_RATE_LIMIT_PER_MINUTE")
+                env.var("CONN_MAX_MESSAGES_PER_MINUTE")
                     .ok()
                     .map(|v| v.to_string()),
                 120,

@@ -27,7 +27,7 @@ function waitForEose(ws, subId, ms = 5000) {
 export async function testPerAddressLimits() {
   console.log("\n--- Testing per-address and per-network connection limits ---");
 
-  const vars = { MAX_CONNECTIONS_PER_IP: 2, MAX_CONNECTIONS_PER_ASN: 3 };
+  const vars = { CONN_MAX_PER_IP: 2, CONN_MAX_PER_ASN: 3 };
 
   await withRelay({ port: 8789, vars }, async ({ wsURL }) => {
     const addressA = { "CF-Connecting-IP": "203.0.113.9" };
@@ -67,7 +67,7 @@ export async function testPerAddressLimits() {
 export async function testIdleConnectionSweep() {
   console.log("\n--- Testing the idle connection sweep ---");
 
-  const vars = { IDLE_TIMEOUT_SECONDS: 2, CONNECTION_SWEEP_SECONDS: 1 };
+  const vars = { CONN_IDLE_TIMEOUT_SECONDS: 2, CONN_SWEEP_SECONDS: 1 };
 
   await withRelay({ port: 8791, vars }, async ({ wsURL }) => {
     const idle = await connect(wsURL);
@@ -102,7 +102,7 @@ export async function testIdleConnectionSweep() {
 export async function testConnectionEviction() {
   console.log("\n--- Testing connection slot reclaiming ---");
 
-  const vars = { MAX_CONNECTIONS: 2, EVICT_MIN_IDLE_SECONDS: 2 };
+  const vars = { CONN_MAX_TOTAL: 2, CONN_EVICT_MIN_IDLE_SECONDS: 2 };
 
   await withRelay({ port: 8792, vars }, async ({ wsURL }) => {
     const wallet = await connect(wsURL);
@@ -138,7 +138,7 @@ export async function testMessageBudget() {
   console.log("\n--- Testing the per-connection message budget ---");
 
   // Small enough to spend in a few frames, large enough to be legal traffic.
-  const vars = { MESSAGE_RATE_LIMIT_PER_MINUTE: 6 };
+  const vars = { CONN_MAX_MESSAGES_PER_MINUTE: 6 };
 
   await withRelay({ port: 8802, vars }, async ({ wsURL }) => {
     const client = await connect(wsURL);
@@ -213,7 +213,7 @@ export async function testOrphanedConnectionCleanup() {
       console.log("Two subscribers saved; stopping the relay with their sockets open.");
     });
 
-    await withRelay({ port, persistTo, vars: { ORPHAN_SWEEP_SECONDS: 0 } }, async ({ wsURL, log }) => {
+    await withRelay({ port, persistTo, vars: { CONN_ORPHAN_SWEEP_SECONDS: 0 } }, async ({ wsURL, log }) => {
       const ws = await connect(wsURL);
       for (let i = 0; i < 3; i++) {
         const reply = finalizeEvent({
@@ -242,7 +242,7 @@ export async function testOrphanedConnectionCleanup() {
       ws.close();
     });
 
-    const vars = { IDLE_TIMEOUT_SECONDS: 120, CONNECTION_SWEEP_SECONDS: 1, ORPHAN_SWEEP_SECONDS: 1 };
+    const vars = { CONN_IDLE_TIMEOUT_SECONDS: 120, CONN_SWEEP_SECONDS: 1, CONN_ORPHAN_SWEEP_SECONDS: 1 };
     await withRelay({ port, persistTo, vars }, async ({ wsURL, log }) => {
       const ws = await connect(wsURL); // arms the alarm
       const deadline = Date.now() + 8000;
