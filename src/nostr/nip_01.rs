@@ -113,6 +113,25 @@ impl RelayMessage {
             Self::Closed(sub_id, msg) => serde_json::json!(["CLOSED", sub_id, msg]).to_string(),
         }
     }
+
+    /// One short log line for this message, without the event's content,
+    /// tags, signature or full keys.
+    pub fn log_summary(&self) -> String {
+        use crate::util::short;
+        match self {
+            Self::Ok(id, ok, msg) if msg.is_empty() => format!("OK id={} {ok}", short(id, 8)),
+            Self::Ok(id, ok, msg) => format!("OK id={} {ok}: {msg}", short(id, 8)),
+            Self::Event(sub_id, event) => format!(
+                "EVENT sub={} kind={} id={}",
+                short(sub_id, 16),
+                event.kind,
+                short(&event.id, 8)
+            ),
+            Self::Eose(sub_id) => format!("EOSE sub={}", short(sub_id, 16)),
+            Self::Notice(msg) => format!("NOTICE {msg}"),
+            Self::Closed(sub_id, msg) => format!("CLOSED sub={}: {msg}", short(sub_id, 16)),
+        }
+    }
 }
 
 #[cfg(test)]

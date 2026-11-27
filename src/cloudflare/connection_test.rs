@@ -224,3 +224,53 @@ fn test_registry_forgets_the_message_budget_on_remove() {
     assert_eq!(reg.admit_message(7, 1_000, 1), window::Admission::Admitted);
     assert_eq!(reg.message_windows.len(), 1);
 }
+
+#[test]
+fn test_first_id_block_starts_after_now() {
+    assert_eq!(
+        reserve_id_block(None, 5_000),
+        Some(IdBlock {
+            first: 5_001,
+            limit: 6_000
+        })
+    );
+}
+
+#[test]
+fn test_id_block_continues_after_a_stored_limit_ahead_of_now() {
+    // A restart within a block's lifetime: `now` is behind ids already issued.
+    assert_eq!(
+        reserve_id_block(Some(6_000), 5_500),
+        Some(IdBlock {
+            first: 6_001,
+            limit: 7_000
+        })
+    );
+}
+
+#[test]
+fn test_id_block_starts_at_now_when_the_stored_limit_is_older() {
+    assert_eq!(
+        reserve_id_block(Some(6_000), 9_000),
+        Some(IdBlock {
+            first: 9_001,
+            limit: 10_000
+        })
+    );
+}
+
+#[test]
+fn test_id_block_refuses_to_wrap() {
+    assert_eq!(
+        reserve_id_block(Some(u32::MAX - ID_BLOCK_SIZE + 1), 0),
+        None
+    );
+    assert_eq!(reserve_id_block(None, u64::from(u32::MAX) + 1), None);
+    assert_eq!(
+        reserve_id_block(Some(u32::MAX - ID_BLOCK_SIZE), 0),
+        Some(IdBlock {
+            first: u32::MAX - ID_BLOCK_SIZE + 1,
+            limit: u32::MAX
+        })
+    );
+}

@@ -60,6 +60,46 @@ fn test_relay_message_event_serialization() {
 }
 
 #[test]
+fn test_event_log_summary_leaves_out_the_payload() {
+    let event = crate::nostr::Event {
+        id: "1a2b3c4d".repeat(8),
+        pubkey: "f".repeat(64),
+        created_at: 1234567890,
+        kind: 23195,
+        tags: vec![],
+        content: "ciphertext".into(),
+        sig: "9".repeat(128),
+    };
+    let summary = RelayMessage::Event("a-long-subscription-id".into(), event).log_summary();
+    assert_eq!(summary, "EVENT sub=a-long-subscript kind=23195 id=1a2b3c4d");
+}
+
+#[test]
+fn test_log_summary_of_every_other_message() {
+    let id = "1a2b3c4d".repeat(8);
+    assert_eq!(
+        RelayMessage::Ok(id.clone(), true, String::new()).log_summary(),
+        "OK id=1a2b3c4d true"
+    );
+    assert_eq!(
+        RelayMessage::Ok(id, false, "invalid: bad signature".into()).log_summary(),
+        "OK id=1a2b3c4d false: invalid: bad signature"
+    );
+    assert_eq!(
+        RelayMessage::Eose("sub1".into()).log_summary(),
+        "EOSE sub=sub1"
+    );
+    assert_eq!(
+        RelayMessage::Notice("rate limited".into()).log_summary(),
+        "NOTICE rate limited"
+    );
+    assert_eq!(
+        RelayMessage::Closed("sub1".into(), "error: too many".into()).log_summary(),
+        "CLOSED sub=sub1: error: too many"
+    );
+}
+
+#[test]
 fn test_relay_message_closed_serialization() {
     assert_eq!(
         RelayMessage::Closed("sub1".into(), "reason".into()).to_json(),

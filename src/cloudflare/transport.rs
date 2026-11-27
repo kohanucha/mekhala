@@ -1,6 +1,7 @@
 use crate::cloudflare::config::CloudflareConfig;
 use crate::cloudflare::connection::{
-    admit, attachment_of, Admission, AdmissionLimits, Attachment, ConnectionRegistry,
+    admit, attachment_of, reserve_id_block, Admission, AdmissionLimits, Attachment,
+    ConnectionRegistry,
 };
 use crate::cloudflare::create_cors_response;
 use crate::cloudflare::identity::{self, ClientIdentity};
@@ -110,6 +111,8 @@ impl Storage for CloudflareStorage {
         entries
     }
 }
+
+const ID_COUNTER_KEY: &str = "id_counter";
 
 struct IdCounterState {
     current_id: u32,
@@ -232,19 +235,17 @@ impl DurableObject for CloudflareTransport {
                                 event.id.clone(),
                                 true,
                                 String::new(),
-                            )
-                            .to_json();
-                            log_info!("→ conn={} SEND {}", connection_id, ok_msg);
-                            let _ = websocket.send_with_str(ok_msg);
+                            );
+                            log_info!("→ conn={} SEND {}", connection_id, ok_msg.log_summary());
+                            let _ = websocket.send_with_str(ok_msg.to_json());
                             engine.route_verified_event(connection_id, event).await
                         }
                         Err((event_id, error_msg)) => {
                             log_warn!("✗ EVENT rejected id={}: {}", short(&event_id, 8), error_msg);
                             let fail_msg =
-                                crate::nostr::RelayMessage::Ok(event_id, false, error_msg)
-                                    .to_json();
-                            log_info!("→ conn={} SEND {}", connection_id, fail_msg);
-                            let _ = websocket.send_with_str(&fail_msg);
+                                crate::nostr::RelayMessage::Ok(event_id, false, error_msg);
+                            log_info!("→ conn={} SEND {}", connection_id, fail_msg.log_summary());
+                            let _ = websocket.send_with_str(fail_msg.to_json());
                             Vec::new()
                         }
                     }
@@ -394,35 +395,39 @@ impl CloudflareTransport {
         }
     }
 
-    async fn allocate_id(&self) -> u32 {
+    /// `None` when the block of ids cannot be read or saved: guessing would
+    /// hand out an id a hibernated socket still holds.
+    async fn allocate_id(&self) -> Option<u32> {
         let mut counter = self.id_counter.lock().await;
-        let current = counter.current_id;
-        let limit = counter.id_limit;
-
-        if current >= limit {
-            let storage = self.state.storage();
-            let last_limit = storage
-                .get::<u32>("id_counter")
-                .await
-                .ok()
-                .flatten()
-                .unwrap_or(0);
-            let now = crate::util::now() as u32;
-            let start = std::cmp::max(last_limit, now);
-            let new_limit = start + 1000;
-            let _ = storage.put("id_counter", new_limit).await;
-            counter.current_id = start + 1;
-            counter.id_limit = new_limit;
-            counter.current_id
-        } else {
-            counter.current_id = current + 1;
-            counter.current_id
+        if counter.current_id < counter.id_limit {
+            counter.current_id += 1;
+            return Some(counter.current_id);
         }
+
+        let storage = self.state.storage();
+        let stored = match storage.get::<u32>(ID_COUNTER_KEY).await {
+            Ok(stored) => stored,
+            Err(e) => {
+                log_error!("id_counter read failed: {}", e);
+                return None;
+            }
+        };
+        let Some(block) = reserve_id_block(stored, crate::util::now()) else {
+            log_error!("id_counter exhausted: stored={:?}", stored);
+            return None;
+        };
+        if let Err(e) = storage.put(ID_COUNTER_KEY, block.limit).await {
+            log_error!("id_counter save failed: {}", e);
+            return None;
+        }
+        counter.current_id = block.first;
+        counter.id_limit = block.limit;
+        Some(block.first)
     }
 
-    fn route_send(&self, id: u32, message: &str) -> bool {
-        log_info!("→ conn={} SEND {}", id, message);
-        if self.connections.borrow().send(id, message) {
+    fn route_send(&self, id: u32, message: &crate::nostr::RelayMessage) -> bool {
+        log_info!("→ conn={} SEND {}", id, message.log_summary());
+        if self.connections.borrow().send(id, &message.to_json()) {
             true
         } else {
             log_warn!("✗ send failed: conn={} not found", id);
@@ -501,8 +506,10 @@ impl CloudflareTransport {
             }
         }
 
+        let Some(connection_id) = self.allocate_id().await else {
+            return Response::error("Service Unavailable", 503);
+        };
         let WebSocketPair { client, server } = WebSocketPair::new()?;
-        let connection_id = self.allocate_id().await;
         let attachment = Attachment {
             id: connection_id,
             ..candidate
@@ -744,7 +751,7 @@ impl CloudflareTransport {
                     message,
                 } => {
                     if !gone.contains(&recipient_id) {
-                        self.route_send(recipient_id, &message.to_json());
+                        self.route_send(recipient_id, &message);
                     }
                 }
                 EngineResponse::WakeUp { connection_id } => {

@@ -241,6 +241,30 @@ impl ConnectionRegistry {
     }
 }
 
+/// How many connection ids one storage write reserves.
+pub const ID_BLOCK_SIZE: u32 = 1000;
+
+/// Connection ids `first..=limit`, saved as `limit` before any is handed out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdBlock {
+    pub first: u32,
+    pub limit: u32,
+}
+
+/// The block after the `stored` limit, never starting below `now`.
+///
+/// `None` when the ids would overflow `u32`: wrapping would reuse ids that
+/// hibernated sockets may still hold.
+pub fn reserve_id_block(stored: Option<u32>, now: u64) -> Option<IdBlock> {
+    let now = u32::try_from(now).ok()?;
+    let start = stored.unwrap_or(0).max(now);
+    let limit = start.checked_add(ID_BLOCK_SIZE)?;
+    Some(IdBlock {
+        first: start.checked_add(1)?,
+        limit,
+    })
+}
+
 #[cfg(test)]
 #[path = "connection_test.rs"]
 mod connection_test;
