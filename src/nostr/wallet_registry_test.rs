@@ -1142,7 +1142,7 @@ fn test_hibernation_does_not_resurrect_stale_info_event() {
 
         let mut restarted = simulate_hibernation(&registry.storage).await;
         restarted
-            .cache_info(info_with_p_tags("info2", "wallet", &["app"]))
+            .cache_info(republished(info_with_p_tags("info2", "wallet", &["app"])))
             .await;
 
         // Restoring the old connection must not clobber the newer event.
@@ -1374,6 +1374,13 @@ fn test_on_terminate_keeps_numeric_pk_index_for_other_connections() {
 }
 
 // ── info events resolve by author only ──
+
+/// The same author's next info event: published later, so it replaces the
+/// first one (kind 13194 is replaceable).
+fn republished(mut event: Event) -> Event {
+    event.created_at += 1;
+    event
+}
 
 fn info_with_p_tags(id: &str, author: &str, p_tags: &[&str]) -> Event {
     crate::common::test_helpers::test_event(
@@ -2002,7 +2009,7 @@ fn test_republish_moves_infoid_index() {
             .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
             .await;
         registry
-            .cache_info(info_with_p_tags("info2", "wallet", &["app"]))
+            .cache_info(republished(info_with_p_tags("info2", "wallet", &["app"])))
             .await;
 
         assert!(
@@ -2038,7 +2045,11 @@ fn test_republish_after_hibernation_cleans_infoid_index() {
         // Fresh index: the republish can only learn the old event from storage.
         let mut restarted = simulate_hibernation(&registry.storage).await;
         restarted
-            .cache_info(info_with_p_tags("info2", "wallet", &["app2", "shared"]))
+            .cache_info(republished(info_with_p_tags(
+                "info2",
+                "wallet",
+                &["app2", "shared"],
+            )))
             .await;
 
         assert_eq!(
@@ -2118,7 +2129,7 @@ fn test_delete_info_by_event_ignores_superseded_id() {
             .cache_info(info_with_p_tags("info1", "wallet", &["app"]))
             .await;
         registry
-            .cache_info(info_with_p_tags("info2", "wallet", &["app"]))
+            .cache_info(republished(info_with_p_tags("info2", "wallet", &["app"])))
             .await;
 
         assert!(
@@ -2142,7 +2153,7 @@ fn test_delete_info_by_event_after_hibernation_ignores_superseded_id() {
 
         let mut restarted = simulate_hibernation(&registry.storage).await;
         restarted
-            .cache_info(info_with_p_tags("info2", "wallet", &["app"]))
+            .cache_info(republished(info_with_p_tags("info2", "wallet", &["app"])))
             .await;
 
         assert!(!restarted.delete_info_by_event("info1", "wallet").await);
@@ -2166,7 +2177,7 @@ fn test_delete_info_by_event_ignores_stale_reverse_index() {
     futures::executor::block_on(async {
         let mut registry = WalletRegistry::new(MockStorage::new(), test_limits(), test_now);
         registry
-            .cache_info(info_with_p_tags("info2", "wallet", &["app"]))
+            .cache_info(republished(info_with_p_tags("info2", "wallet", &["app"])))
             .await;
 
         // Simulate a leftover reverse mapping for a superseded event id (e.g.
@@ -3002,5 +3013,102 @@ fn test_prune_orphaned_connections_reads_past_the_first_page() {
 
         assert_eq!(registry.prune_orphaned_connections(&alive, 3600).await, 1);
         assert!(!stored_keys(&registry).contains(&"conn:99".to_string()));
+    });
+}
+
+// ── kind 13194 is replaceable: only a newer event replaces the cached one ──
+
+fn cached_info_id(registry: &WalletRegistry<MockStorage>, author: &str) -> Option<String> {
+    let data = registry.storage.data.lock().unwrap();
+    data.get(&format!("info:{author}"))
+        .and_then(|value| value.get("id"))
+        .and_then(|id| id.as_str())
+        .map(str::to_string)
+}
+
+/// Anyone who saw an older info event can send it again with its valid
+/// signature; it must not roll the cache back to stale capabilities.
+#[test]
+fn test_older_info_event_does_not_replace_newer() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), capped(10), test_now);
+        registry.cache_info(info_at("old", "wallet", 100)).await;
+        registry.cache_info(info_at("new", "wallet", 200)).await;
+
+        registry.cache_info(info_at("old", "wallet", 100)).await;
+
+        assert_eq!(cached_info_id(&registry, "wallet").as_deref(), Some("new"));
+        assert_eq!(
+            registry.get_info("wallet").await.map(|e| e.id).as_deref(),
+            Some("new")
+        );
+        let keys = stored_keys(&registry);
+        assert!(keys.contains(&"infoid:new".to_string()));
+        assert!(
+            !keys.contains(&"infoid:old".to_string()),
+            "the stale mapping stays gone"
+        );
+    });
+}
+
+/// The same check after hibernation, when only storage knows the cached event.
+#[test]
+fn test_older_info_event_is_refused_after_hibernation() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), capped(10), test_now);
+        registry.cache_info(info_at("new", "wallet", 200)).await;
+        let mut registry = simulate_hibernation(&registry.storage).await;
+
+        registry.cache_info(info_at("old", "wallet", 100)).await;
+
+        assert_eq!(cached_info_id(&registry, "wallet").as_deref(), Some("new"));
+    });
+}
+
+/// NIP-01: with equal `created_at`, the lowest id wins, whichever arrives
+/// first.
+#[test]
+fn test_equal_created_at_keeps_the_lowest_id() {
+    futures::executor::block_on(async {
+        for order in [["aaa", "bbb"], ["bbb", "aaa"]] {
+            let mut registry = WalletRegistry::new(MockStorage::new(), capped(10), test_now);
+            for id in order {
+                registry.cache_info(info_at(id, "wallet", 100)).await;
+            }
+            assert_eq!(
+                cached_info_id(&registry, "wallet").as_deref(),
+                Some("aaa"),
+                "{order:?}"
+            );
+        }
+    });
+}
+
+#[test]
+fn test_newer_info_event_still_replaces() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(MockStorage::new(), capped(10), test_now);
+        registry.cache_info(info_at("old", "wallet", 100)).await;
+        registry.cache_info(info_at("new", "wallet", 101)).await;
+        assert_eq!(cached_info_id(&registry, "wallet").as_deref(), Some("new"));
+        assert!(!stored_keys(&registry).contains(&"infoid:old".to_string()));
+    });
+}
+
+/// Sending the cached event again changes nothing, so it costs no write.
+#[test]
+fn test_resending_the_cached_info_event_writes_nothing() {
+    futures::executor::block_on(async {
+        let mut registry = WalletRegistry::new(CountingStorage::new(), capped(10), test_now);
+        registry.cache_info(info_at("same", "wallet", 100)).await;
+        registry.storage.reset_ops();
+
+        registry.cache_info(info_at("same", "wallet", 100)).await;
+
+        assert_eq!(
+            registry.storage.ops.get(),
+            0,
+            "a repeat must not touch storage"
+        );
     });
 }

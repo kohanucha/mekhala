@@ -37,7 +37,9 @@ connects to the relay as an ordinary NWC client.
   `unsubscribe`, `on_terminate` and the orphan sweep remove them; `load_indexed`
   reads them when an event arrives and drops ids whose `conn:` is gone.
 - **Info cache** (`info:<author>`, `infoid:<event id>`): the two keys a cached
-  `13194` event occupies, each event at most 4 KiB. Lookup is by author only:
+  `13194` event occupies, each event at most 4 KiB. Kind `13194` is
+  replaceable, so only a newer event (later `created_at`, or the lower id on a
+  tie) replaces the cached one. Lookup is by author only:
   a `p` tag on an info event is not indexed, so `{kinds:[13194], "#p":[<app>]}`
   replays nothing. The wallet-auth / one-click discovery flow is out of scope.
 - **Orphaned connection**: stored state (`conn:` and routing memberships) whose

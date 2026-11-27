@@ -136,3 +136,63 @@ export async function testKind13194OK() {
     }, 8000);
   });
 }
+
+/// Kind 13194 is replaceable: sending an older info event again, which anyone
+/// who saw it can do, must not roll the cache back.
+export async function testInfoEventNotRolledBack() {
+  console.log("\n--- Testing an older info event does not replace a newer one ---");
+  const sk = generateSecretKey();
+  const pk = getPublicKey(sk);
+  const now = Math.floor(Date.now() / 1000);
+  const older = finalizeEvent({ kind: 13194, created_at: now - 60, tags: [], content: "pay_invoice" }, sk);
+  const newer = finalizeEvent({ kind: 13194, created_at: now, tags: [], content: "pay_invoice get_balance" }, sk);
+  const ws = new WebSocket(RELAY_URL);
+
+  const send = (event) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`no OK for ${event.id.slice(0, 8)}`)), 5000);
+    const handler = (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg[0] === "OK" && msg[1] === event.id) {
+        clearTimeout(timer);
+        ws.off("message", handler);
+        resolve();
+      }
+    };
+    ws.on("message", handler);
+    ws.send(JSON.stringify(["EVENT", event]));
+  });
+
+  const cached = () => new Promise((resolve, reject) => {
+    const ids = [];
+    const timer = setTimeout(() => reject(new Error("no EOSE")), 5000);
+    const handler = (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg[1] !== "rollback") return;
+      if (msg[0] === "EVENT") ids.push(msg[2].id);
+      if (msg[0] === "EOSE") {
+        clearTimeout(timer);
+        ws.off("message", handler);
+        resolve(ids);
+      }
+    };
+    ws.on("message", handler);
+    ws.send(JSON.stringify(["REQ", "rollback", { kinds: [13194], authors: [pk] }]));
+  });
+
+  await new Promise((resolve, reject) => {
+    ws.on("open", resolve);
+    ws.on("error", reject);
+  });
+  try {
+    await send(older);
+    await send(newer);
+    await send(older);
+    const ids = await cached();
+    if (ids.length !== 1 || ids[0] !== newer.id) {
+      throw new Error(`expected the newer info event, got ${JSON.stringify(ids)}`);
+    }
+    console.log("✅ The older info event sent again did not replace the newer one.");
+  } finally {
+    ws.close();
+  }
+}
