@@ -261,6 +261,19 @@ impl<S: Storage> NostrEngine<S> {
         Vec::new()
     }
 
+    /// Removes the stored state of connections whose socket is gone without
+    /// a close event (see `WalletRegistry::prune_orphaned_connections`);
+    /// returns how many were removed.
+    pub async fn prune_orphaned_connections(
+        &mut self,
+        live: &std::collections::HashSet<u32>,
+        interval: u64,
+    ) -> usize {
+        self.registry
+            .prune_orphaned_connections(live, interval)
+            .await
+    }
+
     /// Drops cached wallet info events that are too old or beyond the cache
     /// cap; returns how many were removed. The idle sweep calls this so the
     /// cache cleans itself up while the object is awake.

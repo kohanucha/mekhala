@@ -14,6 +14,7 @@ pub struct CloudflareConfig {
     pub evict_min_idle_seconds: usize,
     pub max_info_events: usize,
     pub info_ttl_seconds: u64,
+    pub orphan_sweep_seconds: u64,
     pub wallet_region: Option<String>,
     pub relay_secret: Option<String>,
     pub message_rate_limit_per_minute: u32,
@@ -85,6 +86,10 @@ impl CloudflareConfig {
             info_ttl_seconds: Self::parse_opt_u64(
                 env.var("INFO_TTL_SECONDS").ok().map(|v| v.to_string()),
                 2_592_000,
+            ),
+            orphan_sweep_seconds: Self::parse_opt_u64(
+                env.var("ORPHAN_SWEEP_SECONDS").ok().map(|v| v.to_string()),
+                3_600,
             ),
             wallet_region: env
                 .var("WALLET_REGION")

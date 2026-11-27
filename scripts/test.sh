@@ -39,6 +39,8 @@ cleanup() {
     lsof -ti :8794 2>/dev/null | xargs kill -9 2>/dev/null || true
     # Port 8802 cleanup (from the message budget test in JS)
     lsof -ti :8802 2>/dev/null | xargs kill -9 2>/dev/null || true
+    # Port 8803 cleanup (from the orphaned connection test in JS)
+    lsof -ti :8803 2>/dev/null | xargs kill -9 2>/dev/null || true
     echo "Cleanup complete."
     echo "Wrangler logs saved to: $LOG_FILE"
 }

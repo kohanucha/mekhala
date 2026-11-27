@@ -180,3 +180,83 @@ export async function testMessageBudget() {
     console.log("✅ A new connection starts with a fresh budget.");
   });
 }
+
+/**
+ * A deploy drops every socket without a close event, so the relay never
+ * cleans those connections up on its own. Killing the relay with sockets open
+ * and restarting it on the same storage reproduces that.
+ *
+ * Two clean-ups are checked separately, so they cannot race for the same
+ * connection: an event for a dead subscriber removes it at once, and the
+ * alarm removes the one no event ever reaches.
+ */
+export async function testOrphanedConnectionCleanup() {
+  console.log("\n--- Testing clean-up of connections lost without a close ---");
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const path = await import("node:path");
+  const { finalizeEvent, generateSecretKey, getPublicKey } = await import("nostr-tools/pure");
+
+  const persistTo = await mkdtemp(path.join(tmpdir(), "mekhala-orphans-"));
+  const walletSk = generateSecretKey();
+  const wallet = getPublicKey(walletSk);
+  const port = 8803;
+
+  try {
+    await withRelay({ port, persistTo }, async ({ wsURL }) => {
+      const app = await connect(wsURL);
+      app.send(JSON.stringify(["REQ", "replies", { kinds: [23195], authors: [wallet] }]));
+      await waitForEose(app, "replies");
+      const idle = await connect(wsURL);
+      idle.send(JSON.stringify(["REQ", "cold", { kinds: [23195], authors: ["f".repeat(64)] }]));
+      await waitForEose(idle, "cold");
+      console.log("Two subscribers saved; stopping the relay with their sockets open.");
+    });
+
+    await withRelay({ port, persistTo, vars: { ORPHAN_SWEEP_SECONDS: 0 } }, async ({ wsURL, log }) => {
+      const ws = await connect(wsURL);
+      for (let i = 0; i < 3; i++) {
+        const reply = finalizeEvent({
+          kind: 23195,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [["p", getPublicKey(generateSecretKey())], ["e", "a".repeat(64)]],
+          content: "reply",
+        }, walletSk);
+        ws.send(JSON.stringify(["EVENT", reply]));
+        await new Promise((resolve) => {
+          const handler = (data) => {
+            const msg = JSON.parse(data.toString());
+            if (msg[0] === "OK" && msg[1] === reply.id) {
+              ws.off("message", handler);
+              resolve();
+            }
+          };
+          ws.on("message", handler);
+        });
+      }
+      await wait(300);
+      const removed = log().split("\n").filter((line) => line.includes("has no socket: removing its state"));
+      check(removed.length === 1, `expected one immediate clean-up, saw ${removed.length}`);
+      check(!log().includes("send failed"), "an event was sent to a connection that no longer exists");
+      console.log("✅ The first event for a dead subscriber removed it; nothing was sent to it.");
+      ws.close();
+    });
+
+    const vars = { IDLE_TIMEOUT_SECONDS: 120, CONNECTION_SWEEP_SECONDS: 1, ORPHAN_SWEEP_SECONDS: 1 };
+    await withRelay({ port, persistTo, vars }, async ({ wsURL, log }) => {
+      const ws = await connect(wsURL); // arms the alarm
+      const deadline = Date.now() + 8000;
+      while (!log().includes("orphan sweep: removed state of 1 connection(s)") && Date.now() < deadline) {
+        await wait(250);
+      }
+      check(
+        log().includes("orphan sweep: removed state of 1 connection(s)"),
+        "the alarm did not remove the subscriber no event reaches",
+      );
+      console.log("✅ The alarm removed the dead subscriber no event reaches.");
+      ws.close();
+    });
+  } finally {
+    await rm(persistTo, { recursive: true, force: true });
+  }
+}

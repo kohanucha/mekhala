@@ -43,6 +43,9 @@ code here**: anything that needs a wallet's secret belongs on the client side.
 - `IDLE_TIMEOUT_SECONDS` - optional, default: 120, `0` disables the sweep
   (connections idle longer than this *and* holding no subscription are closed)
 - `CONNECTION_SWEEP_SECONDS` - optional, default: 60, `0` disables the sweep
+- `ORPHAN_SWEEP_SECONDS` - optional, default: 3600, `0` disables: how often the
+  alarm removes the stored state of connections whose socket is gone (see
+  "Connections lost without a close" below)
 - `EVICT_MIN_IDLE_SECONDS` - optional, default: 10: minimum idle time before a
   subscription-less connection may be closed to free a slot
 - `MAX_SUBSCRIPTIONS_PER_CONNECTION` - optional, default: 100
@@ -91,6 +94,25 @@ timestamp is refreshed at most every 30 s. `IDLE_TIMEOUT_SECONDS` closes
 connections that hold no subscription and have been silent that long, driven
 by the Durable Object alarm (`alarm()`), which re-arms itself every
 `CONNECTION_SWEEP_SECONDS` while sockets exist.
+
+### Connections lost without a close
+
+A deploy, an eviction or a crash drops every socket of the old instance, and
+the new instance never gets a close event for them. Their `conn:` state and
+`pk:`/`eid:`/`etag:` memberships would otherwise stay forever: `load_indexed`
+only prunes ids whose `conn:` is missing, and here it is present. Two paths
+remove them:
+
+- **On the next event** (`process_responses`): a `WakeUp` whose socket is not
+  in `get_websockets()` calls `on_terminate` and skips any send to that id.
+  Hibernated sockets stay listed, so a missing one is really gone.
+- **On the alarm** (`WalletRegistry::prune_orphaned_connections`): compares the
+  `conn:` keys with the live socket ids and removes the rest, for subscribers
+  no event ever reaches. A full pass runs at most once per
+  `ORPHAN_SWEEP_SECONDS` (one `get` of `orphan_sweep_at` otherwise) and removes
+  at most 128; a pass cut short by that limit is not recorded, so the next
+  alarm continues. The sweep holds the engine lock, so a new connection cannot
+  save state between reading the sockets and comparing them with storage.
 
 Trade-offs: per-address caps put CGNAT and corporate NAT users in one bucket,
 so keep them generous (or disable them) where that matters; a wallet that is

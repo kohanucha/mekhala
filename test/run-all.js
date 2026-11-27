@@ -9,7 +9,7 @@ import { testNip09Deletion, testNip09KTagDeletion, testNip09BlanketDeletion, tes
 import { testMalformedEventProducesOK, testOversizedEventProducesOK, testOversizedInfoEventRejected, testTagsKeptAsSigned, testTimestampValidation, testProtocolErrors, testLimitEnforcement } from "./event-validation.test.js";
 import { testInfoEventCaching, testKind13194OK } from "./info-event-publish.test.js";
 import { testCloseNonExistentSub, testReplaceSubscription, testDuplicateEventPublish, testSubscriptionBeyondOneStorageBatch } from "./subscription-edge-cases.test.js";
-import { testPerAddressLimits, testIdleConnectionSweep, testConnectionEviction, testMessageBudget } from "./connection-limits.test.js";
+import { testPerAddressLimits, testIdleConnectionSweep, testConnectionEviction, testMessageBudget, testOrphanedConnectionCleanup } from "./connection-limits.test.js";
 import { runSdkConformance } from "./conformance.test.js";
 import { testRestartPersistence } from "./restart-persistence.test.js";
 import { testInfoCacheCap, testInfoCacheCapAcrossPages, testInfoCacheExpiry } from "./info-cache.test.js";
@@ -60,6 +60,7 @@ async function runAll() {
       await testIdleConnectionSweep();
       await testConnectionEviction();
       await testMessageBudget();
+      await testOrphanedConnectionCleanup();
       await testRestartPersistence();
       await testInfoCacheCap();
       await testInfoCacheCapAcrossPages();
