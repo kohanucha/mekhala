@@ -697,11 +697,13 @@ impl<S: Storage> WalletRegistry<S> {
         };
 
         if let Some(previous) = &previous {
-            if previous.id != event.id {
-                self.storage
-                    .delete_batch(vec![format!("infoid:{}", previous.id)])
-                    .await;
+            if !replaces(&event, previous) {
+                log_debug!("info ignored: not newer than the cached event");
+                return;
             }
+            self.storage
+                .delete_batch(vec![format!("infoid:{}", previous.id)])
+                .await;
         }
 
         let mut entries = HashMap::new();
@@ -1161,6 +1163,13 @@ impl<S: Storage> WalletRegistry<S> {
             }
         }
     }
+}
+
+/// Whether `new` replaces `old` as a replaceable event (NIP-01): the later
+/// `created_at` wins, and on a tie the lower id. The same event does not
+/// replace itself.
+fn replaces(new: &Event, old: &Event) -> bool {
+    new.created_at > old.created_at || (new.created_at == old.created_at && new.id < old.id)
 }
 
 /// Decodes a persisted connection list. Accepts both an array and a single

@@ -7,7 +7,7 @@ import { testRelay, testNwcFlow, testStrictValidation, testMultiClientIsolation,
 import { testNip01EdgeCases, testFilterMatching, testFilterMatchingAdvanced, testMixedValidInvalidFilters, testFilterLimit } from "./nip01-filters.test.js";
 import { testNip09Deletion, testNip09KTagDeletion, testNip09BlanketDeletion, testNip09UnauthorizedDeletion } from "./nip09-deletion.test.js";
 import { testMalformedEventProducesOK, testOversizedEventProducesOK, testOversizedInfoEventRejected, testTagsKeptAsSigned, testTimestampValidation, testProtocolErrors, testLimitEnforcement } from "./event-validation.test.js";
-import { testInfoEventCaching, testKind13194OK } from "./info-event-publish.test.js";
+import { testInfoEventCaching, testKind13194OK, testInfoEventNotRolledBack } from "./info-event-publish.test.js";
 import { testCloseNonExistentSub, testReplaceSubscription, testDuplicateEventPublish, testSubscriptionBeyondOneStorageBatch } from "./subscription-edge-cases.test.js";
 import { testPerAddressLimits, testIdleConnectionSweep, testConnectionEviction, testMessageBudget, testOrphanedConnectionCleanup } from "./connection-limits.test.js";
 import { runSdkConformance } from "./conformance.test.js";
@@ -45,6 +45,7 @@ async function runAll() {
     await testProtocolErrors();
     await testLimitEnforcement();
     await testKind13194OK();
+    await testInfoEventNotRolledBack();
     await testMalformedEventProducesOK();
     await testOversizedEventProducesOK();
     await testOversizedInfoEventRejected();

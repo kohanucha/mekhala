@@ -165,6 +165,22 @@ one page however large the cache is. The same pass deletes events over the
 size cap that were stored before it existed. `0` disables either bound;
 setting both to `0` removes the enumeration entirely.
 
+Kind 13194 is replaceable (NIP-01), so `cache_info` only replaces the cached
+event with a newer one: a later `created_at` wins, and on a tie the lower id.
+Anyone who saw an older info event can send it again with its valid
+signature; without this rule it would roll the cache back to capabilities or
+an encryption the wallet no longer uses. An event that does not replace the
+cached one is still answered `OK true` and routed to live subscribers, but
+not stored; sending the cached event again costs no write.
+
+Known limitation: a deletion (kind `5`) leaves nothing behind, so the deleted
+info event can be cached again by sending it once more, until it expires by
+`INFO_CACHE_TTL_SECONDS`. A tombstone in `info:<author>` would close that, at
+the cost of a second value shape in every reader of the family and a rule to
+expire tombstones when both bounds are `0`; it was left out on purpose. A
+wallet's own new info event is unaffected, since it is signed with a later
+`created_at`.
+
 Trade-off: TTL is measured against `created_at`, which the publisher controls.
 A wallet that republishes keeps its entry; one that never republishes
 disappears after 30 days and its discovery `REQ` simply returns nothing, which
