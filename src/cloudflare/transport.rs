@@ -333,7 +333,7 @@ impl CloudflareTransport {
     ///
     /// Every frame costs something once it is handled: a `REQ` re-reads and
     /// rewrites the connection's routing index (up to
-    /// `MAX_ROUTING_KEYS_PER_CONNECTION` keys), an `EVENT` pays a signature
+    /// `SUB_MAX_ROUTING_KEYS` keys), an `EVENT` pays a signature
     /// check, and a `CLOSE` used to rewrite the whole snapshot even when it
     /// named a subscription that was not there. Without a budget one client can
     /// spend the single Durable Object's time — which every connection of the
@@ -546,7 +546,7 @@ impl CloudflareTransport {
     ///
     /// A connection with subscriptions is never evicted: that is exactly the
     /// client the relay exists for. Candidates are considered oldest first
-    /// and only past `EVICT_MIN_IDLE_SECONDS`, so a client that just
+    /// and only past `CONN_EVICT_MIN_IDLE_SECONDS`, so a client that just
     /// connected still has time to subscribe.
     async fn reclaim_idle_slot(&self, existing: &[Attachment], now: u64) -> Result<bool> {
         let min_idle = u64::try_from(self.config.evict_min_idle_seconds).unwrap_or(u64::MAX);
@@ -595,7 +595,7 @@ impl CloudflareTransport {
     }
 
     /// Closes every connection that has been idle longer than
-    /// `IDLE_TIMEOUT_SECONDS` and holds no subscription, then cleans up its
+    /// `CONN_IDLE_TIMEOUT_SECONDS` and holds no subscription, then cleans up its
     /// state. A disabled timeout (`0`) skips the work entirely.
     async fn sweep_idle_connections(&self) {
         let idle_timeout = u64::try_from(self.config.idle_timeout_seconds).unwrap_or(u64::MAX);
@@ -643,7 +643,7 @@ impl CloudflareTransport {
 
     /// Removes the stored state of connections whose socket was dropped
     /// without a close event (a deploy, an eviction or a crash), at most once
-    /// per `ORPHAN_SWEEP_SECONDS`.
+    /// per `CONN_ORPHAN_SWEEP_SECONDS`.
     async fn sweep_orphaned_connections(&self) {
         // Holding the engine lock keeps a new connection from saving state
         // between reading the live sockets and comparing them with storage.

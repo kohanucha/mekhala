@@ -34,31 +34,31 @@ code here**: anything that needs a wallet's secret belongs on the client side.
 - `k256` for Schnorr signatures
 
 ## Required Env Vars
-- `RELAY_SECRET` - password (set via Cloudflare dashboard)
-- `WALLET_REGION` - optional: apac/weur/wnam (default: apac)
-- `MAX_CONNECTIONS` - optional, default: 100
-- `MAX_CONNECTIONS_PER_IP` - optional, default: 5, `0` disables (see
+- `AUTH_RELAY_SECRET` - password (set via Cloudflare dashboard)
+- `DO_REGION` - optional: apac/weur/wnam (default: apac)
+- `CONN_MAX_TOTAL` - optional, default: 100
+- `CONN_MAX_PER_IP` - optional, default: 5, `0` disables (see
   "Connection admission" below)
-- `MAX_CONNECTIONS_PER_ASN` - optional, default: 20, `0` disables
-- `IDLE_TIMEOUT_SECONDS` - optional, default: 120, `0` disables the sweep
+- `CONN_MAX_PER_ASN` - optional, default: 20, `0` disables
+- `CONN_MAX_MESSAGES_PER_MINUTE` - optional, default: 120, `0` disables (see
+  "Inbound message budget" below)
+- `CONN_IDLE_TIMEOUT_SECONDS` - optional, default: 120, `0` disables the sweep
   (connections idle longer than this *and* holding no subscription are closed)
-- `CONNECTION_SWEEP_SECONDS` - optional, default: 60, `0` disables the sweep
-- `ORPHAN_SWEEP_SECONDS` - optional, default: 3600, `0` disables: how often the
+- `CONN_SWEEP_SECONDS` - optional, default: 60, `0` disables the sweep
+- `CONN_EVICT_MIN_IDLE_SECONDS` - optional, default: 10: minimum idle time before a
+  subscription-less connection may be closed to free a slot
+- `CONN_ORPHAN_SWEEP_SECONDS` - optional, default: 3600, `0` disables: how often the
   alarm removes the stored state of connections whose socket is gone (see
   "Connections lost without a close" below)
-- `EVICT_MIN_IDLE_SECONDS` - optional, default: 10: minimum idle time before a
-  subscription-less connection may be closed to free a slot
-- `MAX_SUBSCRIPTIONS_PER_CONNECTION` - optional, default: 100
-- `MAX_FILTER_ITEMS` - optional, default: 10 (max values per filter field)
-- `MAX_EVENT_TAGS` - optional, default: 10
-- `MAX_ROUTING_KEYS_PER_CONNECTION` - optional, default: 1000
-- `MAX_INFO_EVENTS` - optional, default: 1000, `0` disables the cap (see
+- `SUB_MAX_PER_CONN` - optional, default: 100
+- `SUB_MAX_FILTER_VALUES` - optional, default: 10 (max values per filter field)
+- `SUB_MAX_ROUTING_KEYS` - optional, default: 1000
+- `EVENT_MAX_CONTENT_BYTES` - default: 98304 (96 KB, covers the 87,472-character NIP-44 ceiling)
+- `EVENT_MAX_TAGS` - optional, default: 10
+- `INFO_CACHE_MAX_EVENTS` - optional, default: 1000, `0` disables the cap (see
   "Info cache" below)
-- `INFO_TTL_SECONDS` - optional, default: 2592000 (30 days), `0` disables
+- `INFO_CACHE_TTL_SECONDS` - optional, default: 2592000 (30 days), `0` disables
   expiry
-- `MESSAGE_RATE_LIMIT_PER_MINUTE` - optional, default: 120, `0` disables (see
-  "Inbound message budget" below)
-- `MAX_CONTENT_LENGTH` - default: 98304 (96 KB, covers the 87,472-character NIP-44 ceiling)
 
 ## Wrangler Config
 - Output: `build/worker/shim.mjs`
@@ -73,11 +73,11 @@ code here**: anything that needs a wallet's secret belongs on the client side.
 Every WebSocket upgrade passes three gates in
 `CloudflareTransport::accept_new_connection`, in this order:
 
-1. `MAX_CONNECTIONS_PER_IP` — connections sharing one address tag.
-2. `MAX_CONNECTIONS_PER_ASN` — connections sharing one autonomous system.
-3. `MAX_CONNECTIONS` — the relay total. On reaching it, the longest-idle
+1. `CONN_MAX_PER_IP` — connections sharing one address tag.
+2. `CONN_MAX_PER_ASN` — connections sharing one autonomous system.
+3. `CONN_MAX_TOTAL` — the relay total. On reaching it, the longest-idle
    connection **that holds no subscription** is closed to free a slot (only
-   when it has been idle at least `EVICT_MIN_IDLE_SECONDS`); with no such
+   when it has been idle at least `CONN_EVICT_MIN_IDLE_SECONDS`); with no such
    connection the upgrade gets 429.
 
 The identity is decided in the Worker, not in the Durable Object: `connect()`
@@ -90,10 +90,10 @@ rotation-resistant backstop.
 
 Identity and a last-seen timestamp ride on the WebSocket attachment
 (`serialize_attachment`), so they survive hibernation at no storage cost; the
-timestamp is refreshed at most every 30 s. `IDLE_TIMEOUT_SECONDS` closes
+timestamp is refreshed at most every 30 s. `CONN_IDLE_TIMEOUT_SECONDS` closes
 connections that hold no subscription and have been silent that long, driven
 by the Durable Object alarm (`alarm()`), which re-arms itself every
-`CONNECTION_SWEEP_SECONDS` while sockets exist.
+`CONN_SWEEP_SECONDS` while sockets exist.
 
 ### Connections lost without a close
 
@@ -109,7 +109,7 @@ remove them:
 - **On the alarm** (`WalletRegistry::prune_orphaned_connections`): compares the
   `conn:` keys with the live socket ids and removes the rest, for subscribers
   no event ever reaches. A full pass runs at most once per
-  `ORPHAN_SWEEP_SECONDS` (one `get` of `orphan_sweep_at` otherwise) and removes
+  `CONN_ORPHAN_SWEEP_SECONDS` (one `get` of `orphan_sweep_at` otherwise) and removes
   at most 128; a pass cut short by that limit is not recorded, so the next
   alarm continues. The sweep holds the engine lock, so a new connection cannot
   save state between reading the sockets and comparing them with storage.
@@ -133,7 +133,7 @@ would exceed the Durable Object's memory on every alarm.
 
 The number of events is bounded by two independent settings:
 
-- `MAX_INFO_EVENTS` caps how many events are kept. Enforced on publish
+- `INFO_CACHE_MAX_EVENTS` caps how many events are kept. Enforced on publish
   (`cache_info`) because the publisher decides how many keys exist; one publish
   over the cap trims back to 90% of it so a burst pays for one enumeration
   rather than one per publish. Eviction drops the oldest `created_at` first,
@@ -146,7 +146,7 @@ The number of events is bounded by two independent settings:
   moved by every write and delete. A hint that drifts high only forces a
   redundant listing; one that drifts low would weaken the cap — which is why
   the alarm reseeds it instead of trusting it forever.
-- `INFO_TTL_SECONDS` expires events, measured from the event's own
+- `INFO_CACHE_TTL_SECONDS` expires events, measured from the event's own
   `created_at`. Enforced on read (`get_info` treats an expired event as absent
   and deletes it) and on the Durable Object alarm, so a cache nobody reads
   still shrinks.
@@ -191,7 +191,7 @@ add its prefix to `RETIRED_KEY_PREFIXES` in `src/nostr/wallet_registry.rs`.
 ## Inbound message budget
 
 Every WebSocket frame a client sends is charged against a per-connection budget
-(`MESSAGE_RATE_LIMIT_PER_MINUTE`, default 120) before it is parsed or allowed to
+(`CONN_MAX_MESSAGES_PER_MINUTE`, default 120) before it is parsed or allowed to
 touch storage. Past the budget the relay sends one `NOTICE` ("rate limited,
 retry in Ns") and closes with 1008; the caller stops there, so nothing is
 parsed, no signature is checked, and no storage operation is issued.
@@ -206,7 +206,7 @@ how often a client can start over; the budget bounds what one connection can
 spend while it is here.
 
 Why it exists: one `REQ` re-reads and rewrites the connection's routing index
-(up to `MAX_ROUTING_KEYS_PER_CONNECTION` keys), and an `EVENT` pays a Schnorr
+(up to `SUB_MAX_ROUTING_KEYS` keys), and an `EVENT` pays a Schnorr
 check, all inside the one Durable Object every connection of a region shares.
 Without a budget, one client could keep that object busy and starve everyone
 else. Two smaller rules go with it:
@@ -231,8 +231,8 @@ per-address counters in storage, which would cost an operation per frame.
 5. **Panic = Abort**: The project uses `panic = "abort"`. **NEVER** use `unwrap()` or `expect()`. Use `?`, `.get()` for indexing, and checked math to prevent isolate crashes.
 6. **`sync()` required for persistence**: Every `subscribe()`/`unsubscribe()` must call `sync()`. The in-memory index is lost on DO hibernation — only `state.storage()` survives. Removing `sync()` breaks event routing after wake. Regression test: `test_hibernation_contract`. `sync()` writes through `put_all`, which splits the entries into puts of at most `MAX_STORAGE_BATCH` (128, the Durable Object limit) and starts them together so they commit as one write. Local workerd does not enforce that limit, so only `MockStorage`, which refuses a larger put, catches a regression. If saving fails, `subscribe` puts the live index back to what storage still holds, because the client is told `CLOSED`.
 7. **Routing index families**: A subscription can be indexed under `pk:` (`authors`/`#p`), `eid:` (`ids`) or `etag:` (`#e`); `sync()`, `load_indexed()`, `subscribe()` (when a `REQ` replaces a `sub_id`), `unsubscribe()` and `on_terminate()` must treat all three the same or routing silently degrades to "accepted, EOSE, no event", or the persisted index keeps a membership the live connection no longer has (leaks storage and resurrects dead subscriptions). Cached info events follow the same rule as any other event: they reach a `#p` filter only through a real `p` tag, and only the author key (`info:<author>`) is comparable, so an app's pubkey resolves to nothing.
-8. **Alarms are one-shot**: the idle sweep re-arms itself inside `alarm()` and the accept path arms it when none is pending. Dropping either half leaves connections that are accepted once and never swept — the case this sweep exists to close. `IDLE_TIMEOUT_SECONDS=0` / `CONNECTION_SWEEP_SECONDS=0` switch it off, which is what the functional test suite does so its own sockets are not swept mid-test.
-9. **Info cache is bounded on purpose**: `MAX_INFO_EVENTS` / `INFO_TTL_SECONDS` are the only thing keeping the `info:` family from growing forever, since anyone may publish a `kind` 13194 event. Both are enforced through one paged `list_page("info:", ...)` enumeration, so a new bound must go there rather than into a separate pass. Unit tests set `info_ttl_seconds: 0` (`test_limits()`) because fixtures publish `created_at: 1000` against a pinned clock of 1_700_000_000 — leaving the default TTL on would expire every fixture. Tests that mean to test expiry set the TTL and `set_test_time` explicitly.
+8. **Alarms are one-shot**: the idle sweep re-arms itself inside `alarm()` and the accept path arms it when none is pending. Dropping either half leaves connections that are accepted once and never swept — the case this sweep exists to close. `CONN_IDLE_TIMEOUT_SECONDS=0` / `CONN_SWEEP_SECONDS=0` switch it off, which is what the functional test suite does so its own sockets are not swept mid-test.
+9. **Info cache is bounded on purpose**: `INFO_CACHE_MAX_EVENTS` / `INFO_CACHE_TTL_SECONDS` are the only thing keeping the `info:` family from growing forever, since anyone may publish a `kind` 13194 event. Both are enforced through one paged `list_page("info:", ...)` enumeration, so a new bound must go there rather than into a separate pass. Unit tests set `info_ttl_seconds: 0` (`test_limits()`) because fixtures publish `created_at: 1000` against a pinned clock of 1_700_000_000 — leaving the default TTL on would expire every fixture. Tests that mean to test expiry set the TTL and `set_test_time` explicitly.
 
 ## Agent skills
 

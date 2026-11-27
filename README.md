@@ -29,7 +29,7 @@ Mekhala is a specialized, ephemeral Nostr relay built in Rust and compiled to We
    - Fork this repository to your GitHub account.
    - Connect it to your [Cloudflare Dashboard](https://dash.cloudflare.com/) via **Workers & Pages** -> **Create application** -> **Connect to Git** and deploy.
 2. **Configure Private Path:**
-   - Under your Worker's **Settings** -> **Variables and Secrets**, add a Secret named `RELAY_SECRET`.
+   - Under your Worker's **Settings** -> **Variables and Secrets**, add a Secret named `AUTH_RELAY_SECRET`.
    - Set it to a long, secure, unique path identifier.
 3. **Attach a Custom Domain:**
    - In **Workers & Pages** → your Worker → **Settings** → **Domains & Routes**, add a Custom Domain (e.g. `relay.example.com`).
@@ -45,19 +45,19 @@ Configurable via `wrangler.toml` or environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
-| `RELAY_SECRET` | *None* | Optional secret path parameter for private routing. |
-| `WALLET_REGION` | `apac` | Physical DO location (`apac`, `weur`, `wnam`). |
-| `MAX_CONNECTIONS` | `100` | Max concurrent WebSocket connections per DO. When full, the longest-idle connection holding no subscription is closed to free a slot. |
-| `MAX_CONNECTIONS_PER_IP` | `5` | Max concurrent connections from one client address; `0` disables. |
-| `MAX_CONNECTIONS_PER_ASN` | `20` | Max concurrent connections from one autonomous system; `0` disables. |
-| `IDLE_TIMEOUT_SECONDS` | `120` | Close connections idle longer than this that hold no subscription; `0` disables. |
-| `CONNECTION_SWEEP_SECONDS` | `60` | How often the idle sweep runs; `0` disables. |
-| `EVICT_MIN_IDLE_SECONDS` | `10` | Minimum idle time before a subscription-less connection may be closed to free a slot. |
-| `ORPHAN_SWEEP_SECONDS` | `3600` | How often the alarm removes the stored state of connections dropped without a close (after a deploy); `0` disables. |
-| `MAX_INFO_EVENTS` | `1000` | Max cached wallet info events (each also costs an `infoid:` key, and each event is limited to 4 KiB); `0` disables. |
-| `INFO_TTL_SECONDS` | `2592000` | How long a cached wallet info event is served, measured from its `created_at`; `0` disables. |
-| `MESSAGE_RATE_LIMIT_PER_MINUTE` | `120` | Frames a connection may send per minute before it is closed with a `NOTICE`; `0` disables. |
-| `MAX_CONTENT_LENGTH` | `98304` | Max event `content` size in bytes. Covers the largest NIP-44 payload (87,472 base64 chars) plus the JSON envelope. |
+| `AUTH_RELAY_SECRET` | *None* | Optional secret path parameter for private routing. |
+| `DO_REGION` | `apac` | Physical DO location (`apac`, `weur`, `wnam`). |
+| `CONN_MAX_TOTAL` | `100` | Max concurrent WebSocket connections per DO. When full, the longest-idle connection holding no subscription is closed to free a slot. |
+| `CONN_MAX_PER_IP` | `5` | Max concurrent connections from one client address; `0` disables. |
+| `CONN_MAX_PER_ASN` | `20` | Max concurrent connections from one autonomous system; `0` disables. |
+| `CONN_MAX_MESSAGES_PER_MINUTE` | `120` | Frames a connection may send per minute before it is closed with a `NOTICE`; `0` disables. |
+| `CONN_IDLE_TIMEOUT_SECONDS` | `120` | Close connections idle longer than this that hold no subscription; `0` disables. |
+| `CONN_SWEEP_SECONDS` | `60` | How often the idle sweep runs; `0` disables. |
+| `CONN_EVICT_MIN_IDLE_SECONDS` | `10` | Minimum idle time before a subscription-less connection may be closed to free a slot. |
+| `CONN_ORPHAN_SWEEP_SECONDS` | `3600` | How often the alarm removes the stored state of connections dropped without a close (after a deploy); `0` disables. |
+| `EVENT_MAX_CONTENT_BYTES` | `98304` | Max event `content` size in bytes. Covers the largest NIP-44 payload (87,472 base64 chars) plus the JSON envelope. |
+| `INFO_CACHE_MAX_EVENTS` | `1000` | Max cached wallet info events (each also costs an `infoid:` key, and each event is limited to 4 KiB); `0` disables. |
+| `INFO_CACHE_TTL_SECONDS` | `2592000` | How long a cached wallet info event is served, measured from its `created_at`; `0` disables. |
 
 ---
 

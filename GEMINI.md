@@ -17,7 +17,7 @@ The relay acts as an ephemeral "routing engine" between Lightning wallet applica
 - **High-Performance Verification**: ID verification is optimized using tuple-based serialization to avoid `serde_json::Value` overhead and unnecessary allocations.
 - **Strict NWC Focus**: Only NWC-related event kinds (13194, 23194-23197) are processed. General Nostr kinds (0, 1) are rejected.
 - **Connection Capping**: Limits concurrent connections (default 100) per Durable Object to prevent resource exhaustion, returning HTTP 429 when exceeded.
-- **Optional Authentication**: Authorization via a secret path (e.g., `wss://relay.com/<SECRET>`) is supported but optional. If `RELAY_SECRET` is unset, the relay functions as a public relay on the root path.
+- **Optional Authentication**: Authorization via a secret path (e.g., `wss://relay.com/<SECRET>`) is supported but optional. If `AUTH_RELAY_SECRET` is unset, the relay functions as a public relay on the root path.
 
 ## Project Structure
 - `.github/workflows/`: CI/CD pipelines.
@@ -38,11 +38,11 @@ The relay acts as an ephemeral "routing engine" between Lightning wallet applica
 
 ## Configuration (Environment Variables)
 Mekhala is highly configurable via `wrangler.toml`:
-- `MAX_CONNECTIONS`: Max concurrent WebSockets per Durable Object (Default: 20 - Optimized for 1 user across devices).
-- `MAX_FILTER_ITEMS`: Max items allowed in filter arrays (ids, authors, etc.) (Default: 10 - NWC filters are narrow).
-- `MAX_EVENT_TAGS`: Max tags allowed per event (Default: 10 - NWC events are functional).
-- `MAX_CONTENT_LENGTH`: Max event content size in bytes (Default: 98304 - covers the 87472-character NIP-44 payload ceiling).
-- `RELAY_SECRET`: Optional secret path for private relay mode.
+- `CONN_MAX_TOTAL`: Max concurrent WebSockets per Durable Object (Default: 20 - Optimized for 1 user across devices).
+- `SUB_MAX_FILTER_VALUES`: Max items allowed in filter arrays (ids, authors, etc.) (Default: 10 - NWC filters are narrow).
+- `EVENT_MAX_TAGS`: Max tags allowed per event (Default: 10 - NWC events are functional).
+- `EVENT_MAX_CONTENT_BYTES`: Max event content size in bytes (Default: 98304 - covers the 87472-character NIP-44 payload ceiling).
+- `AUTH_RELAY_SECRET`: Optional secret path for private relay mode.
 
 ## Building and Running
 
