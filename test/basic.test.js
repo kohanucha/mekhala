@@ -127,3 +127,39 @@ export async function testAuthHeaders() {
   }
   console.log("✅ Security headers present on 404 auth rejection.");
 }
+
+/**
+ * With no AUTH_RELAY_SECRET the relay must be closed, not open: every request
+ * gets the same 404 as a wrong secret, and the operator sees why in the log.
+ * Public mode only happens when AUTH_PUBLIC=true asks for it.
+ */
+export async function testAuthModes() {
+  console.log("\n--- Testing a relay with no secret ---");
+  const { withRelay, connect, refused } = await import("./relay-harness.js");
+  const port = 8804;
+  const nip11 = { headers: { Accept: "application/nostr+json" } };
+
+  await withRelay({ port, secret: null }, async ({ httpURL, wsURL, log }) => {
+    const response = await fetch(httpURL, nip11);
+    if (response.status !== 404) {
+      throw new Error(`unconfigured relay answered NIP-11 with ${response.status}, expected 404`);
+    }
+    if (!(await refused(wsURL))) {
+      throw new Error("unconfigured relay accepted a WebSocket");
+    }
+    if (!log().includes("no relay secret is configured")) {
+      throw new Error("unconfigured relay did not log why it refuses");
+    }
+    console.log("✅ No secret: NIP-11 and WebSocket refused, reason logged.");
+  });
+
+  await withRelay({ port, secret: null, vars: { AUTH_PUBLIC: "true" } }, async ({ httpURL, wsURL }) => {
+    const response = await fetch(httpURL, nip11);
+    if (response.status !== 200) {
+      throw new Error(`public relay answered NIP-11 with ${response.status}, expected 200`);
+    }
+    const ws = await connect(wsURL);
+    ws.close();
+    console.log("✅ AUTH_PUBLIC=true: the root path serves NIP-11 and WebSockets.");
+  });
+}

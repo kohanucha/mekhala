@@ -88,8 +88,10 @@ export async function withRelay(
   { port, vars = {}, secret = "limited-test-secret", persistTo },
   fn,
 ) {
-  const httpURL = `http://127.0.0.1:${port}/${secret}`;
-  const wsURL = `ws://127.0.0.1:${port}/${secret}`;
+  // `secret: null` starts a relay with no secret, reached at the root path.
+  const path = secret ?? "";
+  const httpURL = `http://127.0.0.1:${port}/${path}`;
+  const wsURL = `ws://127.0.0.1:${port}/${path}`;
 
   // Clear the port first: a relay left behind by an interrupted run keeps the
   // new server from binding, and a start that cannot bind hangs rather than
@@ -103,7 +105,9 @@ export async function withRelay(
   for (const [key, value] of Object.entries({ ...defaults, ...vars })) {
     args.push("--var", `${key}:${value}`);
   }
-  args.push("--var", `AUTH_RELAY_SECRET:${secret}`);
+  if (secret !== null) {
+    args.push("--var", `AUTH_RELAY_SECRET:${secret}`);
+  }
   if (persistTo) {
     args.push("--persist-to", persistTo);
   }

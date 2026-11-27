@@ -27,8 +27,10 @@ import { WebSocket } from "ws";
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools/pure";
 
 const PORT = 8790;
-const HTTP_URL = `http://127.0.0.1:${PORT}/`;
-const WS_URL = `ws://127.0.0.1:${PORT}/`;
+// A relay with no secret refuses everything, so this one gets its own.
+const SECRET = "restart-test-secret";
+const HTTP_URL = `http://127.0.0.1:${PORT}/${SECRET}`;
+const WS_URL = `ws://127.0.0.1:${PORT}/${SECRET}`;
 const START_TIMEOUT_MS = 120_000;
 const EVENT_TIMEOUT_MS = 10_000;
 
@@ -112,6 +114,8 @@ function startRelay(persistDir) {
       "127.0.0.1",
       "--persist-to",
       persistDir,
+      "--var",
+      `AUTH_RELAY_SECRET:${SECRET}`,
     ],
     {
       cwd: projectRoot,

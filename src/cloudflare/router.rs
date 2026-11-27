@@ -2,6 +2,7 @@ use crate::auth::AuthError;
 use crate::cloudflare::auth;
 use crate::cloudflare::config::CloudflareConfig;
 use crate::cloudflare::{apply_security_headers, create_cors_response};
+use crate::log_error;
 use worker::{Env, Method, Request, Response, Result, RouteContext, Router};
 
 pub async fn run(req: Request, env: Env) -> Result<Response> {
@@ -40,11 +41,20 @@ fn handle_auth(_req: &Request, ctx: &RouteContext<()>) -> Result<Option<Response
     let provided_secret = ctx.param("secret").map(|s| s.as_str()).unwrap_or_default();
 
     match policy.check_access(provided_secret) {
-        Err(AuthError::Forbidden) => Ok(Some(apply_security_headers(Response::error(
-            "Not Found",
-            404,
-        )?)?)),
-        Ok(_) => Ok(None),
+        Ok(()) => Ok(None),
+        Err(error) => {
+            // The caller gets the same 404 either way; only the operator needs
+            // to know the relay is closed because it was never configured.
+            if error == AuthError::NotConfigured {
+                log_error!(
+                    "{error}: set AUTH_RELAY_SECRET, or AUTH_PUBLIC=true to run a public relay"
+                );
+            }
+            Ok(Some(apply_security_headers(Response::error(
+                "Not Found",
+                404,
+            )?)?))
+        }
     }
 }
 

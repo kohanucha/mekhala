@@ -36,7 +36,11 @@ This file is the only agent instruction file in the repository.
 - `k256` for Schnorr signatures
 
 ## Required Env Vars
-- `AUTH_RELAY_SECRET` - password (set via Cloudflare dashboard)
+- `AUTH_RELAY_SECRET` - password (set via Cloudflare dashboard). Without it the
+  relay refuses every request with 404 and logs why: a missing secret closes
+  the relay, it never opens it
+- `AUTH_PUBLIC` - optional: exactly `true` runs a public relay when no secret is
+  set; any other value keeps it closed. A secret, when set, wins
 - `DO_REGION` - optional: apac/weur/wnam (default: apac)
 - `CONN_MAX_TOTAL` - optional, default: 100
 - `CONN_MAX_PER_IP` - optional, default: 5, `0` disables (see

@@ -45,7 +45,8 @@ Configurable via `wrangler.toml` or environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
-| `AUTH_RELAY_SECRET` | *None* | Optional secret path parameter for private routing. |
+| `AUTH_RELAY_SECRET` | *None* | Secret path segment clients must use (`wss://host/<secret>`). Without it every request gets 404, unless `AUTH_PUBLIC` is set. |
+| `AUTH_PUBLIC` | *unset* | `true` (exactly) runs a public relay at the root path when no secret is set. Any other value keeps the relay closed. |
 | `DO_REGION` | `apac` | Physical DO location (`apac`, `weur`, `wnam`). |
 | `CONN_MAX_TOTAL` | `100` | Max concurrent WebSocket connections per DO. When full, the longest-idle connection holding no subscription is closed to free a slot. |
 | `CONN_MAX_PER_IP` | `5` | Max concurrent connections from one client address; `0` disables. |
