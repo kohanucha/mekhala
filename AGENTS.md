@@ -36,11 +36,11 @@ This file is the only agent instruction file in the repository.
 - `k256` for Schnorr signatures
 
 ## Required Env Vars
-- `AUTH_RELAY_SECRET` - password (set via Cloudflare dashboard). Without it the
-  relay refuses every request with 404 and logs why: a missing secret closes
-  the relay, it never opens it
-- `AUTH_PUBLIC` - optional: exactly `true` runs a public relay when no secret is
-  set; any other value keeps it closed. A secret, when set, wins
+- `AUTH_RELAY_SECRET` - optional password (set via Cloudflare dashboard). Set,
+  the relay is private to `wss://host/<secret>` and any other path gets 404.
+  Unset or empty, the relay is public at `wss://host/`, and the Durable Object
+  logs `public relay: AUTH_RELAY_SECRET is not set` when it starts, so a secret
+  that was meant to be set shows up in the log
 - `DO_REGION` - optional: apac/weur/wnam (default: apac)
 - `CONN_MAX_TOTAL` - optional, default: 100
 - `CONN_MAX_PER_IP` - optional, default: 5, `0` disables (see
@@ -58,6 +58,8 @@ This file is the only agent instruction file in the repository.
   "Connections lost without a close" below)
 - `SUB_MAX_PER_CONN` - optional, default: 100
 - `SUB_MAX_FILTER_VALUES` - optional, default: 10 (max values per filter field)
+- `SUB_MAX_FILTERS` - optional, default: 10 (max filters per `REQ`, advertised
+  as NIP-11 `max_filters`); `0` refuses every `REQ`, it does not disable the cap
 - `SUB_MAX_ROUTING_KEYS` - optional, default: 1000
 - `EVENT_MAX_CONTENT_BYTES` - default: 98304 (96 KB, covers the 87,472-character NIP-44 ceiling)
 - `EVENT_MAX_TAGS` - optional, default: 10
@@ -246,7 +248,7 @@ per-address counters in storage, which would cost an operation per frame.
 
 ## Common Gotchas
 
-1. **Bounded REQs**: every value in a filter (`ids`, `authors`, `kinds`, `#p`, `#e`) becomes a persisted routing key, and `sync()` re-reads and rewrites all of a connection's keys on every subscribe. That is why `Limits::max_filter_items` / `max_routing_keys_per_connection` and the `MAX_SUB_ID_LENGTH` check in `NostrEngine::handle_req` exist; removing them turns one `REQ` into tens of thousands of storage operations.
+1. **Bounded REQs**: every value in a filter (`ids`, `authors`, `kinds`, `#p`, `#e`) becomes a persisted routing key, and `sync()` re-reads and rewrites all of a connection's keys on every subscribe. That is why `Limits::max_filter_items` / `max_routing_keys_per_connection` and the `MAX_SUB_ID_LENGTH` check in `NostrEngine::handle_req` exist; removing them turns one `REQ` into tens of thousands of storage operations. The same check refuses more than `Limits::max_filters_per_req` filters, and any `ids`/`authors`/`#p`/`#e` value that is not 64 lowercase hex: each value becomes a storage key, so its length must be fixed. In memory, `WalletIndex` keeps each subscription once and the routing indexes hold a `SubHandle` (a number); giving every key its own copy of all the `REQ`'s filters made one frame cost hundreds of MB.
 2. **Deliver to every connection**: a subscription is stored per connection, and a reconnecting client leaves its previous id behind until the old socket reports the close. `WalletRegistry::collect_matches` therefore sends to every recorded connection of a matching subscription — sending only to the newest id lets any later connection silence the others.
 3. **DO state**: Use `self.state.storage()`
 4. **WebSocket tags**: Use `utils::HibernationState` trait

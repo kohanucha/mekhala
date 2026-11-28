@@ -4,6 +4,7 @@ pub struct CloudflareConfig {
     pub max_content_length: usize,
     pub max_subscriptions_per_connection: usize,
     pub max_filter_items: usize,
+    pub max_filters_per_req: usize,
     pub max_event_tags: usize,
     pub max_routing_keys_per_connection: usize,
     pub max_connections: usize,
@@ -17,7 +18,6 @@ pub struct CloudflareConfig {
     pub orphan_sweep_seconds: u64,
     pub wallet_region: Option<String>,
     pub relay_secret: Option<String>,
-    pub public_access: bool,
     pub message_rate_limit_per_minute: u32,
 }
 
@@ -36,6 +36,10 @@ impl CloudflareConfig {
             ),
             max_filter_items: Self::parse_opt(
                 env.var("SUB_MAX_FILTER_VALUES").ok().map(|v| v.to_string()),
+                10,
+            ),
+            max_filters_per_req: Self::parse_opt(
+                env.var("SUB_MAX_FILTERS").ok().map(|v| v.to_string()),
                 10,
             ),
             max_event_tags: Self::parse_opt(
@@ -96,12 +100,6 @@ impl CloudflareConfig {
                 .map(|v| v.to_string())
                 .filter(|s| !s.is_empty()),
             relay_secret: env.var("AUTH_RELAY_SECRET").ok().map(|v| v.to_string()),
-            public_access: crate::auth::public_flag(
-                env.var("AUTH_PUBLIC")
-                    .ok()
-                    .map(|v| v.to_string())
-                    .as_deref(),
-            ),
             message_rate_limit_per_minute: Self::parse_opt_u32(
                 env.var("CONN_MAX_MESSAGES_PER_MINUTE")
                     .ok()

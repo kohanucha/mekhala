@@ -217,3 +217,18 @@ fn test_partial_client_message_two_element_event() {
         None => panic!("a two-element EVENT frame must parse"),
     }
 }
+
+#[test]
+fn test_log_summary_cuts_free_text_a_client_can_size() {
+    let long = "x".repeat(5_000);
+    let cut = crate::util::LOG_TEXT_BYTES;
+    for message in [
+        RelayMessage::Notice(long.clone()),
+        RelayMessage::Ok("id".into(), false, long.clone()),
+        RelayMessage::Closed("sub".into(), long),
+    ] {
+        let summary = message.log_summary();
+        assert!(summary.ends_with(&"x".repeat(cut)), "{summary}");
+        assert!(!summary.contains(&"x".repeat(cut + 1)), "{summary}");
+    }
+}

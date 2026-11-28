@@ -1,7 +1,7 @@
 use super::super::{ClientMessage, Tag};
 use super::*;
 use crate::common::test_helpers::{
-    new_test_engine, set_test_time, test_limits, test_now, MockStorage,
+    hex_key, new_test_engine, set_test_time, test_limits, test_now, MockStorage,
 };
 
 /// Drives the engine the way `CloudflareTransport::websocket_message` does:
@@ -59,8 +59,11 @@ fn test_engine_req_storage() {
         let mut engine = new_test_engine();
         engine.on_connect(1).await;
 
-        let req = r#"["REQ", "sub1", {"kinds": [23194], "authors": ["pk1"]}]"#;
-        let msg = ClientMessage::from_json(req).unwrap();
+        let req = format!(
+            r#"["REQ", "sub1", {{"kinds": [23194], "authors": ["{}"]}}]"#,
+            hex_key("pk1")
+        );
+        let msg = ClientMessage::from_json(&req).unwrap();
         let responses = handle_typed(&mut engine, 1, msg).await;
 
         assert!(responses.iter().any(|r| {
@@ -744,7 +747,7 @@ fn test_handle_req_returns_closed_on_storage_failure() {
                 "sub1".into(),
                 vec![Filter {
                     kinds: Some(vec![23194]),
-                    authors: Some(vec!["alice".into()]),
+                    authors: Some(vec![hex_key("alice")]),
                     ..Default::default()
                 }],
             )
@@ -791,7 +794,7 @@ fn test_handle_req_internal_returns_closed_on_storage_failure() {
                 "sub1".into(),
                 vec![Filter {
                     kinds: Some(vec![23194]),
-                    authors: Some(vec!["alice".into()]),
+                    authors: Some(vec![hex_key("alice")]),
                     ..Default::default()
                 }],
             )
@@ -1305,7 +1308,7 @@ fn test_engine_load_unknown_connection_is_false() {
 fn info_event_for(id: &str, p_tags: Vec<Tag>) -> Event {
     Event {
         id: id.into(),
-        pubkey: "wallet".into(),
+        pubkey: hex_key("wallet"),
         created_at: test_now(),
         kind: 13194,
         tags: p_tags,
@@ -1335,15 +1338,18 @@ fn test_req_does_not_replay_info_for_a_p_tag_scoped_app() {
         engine
             .process_info_event(info_event_for(
                 "info1",
-                vec![Tag::P(String::from("app"), vec![])],
+                vec![Tag::P(hex_key("app"), vec![])],
             ))
             .await;
 
         // A wallet announcing itself to an app through a `p` tag is not a
         // discovery path this relay serves: the info event is cached under its
         // author only, so an app-scoped REQ gets EOSE and nothing else.
-        let msg =
-            ClientMessage::from_json(r##"["REQ","nwa",{"kinds":[13194],"#p":["app"]}]"##).unwrap();
+        let req = format!(
+            r##"["REQ","nwa",{{"kinds":[13194],"#p":["{}"]}}]"##,
+            hex_key("app")
+        );
+        let msg = ClientMessage::from_json(&req).unwrap();
         let responses = handle_typed(&mut engine, 1, msg).await;
 
         assert!(replay_events(&responses).is_empty());
@@ -1356,10 +1362,11 @@ fn test_req_does_not_replay_info_for_a_p_tag_scoped_app() {
         )));
 
         // The same event still reaches a subscriber that names the author.
-        let msg = ClientMessage::from_json(
-            r##"["REQ","author",{"kinds":[13194],"authors":["wallet"]}]"##,
-        )
-        .unwrap();
+        let req = format!(
+            r##"["REQ","author",{{"kinds":[13194],"authors":["{}"]}}]"##,
+            hex_key("wallet")
+        );
+        let msg = ClientMessage::from_json(&req).unwrap();
         let responses = handle_typed(&mut engine, 1, msg).await;
         assert_eq!(
             replay_events(&responses),
@@ -1378,14 +1385,15 @@ fn test_req_replays_info_once_when_author_and_p_tag_match() {
         engine
             .process_info_event(info_event_for(
                 "info1",
-                vec![Tag::P(String::from("wallet"), vec![])],
+                vec![Tag::P(hex_key("wallet"), vec![])],
             ))
             .await;
 
-        let msg = ClientMessage::from_json(
-            r##"["REQ","both",{"kinds":[13194],"authors":["wallet"],"#p":["wallet"]}]"##,
-        )
-        .unwrap();
+        let wallet = hex_key("wallet");
+        let req = format!(
+            r##"["REQ","both",{{"kinds":[13194],"authors":["{wallet}"],"#p":["{wallet}"]}}]"##
+        );
+        let msg = ClientMessage::from_json(&req).unwrap();
         let responses = handle_typed(&mut engine, 1, msg).await;
 
         assert_eq!(
@@ -1403,8 +1411,9 @@ fn test_e_tag_only_subscription_receives_event() {
         let mut engine = new_test_engine();
         engine.on_connect(1).await;
 
-        let msg = ClientMessage::from_json(r##"["REQ","sub-e",{"kinds":[23195],"#e":["req1"]}]"##)
-            .unwrap();
+        let request_id = hex_key("req1");
+        let req = format!(r##"["REQ","sub-e",{{"kinds":[23195],"#e":["{request_id}"]}}]"##);
+        let msg = ClientMessage::from_json(&req).unwrap();
         let _ = handle_typed(&mut engine, 1, msg).await;
 
         let event = signed_event(
@@ -1415,7 +1424,7 @@ fn test_e_tag_only_subscription_receives_event() {
                     String::from(crate::common::test_helpers::TEST_WALLET_PK),
                     vec![],
                 ),
-                Tag::E("req1".into(), vec![]),
+                Tag::E(request_id, vec![]),
             ],
             "ciphertext",
         );
@@ -1647,9 +1656,9 @@ fn test_handle_req_rejects_routing_key_budget_overrun() {
                 1,
                 "sub1".into(),
                 vec![Filter {
-                    authors: Some((0..4).map(|i| format!("author{i}")).collect()),
+                    authors: Some((0..4).map(|i| hex_key(&format!("author{i}"))).collect()),
                     kinds: Some(vec![23194]),
-                    p_tags: Some((0..4).map(|i| format!("payee{i}")).collect()),
+                    p_tags: Some((0..4).map(|i| hex_key(&format!("payee{i}"))).collect()),
                     ..Default::default()
                 }],
             )
@@ -1683,8 +1692,11 @@ fn test_engine_has_subscriptions_tracks_req_and_close() {
         engine.on_connect(1).await;
         assert!(!engine.has_subscriptions(1).await);
 
-        let req = r#"["REQ", "sub1", {"kinds": [23194], "authors": ["pk1"]}]"#;
-        let msg = ClientMessage::from_json(req).unwrap();
+        let req = format!(
+            r#"["REQ", "sub1", {{"kinds": [23194], "authors": ["{}"]}}]"#,
+            hex_key("pk1")
+        );
+        let msg = ClientMessage::from_json(&req).unwrap();
         handle_typed(&mut engine, 1, msg).await;
         assert!(engine.has_subscriptions(1).await);
 
@@ -1768,7 +1780,7 @@ fn test_engine_prune_orphaned_connections_reports_the_count() {
         engine.on_connect(1).await;
         let filter = Filter {
             kinds: Some(vec![23194]),
-            authors: Some(vec!["alice".into()]),
+            authors: Some(vec![hex_key("alice")]),
             ..Default::default()
         };
         engine.handle_req(1, "s".into(), vec![filter]).await;
@@ -1776,5 +1788,137 @@ fn test_engine_prune_orphaned_connections_reports_the_count() {
         let none_live = std::collections::HashSet::new();
         assert_eq!(engine.prune_orphaned_connections(&none_live, 3600).await, 1);
         assert_eq!(engine.prune_orphaned_connections(&none_live, 3600).await, 0);
+    });
+}
+
+fn closed_reason(responses: &[EngineResponse]) -> Option<String> {
+    responses.iter().find_map(|r| match r {
+        EngineResponse::Send {
+            message: RelayMessage::Closed(_, reason),
+            ..
+        } => Some(reason.clone()),
+        _ => None,
+    })
+}
+
+fn author_filter(label: &str) -> Filter {
+    Filter {
+        kinds: Some(vec![23194]),
+        authors: Some(vec![hex_key(label)]),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn test_req_over_the_filter_limit_is_closed_and_writes_nothing() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        let mut engine = NostrEngine::new_with_storage(storage, test_limits(), test_now);
+        engine.on_connect(1).await;
+        let max = test_limits().max_filters_per_req;
+
+        let filters = (0..=max).map(|i| author_filter(&format!("w{i}"))).collect();
+        let responses = engine.handle_req(1, "big".into(), filters).await;
+        assert_eq!(
+            closed_reason(&responses),
+            Some(format!("too many filters (max {max})"))
+        );
+        assert!(data.lock().unwrap().is_empty());
+
+        let filters = (0..max).map(|i| author_filter(&format!("w{i}"))).collect();
+        let responses = engine.handle_req(1, "fits".into(), filters).await;
+        assert_eq!(closed_reason(&responses), None);
+    });
+}
+
+#[test]
+fn test_req_with_a_non_hex_filter_value_is_closed_and_writes_nothing() {
+    futures::executor::block_on(async {
+        let good = hex_key("wallet");
+        let bad_values = [
+            "alice".to_string(),
+            good.to_uppercase(),
+            good[..63].to_string(),
+            format!("{good}0"),
+        ];
+        for bad in bad_values {
+            for field in ["ids", "authors", "#p", "#e"] {
+                let storage = MockStorage::new();
+                let data = storage.data.clone();
+                let mut engine = NostrEngine::new_with_storage(storage, test_limits(), test_now);
+                engine.on_connect(1).await;
+                let filter: Filter = serde_json::from_value(serde_json::json!({
+                    "kinds": [23194],
+                    field: [bad],
+                }))
+                .unwrap();
+                let responses = engine.handle_req(1, "s".into(), vec![filter]).await;
+                let reason = closed_reason(&responses).unwrap_or_default();
+                assert!(
+                    reason.starts_with("invalid filter value"),
+                    "{field}={bad}: {reason}"
+                );
+                assert!(data.lock().unwrap().is_empty(), "{field}={bad}");
+            }
+        }
+    });
+}
+
+/// `MockStorage` that records which `info:` keys were read.
+struct InfoReads {
+    inner: MockStorage,
+    keys: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+}
+
+#[async_trait::async_trait(?Send)]
+impl crate::nostr::wallet_registry::Storage for InfoReads {
+    async fn get(&self, key: &str) -> Option<serde_json::Value> {
+        if key.starts_with("info:") {
+            self.keys.borrow_mut().push(key.to_string());
+        }
+        self.inner.get(key).await
+    }
+    async fn put_batch(
+        &self,
+        entries: std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<(), crate::nostr::error::StorageError> {
+        self.inner.put_batch(entries).await
+    }
+    async fn delete_batch(&self, keys: Vec<String>) {
+        self.inner.delete_batch(keys).await;
+    }
+    async fn list_page(
+        &self,
+        prefix: &str,
+        start_after: Option<&str>,
+        limit: usize,
+    ) -> Vec<(String, serde_json::Value)> {
+        self.inner.list_page(prefix, start_after, limit).await
+    }
+}
+
+#[test]
+fn test_replay_reads_each_wallet_once_however_many_filters_name_it() {
+    futures::executor::block_on(async {
+        let keys = std::rc::Rc::default();
+        let storage = InfoReads {
+            inner: MockStorage::new(),
+            keys: std::rc::Rc::clone(&keys),
+        };
+        let mut engine = NostrEngine::new_with_storage(storage, test_limits(), test_now);
+        engine.on_connect(1).await;
+        let wallet = hex_key("wallet");
+        let named_twice = Filter {
+            kinds: Some(vec![13194]),
+            authors: Some(vec![wallet.clone()]),
+            p_tags: Some(vec![wallet.clone()]),
+            ..Default::default()
+        };
+
+        let filters = vec![named_twice.clone(), named_twice.clone(), named_twice];
+        engine.handle_req(1, "s".into(), filters).await;
+
+        assert_eq!(*keys.borrow(), vec![format!("info:{wallet}")]);
     });
 }

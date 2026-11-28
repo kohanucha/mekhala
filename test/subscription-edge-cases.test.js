@@ -155,10 +155,16 @@ export async function testDuplicateEventPublish() {
 /// the split write still saves and routes on the real runtime.
 export async function testSubscriptionBeyondOneStorageBatch() {
   console.log("\n--- Testing a Subscription Larger Than One Storage Batch ---");
-  const keys = Array.from({ length: 200 }, () => generateSecretKey());
+  // 10 filters (the most a REQ may carry), each 10 authors and 10 `#p`.
+  const keys = Array.from({ length: 100 }, () => generateSecretKey());
+  const payees = Array.from({ length: 100 }, () => getPublicKey(generateSecretKey()));
   const filters = [];
   for (let i = 0; i < keys.length; i += 10) {
-    filters.push({ kinds: [23194], authors: keys.slice(i, i + 10).map((sk) => getPublicKey(sk)) });
+    filters.push({
+      kinds: [23194],
+      authors: keys.slice(i, i + 10).map((sk) => getPublicKey(sk)),
+      "#p": payees.slice(i, i + 10),
+    });
   }
   const last = keys[keys.length - 1];
   const subWs = new WebSocket(RELAY_URL);
@@ -166,7 +172,7 @@ export async function testSubscriptionBeyondOneStorageBatch() {
   const event = finalizeEvent({
     kind: 23194,
     created_at: Math.floor(Date.now() / 1000),
-    tags: [["p", getPublicKey(generateSecretKey())]],
+    tags: [["p", payees[payees.length - 1]]],
     content: "big-sub",
   }, last);
 
@@ -177,7 +183,7 @@ export async function testSubscriptionBeyondOneStorageBatch() {
       pubWs.close();
       err ? reject(err) : resolve();
     };
-    const timer = setTimeout(() => finish(new Error("no event for the 200th author")), 8000);
+    const timer = setTimeout(() => finish(new Error("no event for the last author")), 8000);
     const opened = new Promise((r) => pubWs.on("open", r));
 
     subWs.on("open", () => subWs.send(JSON.stringify(["REQ", "big-sub", ...filters])));
@@ -190,9 +196,57 @@ export async function testSubscriptionBeyondOneStorageBatch() {
         pubWs.send(JSON.stringify(["EVENT", event]));
       }
       if (msg[0] === "EVENT" && msg[2].id === event.id) {
-        console.log("✅ 200-key subscription saved and routed the last author's event.");
+        console.log("✅ 200-key subscription saved and routed the last filter's event.");
         finish();
       }
     });
   });
+}
+
+/** Resolves with the reason of the `CLOSED` the relay sends for `subId`. */
+function closedReason(ws, subId, ms = 5000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`no answer for ${subId}`)), ms);
+    const handler = (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg[1] !== subId) return;
+      clearTimeout(timer);
+      ws.off("message", handler);
+      if (msg[0] === "CLOSED") resolve(msg[2]);
+      else reject(new Error(`${subId}: expected CLOSED, got ${msg[0]}`));
+    };
+    ws.on("message", handler);
+  });
+}
+
+/**
+ * One REQ must not be able to make the relay hold an unbounded number of
+ * filters, or filter values that are not ids or keys.
+ */
+export async function testRefusedReqShapes() {
+  console.log("\n--- Testing REQs the relay refuses ---");
+  const ws = new WebSocket(RELAY_URL);
+  await new Promise((resolve, reject) => {
+    ws.on("open", resolve);
+    ws.on("error", reject);
+  });
+  try {
+    const author = getPublicKey(generateSecretKey());
+    const filters = Array.from({ length: 11 }, () => ({ kinds: [23194], authors: [author] }));
+    ws.send(JSON.stringify(["REQ", "too-many", ...filters]));
+    const tooMany = await closedReason(ws, "too-many");
+    if (!tooMany.startsWith("too many filters")) {
+      throw new Error(`unexpected reason for 11 filters: ${tooMany}`);
+    }
+    console.log("✅ A REQ with 11 filters is closed.");
+
+    ws.send(JSON.stringify(["REQ", "not-hex", { kinds: [23194], authors: ["alice"] }]));
+    const notHex = await closedReason(ws, "not-hex");
+    if (!notHex.startsWith("invalid filter value")) {
+      throw new Error(`unexpected reason for a non-hex author: ${notHex}`);
+    }
+    console.log("✅ A REQ with a non-hex author is closed.");
+  } finally {
+    ws.close();
+  }
 }

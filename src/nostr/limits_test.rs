@@ -35,6 +35,7 @@ fn test_limits_serde_roundtrip() {
 fn test_limits_default_key_and_tag_ceilings() {
     let limits = Limits::default();
     assert_eq!(limits.max_filter_items, 10);
+    assert_eq!(limits.max_filters_per_req, 10);
     assert_eq!(limits.max_event_tags, 10);
     assert_eq!(limits.max_routing_keys_per_connection, 1_000);
 }
