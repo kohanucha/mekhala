@@ -62,22 +62,13 @@ fn test_target_pubkeys_deduplication() {
 
 #[test]
 fn test_kind_5_passes_kind_check() {
-    let event = Event {
-        id: "id5".into(),
-        pubkey: "pk1".into(),
-        created_at: 1700000000,
-        kind: 5,
-        tags: vec![Tag::E("event_to_delete".into(), vec![])],
-        content: "deleting".into(),
-        sig: "badsig".into(),
-    };
-    let result = event.verify(1700000000, &Limits::default());
-    // Kind 5 should pass the kind check, then fail on id/signature
-    match result {
-        Err(RelayError::InvalidId) | Err(RelayError::InvalidSignature) => {}
-        Err(RelayError::InvalidKind) => panic!("kind 5 should not be rejected as InvalidKind"),
-        other => panic!("expected id/sig error, got {other:?}"),
-    }
+    let event = signed(
+        &key(1),
+        5,
+        vec![Tag::E("ab".repeat(32), vec![])],
+        "deleting",
+    );
+    assert_eq!(event.verify(NOW, &Limits::default()), Ok(()));
 }
 
 #[test]
@@ -199,21 +190,8 @@ fn test_verify_kind_23195_missing_e_tag() {
 
 #[test]
 fn test_verify_kind_23196_with_p_tag_passes_kind_check() {
-    let event = Event {
-        id: "id5".into(),
-        pubkey: "pk1".into(),
-        created_at: 1700000000,
-        kind: 23196,
-        tags: vec![Tag::P(String::from("pk2"), vec![])],
-        content: String::new(),
-        sig: "badsig".into(),
-    };
-    let result = event.verify(1700000000, &Limits::default());
-    match result {
-        Err(RelayError::InvalidId) | Err(RelayError::InvalidSignature) => {}
-        Err(e) => panic!("expected id/sig error for kind 23196 with p tag, got {e:?}"),
-        Ok(_) => panic!("expected error for kind 23196 with bad sig"),
-    }
+    let event = signed(&key(1), 23196, vec![Tag::P("cd".repeat(32), vec![])], "");
+    assert_eq!(event.verify(NOW, &Limits::default()), Ok(()));
 }
 
 #[test]
@@ -588,4 +566,73 @@ fn test_verify_uses_tags_exactly_as_signed() {
     }))
     .unwrap();
     assert_eq!(event.verify(1_700_000_000, &Limits::default()), Ok(()));
+}
+
+const NOW: u64 = 1_700_000_000;
+
+fn key(seed: u8) -> SigningKey {
+    SigningKey::from_slice(&[seed; 32]).unwrap()
+}
+
+/// An event signed by `sk`, with the id and signature a client would send.
+fn signed(sk: &SigningKey, kind: u64, tags: Vec<Tag>, content: &str) -> Event {
+    let pubkey = hex::encode(sk.verifying_key().to_bytes());
+    let (id, id_bytes) = Event::compute_id(&pubkey, NOW, kind, &tags, content).unwrap();
+    let sig = hex::encode(sk.sign_prehash(&id_bytes).unwrap().to_bytes());
+    Event {
+        id,
+        pubkey,
+        created_at: NOW,
+        kind,
+        tags,
+        content: content.into(),
+        sig,
+    }
+}
+
+/// The id matches the content and the author, but another key signed it:
+/// only the signature check can refuse this event.
+#[test]
+fn test_signature_by_another_key_is_refused() {
+    let mut event = signed(&key(1), 13194, vec![], "pay_invoice");
+    let (_, id_bytes) = Event::compute_id(
+        &event.pubkey,
+        event.created_at,
+        event.kind,
+        &event.tags,
+        &event.content,
+    )
+    .unwrap();
+    event.sig = hex::encode(key(2).sign_prehash(&id_bytes).unwrap().to_bytes());
+
+    assert_eq!(
+        event.verify(NOW, &Limits::default()),
+        Err(RelayError::InvalidSignature)
+    );
+}
+
+#[test]
+fn test_one_flipped_signature_byte_is_refused() {
+    let mut event = signed(&key(1), 23194, vec![Tag::P("cd".repeat(32), vec![])], "x");
+    let mut sig = hex::decode(&event.sig).unwrap();
+    sig[63] ^= 0x01;
+    event.sig = hex::encode(sig);
+
+    assert_eq!(
+        event.verify(NOW, &Limits::default()),
+        Err(RelayError::InvalidSignature)
+    );
+}
+
+/// A correctly signed event whose content was changed afterwards: the id no
+/// longer matches, and that is the error reported.
+#[test]
+fn test_content_changed_after_signing_is_an_id_mismatch() {
+    let mut event = signed(&key(1), 13194, vec![], "pay_invoice");
+    event.content = "pay_invoice make_invoice".into();
+
+    assert_eq!(
+        event.verify(NOW, &Limits::default()),
+        Err(RelayError::InvalidId)
+    );
 }

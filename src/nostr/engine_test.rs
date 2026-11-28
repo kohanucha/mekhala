@@ -1922,3 +1922,135 @@ fn test_replay_reads_each_wallet_once_however_many_filters_name_it() {
         assert_eq!(*keys.borrow(), vec![format!("info:{wallet}")]);
     });
 }
+
+fn info_req(sub_id: &str, filter: &serde_json::Value) -> ClientMessage {
+    ClientMessage::from_json(&serde_json::json!(["REQ", sub_id, filter]).to_string()).unwrap()
+}
+
+/// A forged info event: the id is right for the wallet's key, but another key
+/// signed it. Without the signature check anyone could replace a wallet's
+/// advertised methods and encryption.
+#[test]
+fn test_forged_info_event_is_refused_and_not_cached() {
+    futures::executor::block_on(async {
+        let storage = MockStorage::new();
+        let data = storage.data.clone();
+        let mut engine = NostrEngine::new_with_storage(storage, test_limits(), test_now);
+        engine.on_connect(1).await;
+        let forger = SigningKey::from_slice(&[2u8; 32]).unwrap();
+        let mut forged = signed_event(&wallet_sk(), 13194, vec![], "nip04");
+        let (_, id_bytes) = Event::compute_id(
+            &forged.pubkey,
+            forged.created_at,
+            forged.kind,
+            &forged.tags,
+            &forged.content,
+        )
+        .unwrap();
+        forged.sig = hex::encode(forger.sign_prehash(&id_bytes).unwrap().to_bytes());
+
+        let responses = handle_typed(&mut engine, 1, ClientMessage::Event(forged)).await;
+
+        assert_eq!(
+            ok_response(&responses),
+            (false, "invalid: signature verification failed".to_string())
+        );
+        let pk = crate::common::test_helpers::TEST_WALLET_PK;
+        assert!(!data.lock().unwrap().contains_key(&format!("info:{pk}")));
+        assert!(!has_info(&mut engine, pk).await);
+    });
+}
+
+/// An info event reaches a live subscriber, even one older than the cached
+/// event: it is routed like any event but does not replace the cache.
+#[test]
+fn test_info_events_reach_live_subscribers_even_when_not_cached() {
+    futures::executor::block_on(async {
+        let now = 1_700_000_000;
+        set_test_time(now);
+        let mut engine = new_test_engine();
+        engine.on_connect(1).await;
+        let pk = crate::common::test_helpers::TEST_WALLET_PK;
+        let req = info_req(
+            "info",
+            &serde_json::json!({"kinds": [13194], "authors": [pk]}),
+        );
+        handle_typed(&mut engine, 1, req).await;
+
+        let newer = signed_event(&wallet_sk(), 13194, vec![], "newer");
+        let responses = handle_typed(&mut engine, 1, ClientMessage::Event(newer.clone())).await;
+        assert_eq!(
+            replay_events(&responses),
+            vec![("info".to_string(), newer.id.clone())]
+        );
+
+        set_test_time(now - 10);
+        let older = signed_event(&wallet_sk(), 13194, vec![], "older");
+        set_test_time(now);
+        let responses = handle_typed(&mut engine, 1, ClientMessage::Event(older.clone())).await;
+        assert_eq!(ok_response(&responses), (true, String::new()));
+        assert_eq!(
+            replay_events(&responses),
+            vec![("info".to_string(), older.id)]
+        );
+
+        let cached = engine.registry.get_info(pk).await.unwrap();
+        assert_eq!(cached.id, newer.id);
+    });
+}
+
+/// Replay is by author key, but the event must still match the filter.
+#[test]
+fn test_replay_sends_only_cached_info_that_matches_the_filter() {
+    futures::executor::block_on(async {
+        set_test_time(1_700_000_000);
+        let mut engine = new_test_engine();
+        engine.on_connect(1).await;
+        let pk = crate::common::test_helpers::TEST_WALLET_PK;
+        let info = signed_event(&wallet_sk(), 13194, vec![], "pay_invoice");
+        handle_typed(&mut engine, 1, ClientMessage::Event(info.clone())).await;
+
+        let other_kind = serde_json::json!({"kinds": [23195], "authors": [pk]});
+        let too_new =
+            serde_json::json!({"kinds": [13194], "authors": [pk], "since": info.created_at + 1});
+        for (sub_id, filter) in [("other-kind", other_kind), ("too-new", too_new)] {
+            let responses = handle_typed(&mut engine, 1, info_req(sub_id, &filter)).await;
+            assert!(replay_events(&responses).is_empty(), "{sub_id}");
+        }
+
+        let matching = serde_json::json!({"kinds": [13194], "authors": [pk]});
+        let responses = handle_typed(&mut engine, 1, info_req("match", &matching)).await;
+        assert_eq!(
+            replay_events(&responses),
+            vec![("match".to_string(), info.id)]
+        );
+    });
+}
+
+/// With an `e` tag the deletion is by id only: a `k` tag next to it must not
+/// widen it into deleting the author's info event.
+#[test]
+fn test_deletion_with_e_and_k_tags_deletes_by_id_only() {
+    futures::executor::block_on(async {
+        set_test_time(1_700_000_000);
+        let mut engine = new_test_engine();
+        engine.on_connect(1).await;
+        let pk = crate::common::test_helpers::TEST_WALLET_PK;
+        let info = signed_event(&wallet_sk(), 13194, vec![], "pay_invoice");
+        handle_typed(&mut engine, 1, ClientMessage::Event(info)).await;
+
+        let deletion = signed_event(
+            &wallet_sk(),
+            5,
+            vec![
+                Tag::E(hex_key("some other event"), vec![]),
+                Tag::Other("k".into(), vec![serde_json::json!("13194")]),
+            ],
+            "",
+        );
+        let responses = handle_typed(&mut engine, 1, ClientMessage::Event(deletion)).await;
+
+        assert!(ok_response(&responses).0);
+        assert!(has_info(&mut engine, pk).await);
+    });
+}

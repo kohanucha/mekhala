@@ -53,7 +53,7 @@ export async function testNip01EdgeCases() {
     ws.on("message", (data) => {
       const msg = JSON.parse(data.toString());
 
-      if (msg[0] === "OK" && msg[2] === false && msg[3]?.includes("id")) {
+      if (msg[0] === "OK" && msg[2] === false && msg[3] === "invalid: event ID mismatch") {
         console.log("✅ ID mismatch rejected.");
         idMismatchRejected = true;
       }
