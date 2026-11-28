@@ -6,7 +6,8 @@ fn secret(value: &str) -> Option<String> {
 
 #[test]
 fn test_private_mode_requires_the_exact_secret() {
-    let policy = AccessPolicy::new(secret("Secret123"), false);
+    let policy = AccessPolicy::new(secret("Secret123"));
+    assert!(!policy.is_public());
     assert_eq!(policy.check_access("Secret123"), Ok(()));
     for wrong in ["", "secret123", "SECRET123", "Secret1234", "Secret12"] {
         assert_eq!(
@@ -17,51 +18,16 @@ fn test_private_mode_requires_the_exact_secret() {
     }
 }
 
-/// Nothing configured means closed, not open: a missing or mistyped secret
-/// must never turn the relay public.
+/// An empty secret is no secret: it must not lock everyone out by matching
+/// only the empty path.
 #[test]
-fn test_no_secret_refuses_everything() {
+fn test_no_secret_runs_a_public_relay() {
     for configured in [None, secret("")] {
-        let policy = AccessPolicy::new(configured, false);
+        let policy = AccessPolicy::new(configured.clone());
+        assert!(policy.is_public(), "{configured:?}");
         for provided in ["", "anything"] {
-            assert_eq!(
-                policy.check_access(provided),
-                Err(AuthError::NotConfigured),
-                "{provided:?}"
-            );
+            assert_eq!(policy.check_access(provided), Ok(()), "{provided:?}");
         }
-    }
-}
-
-#[test]
-fn test_public_mode_must_be_asked_for() {
-    let policy = AccessPolicy::new(None, true);
-    assert_eq!(policy.check_access(""), Ok(()));
-    assert_eq!(policy.check_access("anything"), Ok(()));
-}
-
-/// With both set, the secret wins: a leftover public flag must not open a
-/// relay that has a password.
-#[test]
-fn test_secret_wins_over_the_public_flag() {
-    let policy = AccessPolicy::new(secret("pw"), true);
-    assert_eq!(policy.check_access("pw"), Ok(()));
-    assert_eq!(policy.check_access(""), Err(AuthError::Forbidden));
-}
-
-#[test]
-fn test_public_flag_accepts_only_true() {
-    assert!(public_flag(Some("true")));
-    for value in [
-        None,
-        Some(""),
-        Some("TRUE"),
-        Some("True"),
-        Some("true "),
-        Some("1"),
-        Some("yes"),
-    ] {
-        assert!(!public_flag(value), "{value:?}");
     }
 }
 

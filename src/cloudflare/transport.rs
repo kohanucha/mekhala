@@ -138,6 +138,9 @@ pub struct CloudflareTransport {
 impl DurableObject for CloudflareTransport {
     fn new(state: State, env: Env) -> Self {
         let config = CloudflareConfig::from_env(&env);
+        if crate::cloudflare::auth::from_config(&config).is_public() {
+            log_warn!("public relay: AUTH_RELAY_SECRET is not set, anyone can connect");
+        }
         let storage = CloudflareStorage {
             storage: state.storage(),
         };

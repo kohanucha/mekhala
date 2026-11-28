@@ -23,8 +23,7 @@ connects to the relay as an ordinary NWC client.
 - **Subscription**: a filter set registered by a connection under a `sub_id`.
   A `REQ` with an existing `sub_id` replaces it.
 - **Relay secret** (`AUTH_RELAY_SECRET`): the path segment that admits a
-  client (`wss://host/<secret>`). Without one the relay refuses every request,
-  unless `AUTH_PUBLIC=true` asks for a public relay.
+  client (`wss://host/<secret>`). Without one the relay is public.
 - **Attachment**: what rides on a hibernatable WebSocket: connection id,
   ip-tag (a hash of the address), ASN and last-seen time. Subscriptions are not
   in it; they are in storage.

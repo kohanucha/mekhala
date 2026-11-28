@@ -129,43 +129,32 @@ export async function testAuthHeaders() {
 }
 
 /**
- * With no AUTH_RELAY_SECRET the relay must be closed, not open: every request
- * gets the same 404 as a wrong secret, and the operator sees why in the log.
- * Public mode only happens when AUTH_PUBLIC=true asks for it.
+ * With no AUTH_RELAY_SECRET the relay is public at the root path, and the
+ * operator sees that in the log in case the secret was meant to be set.
  */
 export async function testAuthModes() {
   console.log("\n--- Testing a relay with no secret ---");
-  const { withRelay, connect, refused, wait } = await import("./relay-harness.js");
+  const { withRelay, connect, wait } = await import("./relay-harness.js");
   const port = 8804;
   const nip11 = { headers: { Accept: "application/nostr+json" } };
 
   await withRelay({ port, secret: null }, async ({ httpURL, wsURL, log }) => {
-    const response = await fetch(httpURL, nip11);
-    if (response.status !== 404) {
-      throw new Error(`unconfigured relay answered NIP-11 with ${response.status}, expected 404`);
-    }
-    if (!(await refused(wsURL))) {
-      throw new Error("unconfigured relay accepted a WebSocket");
-    }
-    // wrangler forwards the Worker's console output on its own schedule, so
-    // the line can arrive after the response: wait for it, with a deadline.
-    const deadline = Date.now() + 10_000;
-    while (!log().includes("no relay secret is configured") && Date.now() < deadline) {
-      await wait(250);
-    }
-    if (!log().includes("no relay secret is configured")) {
-      throw new Error("unconfigured relay did not log why it refuses");
-    }
-    console.log("✅ No secret: NIP-11 and WebSocket refused, reason logged.");
-  });
-
-  await withRelay({ port, secret: null, vars: { AUTH_PUBLIC: "true" } }, async ({ httpURL, wsURL }) => {
     const response = await fetch(httpURL, nip11);
     if (response.status !== 200) {
       throw new Error(`public relay answered NIP-11 with ${response.status}, expected 200`);
     }
     const ws = await connect(wsURL);
     ws.close();
-    console.log("✅ AUTH_PUBLIC=true: the root path serves NIP-11 and WebSockets.");
+    // wrangler forwards the Worker's console output on its own schedule, so
+    // the line can arrive after the response: wait for it, with a deadline.
+    const warning = "public relay: AUTH_RELAY_SECRET is not set";
+    const deadline = Date.now() + 10_000;
+    while (!log().includes(warning) && Date.now() < deadline) {
+      await wait(250);
+    }
+    if (!log().includes(warning)) {
+      throw new Error("public relay did not log that it is public");
+    }
+    console.log("✅ No secret: the root path serves NIP-11 and WebSockets, and says it is public.");
   });
 }

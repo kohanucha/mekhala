@@ -1,5 +1,4 @@
-//! Access control: the relay secret, compared in constant time, or an explicit
-//! public mode. With neither, every request is refused.
+//! Access control: a relay with a secret is private, one without is public.
 
 use sha2::{Digest, Sha256};
 
@@ -9,41 +8,26 @@ pub enum AuthError {
     /// The secret in the path is missing or wrong.
     #[error("forbidden: missing or invalid relay secret")]
     Forbidden,
-    /// No secret is configured and public mode was not asked for, so every
-    /// request is refused.
-    #[error("refused: no relay secret is configured and public mode is off")]
-    NotConfigured,
-}
-
-/// Who may use the relay.
-enum Access {
-    /// The path must carry this secret.
-    Private(String),
-    /// Anyone, because the operator asked for it.
-    Public,
-    /// No secret and no public flag: nobody.
-    NotConfigured,
 }
 
 /// Access control for the relay's HTTP endpoints.
 ///
-/// A missing secret closes the relay rather than opening it: public mode
-/// must be asked for explicitly, so a secret that was never set, was set
-/// empty or was set under a mistyped name cannot make the relay public.
+/// No secret (or an empty one) runs a public relay at the root path; setting
+/// one makes the relay private to whoever has the secret.
 pub struct AccessPolicy {
-    access: Access,
+    secret: Option<String>,
 }
 
 impl AccessPolicy {
-    /// A non-empty `secret` selects private mode and wins over `public`;
-    /// otherwise `public` decides between public mode and refusing everything.
-    pub fn new(secret: Option<String>, public: bool) -> Self {
-        let access = match secret {
-            Some(secret) if !secret.is_empty() => Access::Private(secret),
-            _ if public => Access::Public,
-            _ => Access::NotConfigured,
-        };
-        Self { access }
+    pub fn new(secret: Option<String>) -> Self {
+        Self {
+            secret: secret.filter(|s| !s.is_empty()),
+        }
+    }
+
+    /// Whether anyone may use the relay.
+    pub fn is_public(&self) -> bool {
+        self.secret.is_none()
     }
 
     /// Authorizes a request by the secret in its path, compared in constant
@@ -51,23 +35,15 @@ impl AccessPolicy {
     ///
     /// # Errors
     ///
-    /// [`AuthError::Forbidden`] when the secret does not match, and
-    /// [`AuthError::NotConfigured`] for every request when there is neither a
-    /// secret nor public mode.
+    /// [`AuthError::Forbidden`] when the relay has a secret and
+    /// `provided_secret` does not match it.
     pub fn check_access(&self, provided_secret: &str) -> Result<(), AuthError> {
-        match &self.access {
-            Access::Private(expected) if constant_time_eq(provided_secret, expected) => Ok(()),
-            Access::Private(_) => Err(AuthError::Forbidden),
-            Access::Public => Ok(()),
-            Access::NotConfigured => Err(AuthError::NotConfigured),
+        match &self.secret {
+            None => Ok(()),
+            Some(expected) if constant_time_eq(provided_secret, expected) => Ok(()),
+            Some(_) => Err(AuthError::Forbidden),
         }
     }
-}
-
-/// Reads the public-mode flag. Only the exact value `true` turns it on, so a
-/// typo leaves the relay closed.
-pub fn public_flag(value: Option<&str>) -> bool {
-    value == Some("true")
 }
 
 /// Constant-time string comparison to prevent timing attacks.

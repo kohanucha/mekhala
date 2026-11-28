@@ -18,7 +18,6 @@ pub struct CloudflareConfig {
     pub orphan_sweep_seconds: u64,
     pub wallet_region: Option<String>,
     pub relay_secret: Option<String>,
-    pub public_access: bool,
     pub message_rate_limit_per_minute: u32,
 }
 
@@ -101,12 +100,6 @@ impl CloudflareConfig {
                 .map(|v| v.to_string())
                 .filter(|s| !s.is_empty()),
             relay_secret: env.var("AUTH_RELAY_SECRET").ok().map(|v| v.to_string()),
-            public_access: crate::auth::public_flag(
-                env.var("AUTH_PUBLIC")
-                    .ok()
-                    .map(|v| v.to_string())
-                    .as_deref(),
-            ),
             message_rate_limit_per_minute: Self::parse_opt_u32(
                 env.var("CONN_MAX_MESSAGES_PER_MINUTE")
                     .ok()
