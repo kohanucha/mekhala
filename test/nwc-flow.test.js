@@ -39,6 +39,7 @@ export async function testRelay() {
   const sk = generateSecretKey();
   const pk = getPublicKey(sk);
   let eventKind3;
+  let badSigEvent;
 
   return new Promise((resolve, reject) => {
     ws.on("open", async () => {
@@ -48,20 +49,15 @@ export async function testRelay() {
       ws.send(JSON.stringify(["REQ", "sub-1", { kinds: [23194], "#p": [pk] }]));
 
       console.log("Testing Signature Rejection...");
-      ws.send(
-        JSON.stringify([
-          "EVENT",
-          {
-            id: "0".repeat(64),
-            pubkey: pk,
-            created_at: Math.floor(Date.now() / 1000),
-            kind: 23194,
-            tags: [["p", pk]],
-            content: "invalid",
-            sig: "0".repeat(128),
-          },
-        ]),
+      // A real event with one signature byte flipped: the id still matches,
+      // so only the signature check can refuse it.
+      badSigEvent = finalizeEvent(
+        { kind: 23194, created_at: Math.floor(Date.now() / 1000), tags: [["p", pk]], content: "invalid" },
+        sk,
       );
+      const lastByte = (parseInt(badSigEvent.sig.slice(-2), 16) ^ 1).toString(16).padStart(2, "0");
+      badSigEvent.sig = badSigEvent.sig.slice(0, -2) + lastByte;
+      ws.send(JSON.stringify(["EVENT", badSigEvent]));
 
       console.log("Testing P-tag Enforcement...");
       const eventNoPTag = finalizeEvent(
@@ -113,11 +109,13 @@ export async function testRelay() {
           console.log("✅ Restricted kind rejection passed.");
         }
 
-        if (msg[2] === false) {
-          if (msg[3].includes("signature") || msg[3].includes("invalid:") || msg[3].includes("blocked:")) {
-            sigRejected = true;
-            console.log("✅ Rejection (invalid/signature/blocked) passed.");
+        if (badSigEvent && msg[1] === badSigEvent.id) {
+          if (msg[2] !== false || msg[3] !== "invalid: signature verification failed") {
+            reject(new Error(`bad signature answered ${JSON.stringify(msg)}`));
+            return;
           }
+          sigRejected = true;
+          console.log("✅ Bad signature rejected.");
         }
       }
 
